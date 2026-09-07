@@ -41,3 +41,26 @@
 - ADR-006 records the code evidence, the hardware evidence (Free60 wiki),
   what we still don't know, and the branch table on next steps based on
   inputdiag outcome.
+
+### 2026-09-07 15:56 — P1.5-INPUT-001 (Machine Check) forensics + inputdiag-safe
+
+- **Crash on hardware**: original inputdiag.elf32 hit exception vector 0x200
+  (Machine Check) with DAR=0xC8000000 (MMIO/NAND region) before RF module
+  enumeration data was captured. Symbolized via xenon-addr2line:
+  fault inside `_vfprintf_r` at `vfprintf.c:1528`, one instruction before
+  a `bl strlen` — classic case of `printf("%s", ...)` with a dangling
+  pointer whose strlen scan walks into MMIO.
+- **Root cause**: original inputdiag included `<usb/usbd.h>` and walked
+  `usb_buses[b]->ub_devices[addr]` from user code, dereferencing internal
+  fields at unsafe times. The libxenon `browser` example uses ONLY the
+  public API (`usb_init` / `usb_do_poll` / `get_controller_data`) and
+  works — so `inputdiag-safe` mirrors that exactly.
+- **Preserved for post-mortem**:
+  `docs/test-results/crash-P1.5-INPUT-001/` contains unstripped ELF,
+  stripped ELF, map file, metadata, POSTMORTEM.md with full symbolization.
+- **`app/inputdiag-safe/inputdiag-safe.elf32`**: 185,564 bytes, sha256
+  `5ed5a246516fa0aefd7b7aa0e465b6552072ed1cf1ad7ea68b90d821888bb959`.
+  Public API only. Every printf < 4 args. No manual USB internals iter.
+  Same 20s pad-press + SMC IR window + in-band diagnosis.
+- Deployed via FTP to `Hdd1/Apps/XCloud360/inputdiag-safe.elf32` +
+  HTTP netboot at `http://192.168.15.64:8032/build/inputdiag-safe.elf`.
