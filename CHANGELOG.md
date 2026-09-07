@@ -78,3 +78,20 @@
   already lists this PID in `usbdevs.c`; no patch required. bare-metal
   input path fully functional. ADR-006 closed as RESOLVED-POSITIVE.
 - hwtest rebuilt with softened input note (points at ADR-006 resolution).
+
+### 2026-09-07 16:32 — P4 rendertest (framebuffer @720p, no shader)
+
+- `app/rendertest/rendertest.elf32`: 185,596 bytes, sha256
+  `38c64643c998fa8ef9c42ade9d8446af8cc99db2d921d4a0e1b90a0a3ebdc5c2`.
+- Forces `VIDEO_MODE_HDMI_720P` (not AUTO), paints SMPTE 7 color bars
+  via CPU-side `console_pset()`, measures full-frame repaint time
+  vs 60Hz budget (16667 us). Reports FITS / OVER verdict on screen.
+- P5 blocker (Microsoft ad-supported queue) means shader path (needed
+  for YUV→RGB from a real bitstream) is deferred to P4.5. Rationale:
+  Xbox 360 shader bytecode requires proprietary shadercompiler.exe
+  (Windows + XNA 3.0 + VS 2008). No open-source compiler exists.
+  Better to defer shader work until real YUV samples exist to test
+  against, rather than write a shader against imagined input.
+- Deployed via FTP + HTTP netboot.
+- docs/test-protocols/P4-rendertest.md added with expected output +
+  PASS/FAIL matrix + what to photograph.
