@@ -62,3 +62,33 @@ P5 stays blocked on this dimension until one of the above is satisfied. Everythi
 - Ad-supported title testing (`--ads`) is preferred over Game Pass titles for early captures — a shorter, capped session works fine for bitstream characterization and does not consume a paid subscription slot.
 - Sessions self-cleanup on tool exit (`GssvSession::cleanup_stale_sessions`).
 - The captured `.h264` is a raw bitstream of the ~30 seconds of streaming needed to characterize the codec — it is not intended for playback or redistribution.
+
+## P5.4 status (2026-09-07)
+
+libpeer PC-side builded — same pin as Green-NX (`9319aa434c...`) with mbedTLS 3.4.0 + libsrtp2 + usrsctp + cJSON as static libs.
+
+- Path: `~/libpeer/build-pc/dist/lib/{libpeer.a, libmbedcrypto.a, libmbedtls.a, libmbedx509.a, libsrtp2.a, libusrsctp.a, libcjson.a}`
+- Headers: `~/libpeer/include/peer.h`, `~/libpeer/include/peer_connection.h`
+- Example binary `~/libpeer/build-pc/examples/generic/sample` built (3.1 MiB) — proves link chain works.
+
+Key API for GOLDEN STREAM capture:
+
+```c
+PeerConfiguration config = {
+    .video_codec = CODEC_H264,
+    .datachannel = DATA_CHANNEL_BINARY,
+    .onvideotrack = video_nal_callback,   // <— fires per received NAL
+    .onaudiotrack = audio_frame_callback,
+    .on_request_keyframe = keyframe_callback,
+    .ice_servers = {{.urls = "stun:stun.l.google.com:19302"}, ...},
+};
+pc = peer_connection_create(&config);
+peer_connection_set_local_description(pc, our_offer_sdp, SDP_TYPE_OFFER);
+answer = xcloud_exchange_sdp(session, our_offer_sdp);   // HTTP POST /sdp
+peer_connection_set_remote_description(pc, answer, SDP_TYPE_ANSWER);
+// ICE plumbing via peer_connection_onicecandidate + xcloud_send_ice
+```
+
+The `video_nal_callback` writes each NAL to `stream.h264` prefixed with Annex-B start code (`00 00 00 01`). That file IS the GOLDEN STREAM.
+
+Signaling reached Provisioned successfully (log at `output/FORTNITE-20260907-164320/greennx-stream-test.log`) — Green-NX PC drove state machine to Provisioned in ~3:36 (216 iter × 1s = 216s queue, then Provisioning 7s, then Provisioned).
