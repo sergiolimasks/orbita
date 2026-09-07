@@ -64,3 +64,17 @@
   Same 20s pad-press + SMC IR window + in-band diagnosis.
 - Deployed via FTP to `Hdd1/Apps/XCloud360/inputdiag-safe.elf32` +
   HTTP netboot at `http://192.168.15.64:8032/build/inputdiag-safe.elf`.
+
+### 2026-09-07 16:07 — P1.5 RESOLVED (usbctrl binds internal-RF pad OK)
+
+- Hardware test with `inputdiag-safe.elf32` **PASSED**. 4 photos captured
+  by Sergio archived at `docs/test-results/P1.5-inputdiag-safe/photos/`.
+- **Key line from console**:
+  `USB bus 1 device 2: vendor 045E product 02AA class FF: Xbox 360 Controller`
+- **pad0 events = 35** in the 20 s window; A/B/X/Y/Back/Start all captured.
+- SUMMARY block on-screen: `DIAGNOSIS: usbctrl / SMC PATH WORKING.`
+- **Finding**: `045E:02AA` is the *unified* PID a wireless pad exposes
+  via ANY receiver — external USB or internal RF module. libxenon
+  already lists this PID in `usbdevs.c`; no patch required. bare-metal
+  input path fully functional. ADR-006 closed as RESOLVED-POSITIVE.
+- hwtest rebuilt with softened input note (points at ADR-006 resolution).

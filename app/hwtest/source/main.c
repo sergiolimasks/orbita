@@ -128,12 +128,11 @@ int main(void) {
     }
 
     /* Controller: probe 4 ports for 3 s.
-     * NOTE: bare-metal libxenon only reads USB HID controllers. If your
-     * pad is wireless paired with the console's INTERNAL RF module, this
-     * will likely register nothing — see docs/adr/ADR-006-wireless-rf-input.md
-     * and run app/inputdiag to identify the missing VID/PID. */
+     * ADR-006 (RESOLVED 2026-09-07): internal RF module enumerates as USB
+     * 045E:02AA on the OHCI bus and libxenon's usbctrl binds it. Both
+     * wired and wireless (internal-RF or external-receiver) pads work
+     * through the same public API. */
     printf("[INPUT] polling USB controllers for 3s (press any button)...\n");
-    printf("[INPUT] (if wireless RF-only, see inputdiag.elf32 + ADR-006)\n");
     int pad_seen = 0;
     for (int i = 0; i < 30; i++) {
         struct controller_data_s pad;

@@ -1,7 +1,20 @@
 # ADR-006 — Wireless RF (internal module) input on bare-metal libxenon
 
-**Status:** open — awaiting hardware evidence from `inputdiag`
-**Date:** 2026-09-07
+**Status:** RESOLVED-POSITIVE (2026-09-07 hardware run)
+**Date opened:** 2026-09-07
+**Date closed:** 2026-09-07
+
+## Resolution (2026-09-07)
+
+Confirmed on hardware by `inputdiag-safe.elf32` run: the console's internal RF module IS enumerated on the OHCI bus as USB device `045E:02AA` (class `FF` — Xbox 360 Controller) and libxenon's `usbctrl_driver` binds it automatically. `get_controller_data(0, &pad)` returns real state on button presses. See `docs/test-results/P1.5-inputdiag-safe/RESOLVED.md` for the full evidence + photos.
+
+Implication: **NO patch to `usbdevs.c` required.** Bare-metal libxenon handles the internal-RF wireless controller path transparently — the `02AA` PID is unified between external USB Wireless Gaming Receiver and the internal RF module. Branch (c) of the decision matrix (push product to XEX/kernel for input) is **NOT triggered**.
+
+The mislabeled entry (`"Xbox 360 Wireless Controller (via receiver)"`) in the inputdiag KNOWN_IDS table implied external-receiver-only; it should read `"Xbox 360 Wireless Controller (via internal RF OR external USB receiver)"`. Fixed on next inputdiag rebuild.
+
+---
+
+**Original context (kept for the record):**
 
 ## Context
 
