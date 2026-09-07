@@ -24,3 +24,11 @@ None yet. Every future entry must record:
 - files touched
 - destination path in this tree
 - modifications summary
+
+## External subprocess dependencies
+
+Not linked into XCloud360, called only as separate processes. Their licenses do NOT propagate to this project.
+
+| Tool | Repo | License | Where called from | Purpose |
+|---|---|---|---|---|
+| `greennx` | `rmrf404/green-nx` | GPL-3.0 | `tools/xcloud-capture/*.sh` | Microsoft device-code auth, xCloud catalog dump, GSSV session creation + SDP/ICE exchange. Runs as `$HOME/green-nx/build/pc/greennx`. No source vendored. |
