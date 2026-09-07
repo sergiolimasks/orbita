@@ -165,6 +165,12 @@ static void write_file(const std::string& path, const std::string& content) {
 }
 
 int main(int argc, char** argv) {
+    // Force line-buffered stdout so progress logs appear immediately when
+    // stdout is a pipe/file (nohup redirect). Fully-buffered would delay
+    // the first output by up to 4 KiB — which for a long-running signaling
+    // + queue phase means the log looks stalled for minutes.
+    ::setvbuf(stdout, nullptr, _IOLBF, 0);
+
     // ---- args ------------------------------------------------------------
     if (argc < 2) {
         std::fprintf(stderr,
@@ -284,6 +290,18 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
+    // ---- kick peer_connection_loop BEFORE create_offer so libpeer starts
+    //      gathering local ICE candidates async while we drive HTTP. ------
+    std::atomic<bool> stop_flag{false};
+    std::thread pc_thread([&]{
+        while (!stop_flag.load()) {
+            peer_connection_loop(pc);
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    // Give libpeer a moment to gather at least one host candidate.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
     // ---- SDP exchange -----------------------------------------------------
     std::printf("[sdp] creating local offer\n");
     const char* offer_sdp_raw = peer_connection_create_offer(pc);
@@ -330,19 +348,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "can't open stream.h264\n");
     }
 
-    // ---- ICE bridge + peer_connection_loop threads -----------------------
-    std::atomic<bool> stop_flag{false};
-
-    // Thread 1: drive peer_connection_loop (state machine, DTLS/SRTP,
-    // RTP receive → onvideotrack).
-    std::thread pc_thread([&]{
-        while (!stop_flag.load()) {
-            peer_connection_loop(pc);
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
-        }
-    });
-
-    // Thread 2: bridge ICE — flush local candidates upward via
+    // ---- ICE bridge thread (pc_thread already running since pre-offer) --
+    // Thread: bridge ICE — flush local candidates upward via
     // session.send_ice_candidates(), poll remote via
     // session.receive_ice_candidates() → peer_connection_add_ice_candidate.
     std::thread ice_thread([&]{
