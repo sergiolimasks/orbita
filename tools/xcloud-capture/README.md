@@ -45,6 +45,18 @@ tools/xcloud-capture/
 
 `greennx login` stores refresh + access tokens in `$HOME/.green-nx-tokens.json` (hardcoded in `src/cli/main.cpp::token_store_path()`). We inherit that path — do NOT copy it into the XCloud360 repo, do NOT log its contents.
 
+## Known blocker: ad-supported queue time
+
+The `xgpuwebf2p` (ad-supported) offering that non-Game-Pass accounts fall into is heavily rate-limited by Microsoft. Observed 2026-09-07 (Brazilian holiday): server reported **~205 min queue** before allocating an instance, and `stream-test` timed out at 240 s of `WaitingForResources`. This is not a bug in Green-NX or in this tool — it is the ad-supported tier's real queue depth for the region+time.
+
+Workarounds, in ascending cost/reliability:
+
+1. Retry off-peak (Brazil overnight / weekday early morning) — queue depths can drop to minutes.
+2. Activate an Xbox Game Pass trial (often 14-day free) to switch the offering to `xgpuweb`, which allocates near-instantly.
+3. Change region via VPN (not recommended — violates ToS + confounds bitstream analysis).
+
+P5 stays blocked on this dimension until one of the above is satisfied. Everything else in `xcloud-capture` (setup, login, games, ids) works independently.
+
 ## Security notes
 
 - Ad-supported title testing (`--ads`) is preferred over Game Pass titles for early captures — a shorter, capped session works fine for bitstream characterization and does not consume a paid subscription slot.
