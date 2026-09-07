@@ -1,0 +1,101 @@
+#!/bin/bash
+# XCloud360 — record artifact metadata after a build:
+#   size, SHA-256, xenon-readelf summary, symbol counts, entry point.
+#
+# Usage:
+#   scripts/build-metadata <path/to/artifact.elf32>
+#
+# Writes:
+#   <artifact>.meta.txt   — human-readable summary
+#   <artifact>.sha256     — bare SHA-256 hex
+#   Prints summary to stdout.
+
+set -euo pipefail
+
+ARTIFACT="${1:-}"
+if [ -z "$ARTIFACT" ] || [ ! -f "$ARTIFACT" ]; then
+    echo "ERROR: artifact path required. Got: '$ARTIFACT'" >&2
+    exit 1
+fi
+
+if [ -z "${DEVKITXENON:-}" ]; then
+    # Fallback — try to source env.sh
+    SCRIPT_DIR="$(dirname "$0")"
+    if [ -f "$SCRIPT_DIR/env.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$SCRIPT_DIR/env.sh" >/dev/null 2>&1 || true
+    fi
+fi
+READELF="${DEVKITXENON:-$HOME/devkitxenon}/bin/xenon-readelf"
+NM="${DEVKITXENON:-$HOME/devkitxenon}/bin/xenon-nm"
+OBJDUMP="${DEVKITXENON:-$HOME/devkitxenon}/bin/xenon-objdump"
+
+if [ ! -x "$READELF" ]; then
+    echo "ERROR: $READELF not found. Source scripts/env.sh first." >&2
+    exit 2
+fi
+
+META="${ARTIFACT}.meta.txt"
+SHAFILE="${ARTIFACT}.sha256"
+
+SIZE=$(stat -c '%s' "$ARTIFACT")
+SIZE_KB=$(( SIZE / 1024 ))
+SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
+
+{
+    echo "artifact:     $ARTIFACT"
+    echo "size:         $SIZE bytes ($SIZE_KB KiB)"
+    echo "sha256:       $SHA"
+    echo "built:        $(date -Iseconds)"
+    echo "git commit:   $(git -C "$(dirname "$ARTIFACT")" rev-parse HEAD 2>/dev/null || echo N/A)"
+    echo "toolchain:    $($DEVKITXENON/bin/xenon-gcc --version 2>/dev/null | head -1)"
+    echo ""
+    echo "--- ELF header ---"
+    "$READELF" -h "$ARTIFACT" | grep -E 'Class|Data|Machine|Entry|Type|Version:'
+    echo ""
+    echo "--- Program headers (LOAD segments only) ---"
+    "$READELF" -l "$ARTIFACT" 2>/dev/null | grep -A1 'LOAD' | head -20
+    echo ""
+    echo "--- Section sizes (LOAD-relevant) ---"
+    "$READELF" -S "$ARTIFACT" 2>/dev/null | grep -E '\.text|\.data|\.rodata|\.bss|\.sdata|\.sbss' | head -20
+    echo ""
+    echo "--- Symbol counts ---"
+    TOTAL=$("$NM" --defined-only "$ARTIFACT" 2>/dev/null | wc -l)
+    TEXTSYM=$("$NM" --defined-only "$ARTIFACT" 2>/dev/null | awk '$2=="T" || $2=="t"' | wc -l)
+    DATASYM=$("$NM" --defined-only "$ARTIFACT" 2>/dev/null | awk '$2=="D" || $2=="d" || $2=="B" || $2=="b"' | wc -l)
+    echo "  defined total: $TOTAL"
+    echo "  text (T/t):    $TEXTSYM"
+    echo "  data (D/B):    $DATASYM"
+    echo ""
+    echo "--- Required symbols present? ---"
+    for sym in main _start console_init xenos_init xenon_smc_query_sensors \
+               network_init network_poll get_controller_data \
+               xenon_make_it_faster mftb; do
+        if "$NM" --defined-only "$ARTIFACT" 2>/dev/null | grep -qE " [TtWw] $sym\$"; then
+            printf "  %-32s OK\n" "$sym"
+        else
+            # Some may be undefined refs to libxenon.a — check for undefined presence too
+            if "$NM" "$ARTIFACT" 2>/dev/null | grep -qE " [Uu] $sym\$"; then
+                printf "  %-32s UNRESOLVED (linker gap)\n" "$sym"
+            else
+                printf "  %-32s ABSENT (probably inlined or renamed)\n" "$sym"
+            fi
+        fi
+    done
+    echo ""
+    echo "--- Unresolved externals (should be empty for a linked binary) ---"
+    UNRES=$("$NM" "$ARTIFACT" 2>/dev/null | awk '$1==" U" || $2=="U" {print $NF}' | sort -u)
+    if [ -z "$UNRES" ]; then
+        echo "  (none)"
+    else
+        echo "$UNRES" | sed 's/^/  /'
+    fi
+} > "$META"
+
+echo "$SHA  $ARTIFACT" > "$SHAFILE"
+
+echo "==== BUILD METADATA ===="
+cat "$META"
+echo "========================"
+echo "written: $META"
+echo "written: $SHAFILE"
