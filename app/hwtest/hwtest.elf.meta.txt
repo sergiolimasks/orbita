@@ -1,0 +1,48 @@
+artifact:     app/hwtest/hwtest.elf
+size:         1609500 bytes (1571 KiB)
+sha256:       8c9130da3ddc851efa1ad94000813dee313af0b0ad0d972c76ba1d0ef2845f47
+built:        2026-09-07T15:20:36-03:00
+git commit:   e2758c7458f0cf0951d11ed0128e7862ad840106
+toolchain:    xenon-gcc (GCC) 9.2.0
+
+--- ELF header ---
+  Class:                             ELF32
+  Data:                              2's complement, big endian
+  Version:                           1 (current)
+  ABI Version:                       0
+  Type:                              EXEC (Executable file)
+  Machine:                           PowerPC
+  Version:                           0x1
+  Entry point address:               0x80002500
+
+--- Program headers (LOAD segments only) ---
+  LOAD           0x000100 0x80000000 0x80000000 0x304c8 0x513194 RWE 0x100
+  GNU_EH_FRAME   0x02b324 0x8002b224 0x8002b224 0x00c44 0x00c44 R   0x4
+
+--- Section sizes (LOAD-relevant) ---
+  [ 1] .text             PROGBITS        80000000 000100 020c48 00  AX  0   0 256
+  [ 2] .data             PROGBITS        80020c48 020d48 00782c 00  WA  0   0  8
+  [ 4] .sdata            PROGBITS        80028490 028590 000038 00  WA  0   0  8
+  [ 5] .rodata           PROGBITS        800284c8 0285c8 002d5c 00   A  0   0  8
+  [ 8] .bss              NOBITS          80030500 0305c8 4e2c14 00  WA  0   0 128
+  [ 9] .sbss             NOBITS          80513114 0305c8 000080 00  WA  0   0  4
+
+--- Symbol counts ---
+  defined total: 662
+  text (T/t):    479
+  data (D/B):    101
+
+--- Required symbols present? ---
+  main                             ABSENT (probably inlined or renamed)
+  _start                           OK
+  console_init                     ABSENT (probably inlined or renamed)
+  xenos_init                       OK
+  xenon_smc_query_sensors          OK
+  network_init                     OK
+  network_poll                     OK
+  get_controller_data              OK
+  xenon_make_it_faster             OK
+  mftb                             ABSENT (probably inlined or renamed)
+
+--- Unresolved externals (should be empty for a linked binary) ---
+  (none)

@@ -34,7 +34,7 @@
 #include <usb/usbmain.h>
 
 #include <lwip/netif.h>
-#include <lwip/ip4_addr.h>
+#include <lwip/ip_addr.h>
 
 #ifndef XCLOUD360_BUILD_VERSION
 #define XCLOUD360_BUILD_VERSION "0.0.1-p1"
