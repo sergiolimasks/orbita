@@ -314,6 +314,20 @@ int main(int argc, char** argv) {
     }
     std::string offer_sdp = offer_sdp_raw;
     g_ctx.ice_ufrag_local = extract_ufrag(offer_sdp);
+    // xCloud server declares a=setup:passive in the answer (it wants to be
+    // DTLS server). libpeer's offer also defaults to passive — collision
+    // means DTLS handshake never starts. Rewrite our offer to actpass so
+    // the server's passive selection is the only choice, and we become
+    // active. This is standard WebRTC negotiation per RFC 5763 §5.
+    {
+        std::string needle = "a=setup:passive";
+        std::string repl   = "a=setup:actpass";
+        size_t p = 0;
+        while ((p = offer_sdp.find(needle, p)) != std::string::npos) {
+            offer_sdp.replace(p, needle.size(), repl);
+            p += repl.size();
+        }
+    }
     std::printf("[sdp] offer size=%zu  ice-ufrag(local)=%s\n",
                 offer_sdp.size(), g_ctx.ice_ufrag_local.c_str());
     write_file(out_dir + "/offer.sdp", offer_sdp);
@@ -338,6 +352,64 @@ int main(int argc, char** argv) {
                 answer_sdp.size(), g_ctx.ice_ufrag_remote.c_str());
     write_file(out_dir + "/answer.sdp", redact_secrets(answer_sdp));
 
+    // xCloud uses trickle ICE — the answer has NO embedded candidates.
+    // Before we set_remote_description (which would immediately transition
+    // libpeer to CHECKING with 0 remote pairs -> FAILED), we must (a) push
+    // our local candidates upward and (b) pull at least one remote
+    // candidate via HTTP /ice so the CHECKING state has something to check.
+    {
+        // (a) send whatever locals libpeer has already gathered
+        std::vector<std::string> local_now;
+        {
+            std::lock_guard<std::mutex> lk(g_ctx.ice_local_mu);
+            local_now = g_ctx.ice_local_candidates;
+        }
+        // Fallback: if libpeer's onicecandidate hasn't fired yet, parse
+        // candidates directly from our offer (they were embedded there).
+        if (local_now.empty()) {
+            size_t p = 0;
+            while ((p = offer_sdp.find("a=candidate:", p)) != std::string::npos) {
+                size_t end = offer_sdp.find_first_of("\r\n", p);
+                std::string cand = offer_sdp.substr(p + 2, end - p - 2); // strip "a="
+                local_now.push_back(cand);
+                p = end;
+            }
+        }
+        if (!local_now.empty()) {
+            try {
+                session.send_ice_candidates(local_now, g_ctx.ice_ufrag_local);
+                std::printf("[ice] pre-SRD: sent %zu local candidates\n",
+                            local_now.size());
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[ice] pre-SRD send failed: %s\n", e.what());
+            }
+        }
+        // (b) poll for remote candidates up to 8 s (xCloud usually returns
+        // its first Teredo/relay candidate within 1-2 s)
+        int remote_polled = 0;
+        for (int i = 0; i < 40 && remote_polled == 0; i++) {
+            try {
+                bool end_flag = false;
+                auto remotes = session.receive_ice_candidates(&end_flag);
+                if (!remotes.empty()) {
+                    for (auto& c : remotes) {
+                        std::printf("[ice] pre-SRD +remote: %.80s...\n", c.c_str());
+                        peer_connection_add_ice_candidate(pc, (char*)c.c_str());
+                        remote_polled++;
+                    }
+                    break;
+                }
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[ice] pre-SRD poll: %s\n", e.what());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        std::printf("[ice] pre-SRD done: %d remote candidates in hand\n",
+                    remote_polled);
+    }
+
+    // NOW it is safe to hand the answer to libpeer — CHECKING will have
+    // pairs to try immediately.
     peer_connection_set_remote_description(pc,
         (char*)answer_sdp.c_str(), SDP_TYPE_ANSWER);
 
