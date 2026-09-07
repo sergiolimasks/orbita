@@ -1,0 +1,52 @@
+#!/bin/bash
+# XCloud360 — pull /Apps/XCloud360/logs/ from the Xbox 360 to docs/test-results/.
+#
+# Usage:
+#   scripts/fetch-logs                # mirror all logs to docs/test-results/<timestamp>/
+#   scripts/fetch-logs hwtest.txt     # pull a single file
+
+set -euo pipefail
+
+CFG="$(dirname "$0")/../dev.local.json"
+if [ ! -f "$CFG" ]; then
+    echo "ERROR: $CFG not found." >&2
+    exit 1
+fi
+
+read_json() {
+    python3 -c "import json,sys; d=json.load(open('$CFG')); print(d.get('$1', ''))"
+}
+
+HOST="$(read_json xbox_ip)"
+PORT="$(read_json ftp_port)"
+USER="$(read_json ftp_user)"
+PASS="$(read_json ftp_password)"
+LOGS_RPATH="$(read_json remote_logs_path)"
+
+TS="$(date +%Y%m%d-%H%M%S)"
+OUT="$(dirname "$0")/../docs/test-results/$TS"
+mkdir -p "$OUT"
+
+if ! timeout 2 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
+    echo "ERROR: Xbox unreachable at $HOST:$PORT." >&2
+    exit 2
+fi
+
+if [ -n "${1:-}" ]; then
+    echo "[fetch] $LOGS_RPATH/$1 → $OUT/$1"
+    lftp -u "$USER,$PASS" -p "$PORT" "$HOST" <<LFTP_EOF
+set ftp:passive-mode on
+get $LOGS_RPATH/$1 -o $OUT/$1
+bye
+LFTP_EOF
+else
+    echo "[fetch] mirror $LOGS_RPATH/ → $OUT/"
+    lftp -u "$USER,$PASS" -p "$PORT" "$HOST" <<LFTP_EOF
+set ftp:passive-mode on
+mirror $LOGS_RPATH $OUT
+bye
+LFTP_EOF
+fi
+
+echo "[fetch] OK → $OUT"
+ls -la "$OUT"

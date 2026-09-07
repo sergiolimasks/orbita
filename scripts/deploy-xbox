@@ -1,0 +1,64 @@
+#!/bin/bash
+# XCloud360 — deploy a built .elf32 or .xex to the Xbox 360 RGH via lftp.
+#
+# Usage:
+#   scripts/deploy-xbox <local-file> [remote-name]
+#
+# Reads FTP creds from dev.local.json (gitignored).
+# Example:
+#   scripts/deploy-xbox app/hwtest/hwtest.elf32
+#   scripts/deploy-xbox app/hwtest/hwtest.elf32 default.elf   # XeLL boot slot
+
+set -euo pipefail
+
+CFG="$(dirname "$0")/../dev.local.json"
+if [ ! -f "$CFG" ]; then
+    echo "ERROR: $CFG not found. Copy dev.local.example.json → dev.local.json and fill FTP creds." >&2
+    exit 1
+fi
+
+# Very small JSON reader — avoid jq dep. Fields: xbox_ip, ftp_port, ftp_user,
+# ftp_password, remote_path.
+read_json() {
+    python3 -c "import json,sys; d=json.load(open('$CFG')); print(d.get('$1', ''))"
+}
+
+HOST="$(read_json xbox_ip)"
+PORT="$(read_json ftp_port)"
+USER="$(read_json ftp_user)"
+PASS="$(read_json ftp_password)"
+RPATH="$(read_json remote_path)"
+
+if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$PASS" ]; then
+    echo "ERROR: dev.local.json missing required fields (xbox_ip/ftp_user/ftp_password)" >&2
+    exit 1
+fi
+
+LOCAL="${1:-}"
+if [ -z "$LOCAL" ] || [ ! -f "$LOCAL" ]; then
+    echo "ERROR: local file required and must exist. Got: '$LOCAL'" >&2
+    echo "Usage: $0 <local-file> [remote-name]" >&2
+    exit 1
+fi
+
+REMOTE_NAME="${2:-$(basename "$LOCAL")}"
+
+# Preflight: TCP:$PORT reachable?
+if ! timeout 2 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
+    echo "ERROR: Xbox unreachable at $HOST:$PORT. Console powered on and dashboard/FTP up?" >&2
+    exit 2
+fi
+
+echo "[deploy] $LOCAL → ftp://$USER@$HOST:$PORT$RPATH/$REMOTE_NAME"
+
+lftp -u "$USER,$PASS" -p "$PORT" "$HOST" <<LFTP_EOF
+set net:timeout 10
+set net:max-retries 2
+set ftp:passive-mode on
+mkdir -pf $RPATH
+cd $RPATH
+put "$LOCAL" -o "$REMOTE_NAME"
+bye
+LFTP_EOF
+
+echo "[deploy] OK"
