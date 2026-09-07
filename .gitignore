@@ -1,0 +1,43 @@
+# dev-local: FTP creds, tokens, capture data
+dev.local.json
+dev.local.*.json
+*.token
+tokens/
+captures/
+*.h264
+*.sdp
+
+# build artifacts
+build/
+out/
+dist/
+*.o
+*.a
+*.elf
+*.xex
+*.xex1
+*.xex2
+*.xexp
+*.pdb
+*.exp
+*.lib
+*.map
+
+# toolchain (out-of-tree)
+toolchain/
+devkitxenon/
+
+# capture output (do not commit large binaries)
+tools/xcloud-capture/output/
+
+# editor + os
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+Thumbs.db
+
+# logs
+*.log
+logs/
