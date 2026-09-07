@@ -1,6 +1,5 @@
 #!/bin/bash
-# XCloud360 — serve app/hwtest/hwtest.elf32 (and any other ELF32 in build tree)
-# over HTTP so XeLL Reloaded can netboot it.
+# XCloud360 — serve any ELF32 over HTTP so XeLL Reloaded can netboot it.
 #
 # XeLL Reloaded supports HTTP boot: from its menu, choose "Load from network"
 # and it fetches a configured URL. Configure XeLL to point at
@@ -8,28 +7,44 @@
 # and press "boot" — it pulls, verifies, jumps to entry.
 #
 # Usage:
-#   scripts/serve-xell [PORT]         # default port 8032
+#   scripts/serve-xell                   # serve last-built hwtest (default)
+#   scripts/serve-xell <PATH-TO-ELF>     # serve specific ELF
+#   scripts/serve-xell <PATH-TO-ELF> <PORT>
 #
-# Serves the repo root as web root. Symlinks the primary artifact to
-# /xenon.elf for XeLL convention.
+# Examples:
+#   scripts/serve-xell app/h264dec/h264dec.elf32
+#   scripts/serve-xell app/rendertest2/rendertest2.elf32 8033
+#
+# Serves the repo root as web root. Symlinks selected artifact to
+# build/xenon.elf for XeLL convention.
 
 set -euo pipefail
 
-PORT="${1:-8032}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-
 cd "$ROOT"
 
-# Convention: expose default XeLL boot path.
+ELF=""
+PORT="8032"
+if [ $# -ge 1 ] && [ -f "$1" ]; then
+    ELF="$1"; shift || true
+fi
+if [ $# -ge 1 ]; then
+    PORT="$1"
+fi
+if [ -z "$ELF" ]; then
+    # legacy default: hwtest
+    if   [ -f "$ROOT/app/hwtest/hwtest.elf32" ]; then ELF="$ROOT/app/hwtest/hwtest.elf32"
+    elif [ -f "$ROOT/app/hwtest/hwtest.elf"   ]; then ELF="$ROOT/app/hwtest/hwtest.elf"
+    else
+        echo "[serve] WARN: pass an ELF path or build hwtest first" >&2
+    fi
+fi
+
 mkdir -p "$ROOT/build"
-if [ -f "$ROOT/app/hwtest/hwtest.elf32" ]; then
-    ln -sf "$ROOT/app/hwtest/hwtest.elf32" "$ROOT/build/xenon.elf"
-    echo "[serve] linked build/xenon.elf → app/hwtest/hwtest.elf32"
-elif [ -f "$ROOT/app/hwtest/hwtest.elf" ]; then
-    ln -sf "$ROOT/app/hwtest/hwtest.elf" "$ROOT/build/xenon.elf"
-    echo "[serve] linked build/xenon.elf → app/hwtest/hwtest.elf"
-else
-    echo "[serve] WARN: no built artifact yet — run 'make -C app/hwtest' first" >&2
+if [ -n "$ELF" ]; then
+    ln -sfn "$ELF" "$ROOT/build/xenon.elf"
+    echo "[serve] linked build/xenon.elf → $ELF"
+    du -h "$ELF" | awk '{printf "[serve] size:  %s\n", $1}'
 fi
 
 # Resolve serving IPs for the user.

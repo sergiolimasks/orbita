@@ -1,0 +1,21 @@
+XCloud360 h264dec build metadata
+=================================
+date            : 2026-09-07T23:13:29Z
+git rev         : c3206fb
+version         : 0.1.0-h264dec
+size elf32      : 5146908 bytes (5,0M)
+entry point     : 0x801d3400
+text            : 5113110 bytes
+data            : 32880 bytes
+bss             : 1507600 bytes
+sha256          : eb2e451052b454e2...
+
+Runtime plan
+  - Decodes embedded 5s H.264 CBP 720p60 stream (2.8MB in .rodata)
+  - Pure-C libavcodec (no SIMD, no AltiVec/VMX128)
+  - Reports frames, mean ms/frame, fps, PASS/PARTIAL/FAIL
+  - PASS: >=55fps  PARTIAL: >=30fps  FAIL: <30fps
+
+Deploy
+  scripts/serve-xell app/h264dec/h264dec.elf32
+  From XeLL menu on Xbox 360: Load from network

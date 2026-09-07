@@ -1,0 +1,17 @@
+XCloud360 h264play build metadata
+==================================
+date            : 2026-09-07T23:15:21Z
+version         : 0.1.0-h264play
+size            : 5146908 bytes
+sha256          : 23da361f78132d11...
+
+Pipeline
+  H.264 stream (5s, embedded 2.8MB)
+  -> libavcodec pure-C decode
+  -> BT.601 CPU YUV->RGB (integer Q10)
+  -> console_pset present (32bpp tiled fb)
+
+Reports per second: dec_ms, cvt_ms, tot_ms, fps
+
+Deploy
+  scripts/serve-xell app/h264play/h264play.elf32

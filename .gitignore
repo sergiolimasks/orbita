@@ -42,3 +42,7 @@ Thumbs.db
 *.log
 logs/
 tools/xcloud-capture/output/
+
+# embedded stream C arrays — regenerate via app/*/Makefile embedded target
+app/h264dec/source/embedded_stream.c
+app/h264play/source/embedded_stream.c
