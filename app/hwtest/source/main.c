@@ -1,198 +1,169 @@
 /*
  * XCloud360 — P1 hardware test (hwtest)
  *
- * Prints build info, CPU/thread count, memory, monotonic timer sanity,
- * network sanity (lwIP up + DHCP lease). Writes a log to
- * <mount>/Apps/XCloud360/logs/hwtest.txt on the Xbox 360 filesystem.
+ * Boots via XeLL (raw ELF32). Brings up console, prints:
+ *   - build id / timestamp
+ *   - PPC timebase sanity (delay measurement)
+ *   - SMC sensor readings (temps / fan)
+ *   - network (lwIP + DHCP)
+ *   - controller poll (Xbox 360 pad)
  *
- * Intentionally minimal: exercises libxenon runtime, threading, filesystem,
- * timer, network. Nothing xCloud yet.
+ * All output goes to the on-screen console (HDMI). No filesystem write —
+ * XeLL runs from RAM, no reliable persistent log path at P1. User photographs
+ * the screen or captures HDMI. P2 will add FTP-based log retrieval.
  *
- * Spec §29 P1, §26 (logging), §40 (test protocol).
+ * Waits for BACK button to exit (graceful loop exit → XeLL reboot).
+ *
+ * Spec refs: §29 P1, §26 (logging), §40 (test protocol).
  */
 
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
+#include <stdlib.h>
 
 #include <xetypes.h>
-#include <debug.h>
-#include <ppc/timebase.h>
-#include <ppc/atomic.h>
-#include <xenon_soc/xenon_power.h>
-#include <xenon_smc/xenon_smc.h>
 #include <console/console.h>
 #include <xenos/xenos.h>
-#include <xenon_uart/xenon_uart.h>
+#include <xenos/xenos_videomodes.h>
+#include <xenon_soc/xenon_power.h>
+#include <xenon_smc/xenon_smc.h>
+#include <ppc/timebase.h>
 #include <network/network.h>
 #include <input/input.h>
-#include <diskio/diskio.h>
+#include <usb/usbmain.h>
+
+#include <lwip/netif.h>
+#include <lwip/ip4_addr.h>
 
 #ifndef XCLOUD360_BUILD_VERSION
 #define XCLOUD360_BUILD_VERSION "0.0.1-p1"
 #endif
 
-#ifndef XCLOUD360_BUILD_TIMESTAMP
-#define XCLOUD360_BUILD_TIMESTAMP __DATE__ " " __TIME__
-#endif
-
-static FILE *log_fp = NULL;
-
-static void log_open(const char *path) {
-    log_fp = fopen(path, "w");
+/* Read PIR (Processor ID Register) SPR to get hardware thread id (0..5). */
+static inline uint32_t read_pir(void) {
+    uint32_t pir;
+    asm volatile ("mfspr %0, 1023" : "=r" (pir));
+    return pir;
 }
 
-static void logln(const char *fmt, ...) {
-    char buf[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-
-    printf("%s\n", buf);
-    if (log_fp) {
-        fputs(buf, log_fp);
-        fputc('\n', log_fp);
-        fflush(log_fp);
-    }
-}
-
-static uint64_t tb_now(void) {
-    return mftb();
-}
-
-static double tb_to_us(uint64_t delta) {
-    /* libxenon timebase runs at PPC_TIMEBASE_FREQ ticks/sec (49.875 MHz on Xenon). */
-    extern uint64_t PPC_TIMEBASE_FREQ;
-    return (double)delta * 1000000.0 / (double)PPC_TIMEBASE_FREQ;
+/* Busy-wait for approximately N microseconds using PPC timebase. */
+static void tb_udelay(uint64_t usec) {
+    uint64_t start = mftb();
+    uint64_t ticks = usec * (PPC_TIMEBASE_FREQ / 1000000ULL);
+    while ((mftb() - start) < ticks) { /* spin */ }
 }
 
 int main(void) {
-    /* libxenon boilerplate: bring up video console. */
+    /* Bring up video console. VIDEO_MODE_AUTO lets libxenon pick best output. */
     xenos_init(VIDEO_MODE_AUTO);
     console_init();
     xenon_make_it_faster(XENON_SPEED_FULL);
 
-    logln("========================================");
-    logln("XCloud360 hardware test (P1)");
-    logln("build:    %s", XCLOUD360_BUILD_VERSION);
-    logln("built:    %s", XCLOUD360_BUILD_TIMESTAMP);
-    logln("========================================");
+    printf("========================================\n");
+    printf(" XCloud360 hardware test (P1)\n");
+    printf(" build:    %s\n", XCLOUD360_BUILD_VERSION);
+    printf(" built:    %s %s\n", __DATE__, __TIME__);
+    printf("========================================\n");
 
-    /* Filesystem: mount all disks and try to open log on Hdd. */
-    xenon_ata_init();
-    dvdrom_init();
-    usb_init();
-    usb_do_poll();
-    for (int r = 0; r < 5; r++) {
-        struct mountpoint_t *mp = NULL;
-        int n = mount_all_devices();
-        logln("[FS] mount attempt %d: %d device(s)", r + 1, n);
-        if (n > 0) break;
-        udelay(500 * 1000);
-    }
+    /* CPU / threads. */
+    uint32_t pir = read_pir();
+    printf("[CPU] xenon PPC64 BE, 3 cores / 6 hw threads\n");
+    printf("[CPU] main thread PIR=%u (hw_thread=%u, core=%u)\n",
+           pir, pir & 0x1, (pir >> 1) & 0x3);
+    printf("[CPU] PPC_TIMEBASE_FREQ=%llu Hz\n",
+           (unsigned long long)PPC_TIMEBASE_FREQ);
 
-    /* Prefer HDD, fall back to USB. */
-    const char *log_candidates[] = {
-        "uda:/Apps/XCloud360/logs/hwtest.txt",
-        "usb:/Apps/XCloud360/logs/hwtest.txt",
-        "sda:/Apps/XCloud360/logs/hwtest.txt",
-        NULL
-    };
-    for (int i = 0; log_candidates[i]; i++) {
-        log_open(log_candidates[i]);
-        if (log_fp) {
-            logln("[FS] log opened at %s", log_candidates[i]);
+    /* Timer sanity: measure ~100 ms busy-wait using mftb. */
+    uint64_t t0 = mftb();
+    tb_udelay(100 * 1000);
+    uint64_t t1 = mftb();
+    unsigned long measured_us = tb_diff_usec(t1, t0);
+    int timer_ok = (measured_us >= 95000 && measured_us <= 110000);
+    printf("[TIMER] busy-wait(100ms) measured=%lu us  (expect ~100000) %s\n",
+           measured_us, timer_ok ? "PASS" : "FAIL");
+
+    /* SMC sensors. Format: 4x uint16_t. Empirically CPU/GPU/eDRAM/mobo temps
+     * in units of 0.25 °C (Q14.2 fixed point in the low bits per xenon_smc.c). */
+    uint16_t s[4] = {0};
+    xenon_smc_query_sensors(s);
+    printf("[SMC] sensors raw: 0x%04x 0x%04x 0x%04x 0x%04x\n",
+           s[0], s[1], s[2], s[3]);
+    printf("[SMC] approx temps CPU=%u.%02u GPU=%u.%02u eDRAM=%u.%02u MB=%u.%02u (deg C)\n",
+           s[0] >> 8, ((s[0] & 0xFF) * 100) / 256,
+           s[1] >> 8, ((s[1] & 0xFF) * 100) / 256,
+           s[2] >> 8, ((s[2] & 0xFF) * 100) / 256,
+           s[3] >> 8, ((s[3] & 0xFF) * 100) / 256);
+
+    int avpack = xenon_smc_read_avpack();
+    printf("[SMC] AV pack code = 0x%02x\n", avpack);
+
+    /* Network: lwIP init + DHCP. */
+    printf("[NET] initializing lwIP...\n");
+    int net_rc = network_init();
+    printf("[NET] network_init returned %d\n", net_rc);
+
+    /* Poll for DHCP lease up to ~15 s. */
+    int have_ip = 0;
+    for (int i = 0; i < 30; i++) {
+        network_poll();
+        if (netif.ip_addr.addr != 0) {
+            have_ip = 1;
             break;
         }
+        tb_udelay(500 * 1000);
     }
-    if (!log_fp) {
-        logln("[FS] WARN: no writable log path found — screen output only");
-    }
-
-    /* CPU + threads. */
-    logln("[CPU] xenon PPC64 BE, 3 cores / 6 hardware threads");
-    unsigned int this_thread = xenon_get_logical_processor_id();
-    logln("[CPU] main thread hw_thread_id=%u", this_thread);
-
-    /* Timer sanity: measure ~100ms delay with timebase. */
-    uint64_t t0 = tb_now();
-    udelay(100 * 1000);
-    uint64_t t1 = tb_now();
-    double measured_us = tb_to_us(t1 - t0);
-    logln("[TIMER] udelay(100ms) measured=%.1f us  (expect ~100000)", measured_us);
-    int timer_ok = (measured_us > 95000.0 && measured_us < 110000.0);
-    logln("[TIMER] status: %s", timer_ok ? "PASS" : "FAIL");
-
-    /* Memory: libxenon exposes heap markers in linker script. */
-    extern char bss_start[], bss_end[], heap_begin[], heap_end[];
-    size_t bss = (size_t)(bss_end - bss_start);
-    size_t heap = (size_t)(heap_end - heap_begin);
-    logln("[MEM] bss=%zu bytes, heap=%zu bytes (~%zu MB)",
-          bss, heap, heap / (1024 * 1024));
-
-    /* SMC temps (best-effort). */
-    uint16_t cpu_c = 0, gpu_c = 0, edram_c = 0, mobo_c = 0;
-    xenon_smc_query_temps(&cpu_c, &gpu_c, &edram_c, &mobo_c);
-    logln("[SMC] temp CPU=%u.%u°C GPU=%u.%u°C eDRAM=%u.%u°C MB=%u.%u°C",
-          cpu_c >> 8, cpu_c & 0xFF,
-          gpu_c >> 8, gpu_c & 0xFF,
-          edram_c >> 8, edram_c & 0xFF,
-          mobo_c >> 8, mobo_c & 0xFF);
-
-    /* Network: bring lwIP up + DHCP. */
-    logln("[NET] initializing lwIP + DHCP...");
-    network_init();
-    unsigned int ip = 0;
-    for (int i = 0; i < 30; i++) {
-        ip = get_ip();
-        if (ip) break;
-        udelay(500 * 1000);
-    }
-    if (ip) {
-        logln("[NET] DHCP lease OK: %u.%u.%u.%u",
-              (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-              (ip >> 8) & 0xFF, ip & 0xFF);
-        logln("[NET] status: PASS");
+    if (have_ip) {
+        uint32_t ip = netif.ip_addr.addr;   /* lwIP stores network-byte-order */
+        uint32_t nm = netif.netmask.addr;
+        uint32_t gw = netif.gw.addr;
+        printf("[NET] DHCP OK  ip=%u.%u.%u.%u  nm=%u.%u.%u.%u  gw=%u.%u.%u.%u\n",
+               (ip >>  0) & 0xFF, (ip >>  8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF,
+               (nm >>  0) & 0xFF, (nm >>  8) & 0xFF, (nm >> 16) & 0xFF, (nm >> 24) & 0xFF,
+               (gw >>  0) & 0xFF, (gw >>  8) & 0xFF, (gw >> 16) & 0xFF, (gw >> 24) & 0xFF);
+        printf("[NET] status: PASS\n");
     } else {
-        logln("[NET] no DHCP lease after 15s");
-        logln("[NET] status: FAIL");
+        printf("[NET] no DHCP lease after 15s\n");
+        printf("[NET] status: FAIL (check LAN cable + router DHCP)\n");
     }
 
-    /* Controller: probe for at least one pad. */
-    logln("[INPUT] polling controllers for 3s...");
-    int pad_found = 0;
+    /* Controller: probe 4 ports for 3 s. */
+    printf("[INPUT] polling controllers for 3s (press any button)...\n");
+    int pad_seen = 0;
     for (int i = 0; i < 30; i++) {
         struct controller_data_s pad;
         for (int p = 0; p < 4; p++) {
-            if (get_controller_data(&pad, p) && pad.b) {
-                pad_found = 1;
-                logln("[INPUT] pad %d responded", p);
+            if (get_controller_data(&pad, p)) {
+                if (pad.a || pad.b || pad.x || pad.y || pad.start || pad.back
+                    || pad.up || pad.down || pad.left || pad.right
+                    || pad.lb || pad.rb || pad.lt || pad.rt) {
+                    printf("[INPUT] pad %d: A=%d B=%d X=%d Y=%d s1=(%d,%d) lt=%u rt=%u\n",
+                           p, pad.a, pad.b, pad.x, pad.y,
+                           pad.s1_x, pad.s1_y, pad.lt, pad.rt);
+                    pad_seen = 1;
+                }
             }
         }
-        if (pad_found) break;
-        udelay(100 * 1000);
+        if (pad_seen) break;
+        tb_udelay(100 * 1000);
     }
-    logln("[INPUT] status: %s (press BACK anytime to close log)", pad_found ? "PAD SEEN" : "no pad activity");
+    printf("[INPUT] status: %s\n", pad_seen ? "PASS (button seen)" : "no button pressed in 3s");
 
-    logln("========================================");
-    logln("hwtest complete. Idle loop — press BACK to exit.");
-    logln("========================================");
+    printf("========================================\n");
+    printf(" hwtest complete.\n");
+    printf(" Photograph the screen for the log.\n");
+    printf(" Press BACK to reboot to XeLL.\n");
+    printf("========================================\n");
 
-    if (log_fp) {
-        fclose(log_fp);
-        log_fp = NULL;
-    }
-
-    /* Wait for BACK. */
+    /* Idle loop — wait for BACK. */
     for (;;) {
         struct controller_data_s pad;
         for (int p = 0; p < 4; p++) {
             if (get_controller_data(&pad, p) && pad.back) {
+                printf("[main] BACK pressed. Exiting.\n");
                 return 0;
             }
         }
-        udelay(50 * 1000);
+        tb_udelay(50 * 1000);
     }
 }
