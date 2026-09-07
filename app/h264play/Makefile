@@ -63,7 +63,17 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
                    -L$(LIBXENON_LIB)
 
-.PHONY: $(BUILD) clean
+.PHONY: $(BUILD) clean embedded
+
+# Regenerate the embedded H.264 stream (gitignored). Run once after clone.
+embedded:
+	@echo "[embed] regenerating source/embedded_stream.c from GOLDEN 5s stream"
+	@cd $(CURDIR)/../../tools/xcloud-capture/output/GOLDEN-synth-720p60-baseline-5s && \
+	  { echo "// AUTO-GENERATED — regen: make embedded"; \
+	    echo "#include <stddef.h>"; echo "#include <stdint.h>"; \
+	    xxd -i stream.h264 | sed 's|unsigned char stream_h264\[\]|const uint8_t embedded_stream[]|; s|unsigned int stream_h264_len|const size_t embedded_stream_len|'; \
+	  } > $(CURDIR)/source/embedded_stream.c
+	@wc -c $(CURDIR)/source/embedded_stream.c
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
