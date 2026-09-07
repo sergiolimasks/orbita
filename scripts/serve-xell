@@ -1,0 +1,44 @@
+#!/bin/bash
+# XCloud360 — serve app/hwtest/hwtest.elf32 (and any other ELF32 in build tree)
+# over HTTP so XeLL Reloaded can netboot it.
+#
+# XeLL Reloaded supports HTTP boot: from its menu, choose "Load from network"
+# and it fetches a configured URL. Configure XeLL to point at
+#   http://<devbox-ip>:8032/xenon.elf
+# and press "boot" — it pulls, verifies, jumps to entry.
+#
+# Usage:
+#   scripts/serve-xell [PORT]         # default port 8032
+#
+# Serves the repo root as web root. Symlinks the primary artifact to
+# /xenon.elf for XeLL convention.
+
+set -euo pipefail
+
+PORT="${1:-8032}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+cd "$ROOT"
+
+# Convention: expose default XeLL boot path.
+mkdir -p "$ROOT/build"
+if [ -f "$ROOT/app/hwtest/hwtest.elf32" ]; then
+    ln -sf "$ROOT/app/hwtest/hwtest.elf32" "$ROOT/build/xenon.elf"
+    echo "[serve] linked build/xenon.elf → app/hwtest/hwtest.elf32"
+elif [ -f "$ROOT/app/hwtest/hwtest.elf" ]; then
+    ln -sf "$ROOT/app/hwtest/hwtest.elf" "$ROOT/build/xenon.elf"
+    echo "[serve] linked build/xenon.elf → app/hwtest/hwtest.elf"
+else
+    echo "[serve] WARN: no built artifact yet — run 'make -C app/hwtest' first" >&2
+fi
+
+# Resolve serving IPs for the user.
+echo "[serve] IPv4 addresses on this host:"
+ip -4 -o addr show scope global | awk '{split($4, a, "/"); print "  "$2" "a[1]}'
+
+echo "[serve] XeLL URL to configure:  http://<pick-ip-above>:$PORT/build/xenon.elf"
+echo "[serve] Ctrl+C to stop."
+echo ""
+
+# Python's stdlib http.server is enough — bind all interfaces.
+exec python3 -m http.server "$PORT" --bind 0.0.0.0 --directory "$ROOT"
