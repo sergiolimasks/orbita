@@ -1,8 +1,8 @@
 artifact:     app/hwtest/hwtest.elf32
-size:         198748 bytes (194 KiB)
-sha256:       2d662df1b21071e5cc6849cfe35fba4dfdc888c456e34a6886275554de2d7d2e
-built:        2026-09-07T15:20:22-03:00
-git commit:   e2758c7458f0cf0951d11ed0128e7862ad840106
+size:         198812 bytes (194 KiB)
+sha256:       f0049b155ca265aa5bb21e572b9f57cd1426ee955e5eaa48886e850a75f555e7
+built:        2026-09-07T15:46:42-03:00
+git commit:   ccb37884d0f95697667f2c15f32e59fd5633953d
 toolchain:    xenon-gcc (GCC) 9.2.0
 
 --- ELF header ---
@@ -16,16 +16,16 @@ toolchain:    xenon-gcc (GCC) 9.2.0
   Entry point address:               0x2500
 
 --- Program headers (LOAD segments only) ---
-  LOAD           0x000100 0x00000000 0x00000000 0x304c8 0x513194 RWE 0x100
-  GNU_EH_FRAME   0x02b324 0x0002b224 0x0002b224 0x00c44 0x00c44 R   0x4
+  LOAD           0x000100 0x00000000 0x00000000 0x30508 0x513214 RWE 0x100
+  GNU_EH_FRAME   0x02b364 0x0002b264 0x0002b264 0x00c44 0x00c44 R   0x4
 
 --- Section sizes (LOAD-relevant) ---
   [ 1] .text             PROGBITS        00000000 000100 020c48 00  AX  0   0 256
   [ 2] .data             PROGBITS        00020c48 020d48 00782c 00  WA  0   0  8
   [ 4] .sdata            PROGBITS        00028490 028590 000038 00  WA  0   0  8
-  [ 5] .rodata           PROGBITS        000284c8 0285c8 002d5c 00   A  0   0  8
-  [ 8] .bss              NOBITS          00030500 0305c8 4e2c14 00  WA  0   0 128
-  [ 9] .sbss             NOBITS          00513114 0305c8 000080 00  WA  0   0  4
+  [ 5] .rodata           PROGBITS        000284c8 0285c8 002d9c 00   A  0   0  8
+  [ 8] .bss              NOBITS          00030580 030608 4e2c14 00  WA  0   0 128
+  [ 9] .sbss             NOBITS          00513194 030608 000080 00  WA  0   0  4
 
 --- Symbol counts ---
   defined total: 0

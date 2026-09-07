@@ -23,3 +23,21 @@
 - 662 defined symbols, 0 unresolved externals — clean link.
 - Deployed to Xbox FTP: `Hdd1/Apps/XCloud360/hwtest.elf32` (198,748 bytes on-console).
 - HTTP netboot server up at `http://192.168.15.64:8032/build/xenon.elf` for XeLL Reloaded.
+
+### 2026-09-07 15:49 — P1.5 inputdiag + ADR-006 (wireless RF gap)
+
+- **Discovery**: internal RF module IS USB-connected via southbridge (per Free60
+  wiki), but libxenon usbdevs.c only lists 6 controller VID/PIDs — missing
+  `0x045e:0x0719` (Wireless Gaming Receiver) among others. **Bare-metal
+  input via internal RF is unverified until inputdiag runs on hardware.**
+- `app/inputdiag/inputdiag.elf32` — 187,444 bytes, sha256
+  `921d800c28b7d758efd26c137b78ca736ebc8ba8dddf96052b4ba764b8d61a3f`.
+  Enumerates every USB device on every OHCI bus (VID/PID/class/driver-bound),
+  cross-refs known IDs, polls get_controller_data + SMC IR for 20s, reports.
+- hwtest.elf32 rebuilt with input warning + reference to ADR-006. New sha256
+  `f0049b155ca265aa5bb21e572b9f57cd1426ee955e5eaa48886e850a75f555e7`.
+- Both artifacts deployed via FTP to `Hdd1/Apps/XCloud360/`. Available via
+  HTTP netboot at `http://192.168.15.64:8032/build/{xenon,inputdiag}.elf`.
+- ADR-006 records the code evidence, the hardware evidence (Free60 wiki),
+  what we still don't know, and the branch table on next steps based on
+  inputdiag outcome.

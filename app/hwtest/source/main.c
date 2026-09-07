@@ -127,8 +127,13 @@ int main(void) {
         printf("[NET] status: FAIL (check LAN cable + router DHCP)\n");
     }
 
-    /* Controller: probe 4 ports for 3 s. */
-    printf("[INPUT] polling controllers for 3s (press any button)...\n");
+    /* Controller: probe 4 ports for 3 s.
+     * NOTE: bare-metal libxenon only reads USB HID controllers. If your
+     * pad is wireless paired with the console's INTERNAL RF module, this
+     * will likely register nothing — see docs/adr/ADR-006-wireless-rf-input.md
+     * and run app/inputdiag to identify the missing VID/PID. */
+    printf("[INPUT] polling USB controllers for 3s (press any button)...\n");
+    printf("[INPUT] (if wireless RF-only, see inputdiag.elf32 + ADR-006)\n");
     int pad_seen = 0;
     for (int i = 0; i < 30; i++) {
         struct controller_data_s pad;
