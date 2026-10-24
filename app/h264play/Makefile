@@ -17,12 +17,18 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.1.0-h264play
+VERSION := 0.11.2-ringatomic
 
 FFMPEG_DIR := $(HOME)/ffmpeg-xenon
 
+# Opt-in latency instrumentation: `make TRACE_LATENCY=1`. Fase 0 do plano.
+ifneq ($(TRACE_LATENCY),)
+TRACE_CFLAGS := -DXCLOUD360_TRACE_LATENCY=1
+VERSION      := $(VERSION)-trace
+endif
+
 CFLAGS   := -g -O2 -Wall $(MACHDEP) $(INCLUDE) -I$(FFMPEG_DIR) \
-            -DXCLOUD360_BUILD_VERSION=\"$(VERSION)\"
+            -DXCLOUD360_BUILD_VERSION=\"$(VERSION)\" $(TRACE_CFLAGS)
 CXXFLAGS := $(CFLAGS)
 LDFLAGS  := -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map \
             -L$(FFMPEG_DIR)/libavcodec -L$(FFMPEG_DIR)/libavutil
@@ -63,7 +69,12 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
                    -L$(LIBXENON_LIB)
 
-.PHONY: $(BUILD) clean embedded
+.PHONY: $(BUILD) clean embedded all
+all: $(BUILD)
+
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 # Regenerate the embedded H.264 stream (gitignored). Run once after clone.
 embedded:
@@ -74,10 +85,6 @@ embedded:
 	    xxd -i stream.h264 | sed 's|unsigned char stream_h264\[\]|const uint8_t embedded_stream[]|; s|unsigned int stream_h264_len|const size_t embedded_stream_len|'; \
 	  } > $(CURDIR)/source/embedded_stream.c
 	@wc -c $(CURDIR)/source/embedded_stream.c
-
-$(BUILD):
-	@[ -d $@ ] || mkdir -p $@
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 clean:
 	@echo clean ...

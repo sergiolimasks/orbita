@@ -1,17 +1,28 @@
 XCloud360 h264play build metadata
 ==================================
-date            : 2026-09-07T23:15:21Z
-version         : 0.1.0-h264play
-size            : 5146908 bytes
-sha256          : 23da361f78132d11...
+date            : 2026-09-09
+version         : 0.8.0-h264play-p7.2-2core
+size            : 3555372 bytes
+sha256          : 8d8eef72009af67643431dc9f38486669abbf5d0af4f57ee0605a6a6ac6a37dc
 
-Pipeline
-  H.264 stream (5s, embedded 2.8MB)
-  -> libavcodec pure-C decode
-  -> BT.601 CPU YUV->RGB (integer Q10)
-  -> console_pset present (32bpp tiled fb)
+Pipeline (P7.2 — 2-core)
+  H.264 stream (TCP length-prefix live OR embedded fallback)
+  -> libavcodec pure-C decode (main thread, core 0)
+  -> memcpy planes -> ring slot -> ready=1 (release barrier eieio+sync)
+  -> WORKER (thread 2, core 1 primary)
+     acquire barrier (lwsync) -> BT.601 YUV->RGB -> direct-FB tiled write
 
-Reports per second: dec_ms, cvt_ms, tot_ms, fps
+Report line: [play] t+Ns dec=X prod=X w_cvt=X fps=X w_frames=N ring=NB
+  dec     = libavcodec decode time / frame (main)
+  prod    = memcpy + backpressure wait / frame (main)
+  w_cvt   = worker YUV->RGB conversion time / frame (cumulative avg)
+  w_frames= total frames converted by worker so far
+  ring    = TCP ring buffer bytes pending (backpressure indicator)
+
+Speedup hypothesis vs v0.7.0 inline:
+  v0.7.0: dec + cvt sequential -> tot ≈ dec + cvt
+  v0.8.0: dec || w_cvt in parallel -> tot ≈ max(dec + prod, w_cvt)
+  Expected fps improvement: 1.5-1.8x if dec ≈ cvt (typical case)
 
 Deploy
   scripts/serve-xell app/h264play/h264play.elf32

@@ -1,0 +1,15 @@
+{
+  "audio_bytes": 0,
+  "audio_frames": 0,
+  "capture_seconds": 3600,
+  "endpoint_host": "https://brs.core.gssv-play-prod.xboxlive.com",
+  "final_pc_state": "closed",
+  "ice_ufrag_local_prefix": "htFw...",
+  "ice_ufrag_remote_prefix": "uI3k...",
+  "keyframe_requests": 0,
+  "offering": "xgpuweb",
+  "tier": "P720",
+  "title_id": "ASSASSINSCREEDODYSSEY",
+  "video_bytes": 1649584,
+  "video_nals": 4198
+}

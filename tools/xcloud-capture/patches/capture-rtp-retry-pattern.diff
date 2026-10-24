@@ -1,0 +1,104 @@
+diff --git a/tools/xcloud-capture/rtp/capture-rtp.cpp b/tools/xcloud-capture/rtp/capture-rtp.cpp
+index 2457de3..cd487d2 100644
+--- a/tools/xcloud-capture/rtp/capture-rtp.cpp
++++ b/tools/xcloud-capture/rtp/capture-rtp.cpp
+@@ -233,10 +233,19 @@ int main(int argc, char** argv) {
+     // path is dead server-side. Green-NX documents this: "a session can
+     // come up with a dead media path (ICE connects, DTLS never answers)
+     // -- a fresh session re-rolls that server-side fault."
+-    // Diagnosed via instrumented libpeer: our ClientHello leaves, 0
+-    // non-STUN packets ever arrive. Fix = teardown, request a new session.
+-    const int MAX_SESSION_ATTEMPTS = 5;
+-    const int DTLS_WAIT_SECS       = 20;   // ICE→DTLS handshake budget
++    //
++    // Green-NX v1.0.30 pattern (adapted from engine.cpp worker()):
++    //   max_transport_retries = 2 (cloud) / 8 (home)
++    //   dead_media_timeout_ms = 12000 (ICE up + DTLS silent = dead)
++    //   retry_cooldown_ms = 3000 (cloud) / 5000 (home) — deixa xCloud
++    //     liberar o slot server-side antes de pedir sessao nova, senao a
++    //     nova request queue em "waiting for resources".
++    //
++    // 5+ attempts vira contra-produtivo: xCloud tem session cap por conta
++    // e cada allocacao a mais so' aumenta a chance de bater o limit. 2 e'
++    // o sweet spot medido pela comunidade Green-NX/Greenlight/LIGH-IS-GREEN.
++    const int MAX_SESSION_ATTEMPTS = 2;
++    const int DTLS_WAIT_SECS       = 12;   // dead-media window (green-nx)
+     PeerConnection* pc = nullptr;
+     gnx::GssvSession* session_ptr = nullptr;
+     std::atomic<bool> stop_flag{false};
+@@ -480,14 +489,41 @@ int main(int argc, char** argv) {
+ 
+         // ---- wait for DTLS to actually complete (state COMPLETED, not
+         //      just CONNECTED which is ICE-only). ------------------------
+-        auto dtls_deadline = std::chrono::steady_clock::now()
+-                           + std::chrono::seconds(DTLS_WAIT_SECS);
+-        while (std::chrono::steady_clock::now() < dtls_deadline) {
++        // Green-NX dead-media detection: mede tempo a partir do momento em
++        // que ICE chega em CONNECTED/COMPLETED. Se apos DTLS_WAIT_SECS o
++        // pc_state ainda nao virou COMPLETED, e' dead-media path (ICE up
++        // mas DTLS/SCTP nunca responderam). Distinto de FAILED cru (que
++        // vira imediatamente sem esperar).
++        std::chrono::steady_clock::time_point ice_connected_at{};
++        auto hard_deadline = std::chrono::steady_clock::now()
++                           + std::chrono::seconds(DTLS_WAIT_SECS + 5);
++        bool dead_media = false;
++        while (std::chrono::steady_clock::now() < hard_deadline) {
+             auto st = g_ctx.pc_state.load();
+             if (st == PEER_CONNECTION_COMPLETED) break;
+             if (st == PEER_CONNECTION_FAILED
+                 || st == PEER_CONNECTION_DISCONNECTED
+                 || st == PEER_CONNECTION_CLOSED) break;
++
++            // Marca o instante que ICE conectou pela primeira vez.
++            if (ice_connected_at.time_since_epoch().count() == 0
++                && (st == PEER_CONNECTION_CONNECTED
++                    || st == PEER_CONNECTION_COMPLETED)) {
++                ice_connected_at = std::chrono::steady_clock::now();
++                std::printf("[cap] ICE connected — starting %ds DTLS window\n",
++                            DTLS_WAIT_SECS);
++            }
++
++            // Dead-media: ICE up ha' DTLS_WAIT_SECS + DTLS ainda nao COMPLETED.
++            if (ice_connected_at.time_since_epoch().count() != 0) {
++                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
++                    std::chrono::steady_clock::now() - ice_connected_at).count();
++                if (elapsed > DTLS_WAIT_SECS && st != PEER_CONNECTION_COMPLETED) {
++                    dead_media = true;
++                    break;
++                }
++            }
++
+             std::this_thread::sleep_for(std::chrono::milliseconds(250));
+         }
+         auto st_final = g_ctx.pc_state.load();
+@@ -497,11 +533,26 @@ int main(int argc, char** argv) {
+             session_ok = true;
+             break;
+         }
+-        std::fprintf(stderr, "[cap] session %d dead media (state=%s, DTLS never completed within %ds)\n",
+-                     attempt, peer_connection_state_to_string(st_final), DTLS_WAIT_SECS);
++        if (dead_media) {
++            std::fprintf(stderr,
++                "[cap] session %d DEAD MEDIA (ICE up but DTLS/SCTP silent for %ds) "
++                "-- server-side fault, retrying with fresh session\n",
++                attempt, DTLS_WAIT_SECS);
++        } else {
++            std::fprintf(stderr,
++                "[cap] session %d failed (state=%s) -- unusual, retrying anyway\n",
++                attempt, peer_connection_state_to_string(st_final));
++        }
+         teardown_attempt(true);
+-        // brief pause to let xCloud release the slot before requesting a new one
+-        std::this_thread::sleep_for(std::chrono::seconds(3));
++        if (attempt < MAX_SESSION_ATTEMPTS) {
++            // Cooldown 3s pra xCloud liberar o slot da conta server-side.
++            // Sem isso, a nova session request queue em "waiting for
++            // resources" e a segunda tentativa tambem falha por rate.
++            std::printf("[cap] cooldown 3s before next attempt...\n");
++            for (int i = 0; i < 30; ++i) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(100));
++            }
++        }
+     }
+ 
+     if (!session_ok) {

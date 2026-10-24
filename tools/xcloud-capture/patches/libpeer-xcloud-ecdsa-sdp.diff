@@ -1,0 +1,305 @@
+diff --git a/src/config.h b/src/config.h
+index 94905a8..1c0bde9 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -1,8 +1,13 @@
+ #ifndef CONFIG_H_
+ #define CONFIG_H_
+ 
+-// uncomment this if you want to handshake with a aiortc
+-// #define CONFIG_DTLS_USE_ECDSA 1
++// XCLOUD360 PATCH: force ECDSA cert. xCloud/aiortc/Chrome-moderno rejeitam
++// RSA silenciosamente (server-side WebRTC moderno migrou pra ECDSA desde
++// 2019+). mbedtls do libpeer JÁ suporta (MBEDTLS_ECDSA_C + MBEDTLS_ECP_C +
++// SECP256R1_ENABLED estao habilitados no third_party/mbedtls/include/mbedtls/
++// mbedtls_config.h) — so precisa deste define para ativar gate em
++// src/dtls_srtp.c linhas 90-95.
++#define CONFIG_DTLS_USE_ECDSA 1
+ 
+ #define SCTP_MTU (1200)
+ #define CONFIG_MTU (1300)
+@@ -58,7 +63,10 @@
+ #endif
+ 
+ #ifndef CONFIG_MAX_NALU_SIZE
+-#define CONFIG_MAX_NALU_SIZE (10 * 1024)  // 10KB
++// XCLOUD360 PATCH: H.264 keyframe 1080p pode passar de 500KB. Default 10KB
++// truncava keyframes → decoder nunca conseguia sincronizar. 2MB e' folga
++// segura pra qualquer resolucao ate 4K.
++#define CONFIG_MAX_NALU_SIZE (2 * 1024 * 1024)  // 2MB
+ #endif
+ 
+ #define CONFIG_IPV6 0
+diff --git a/src/dtls_srtp.c b/src/dtls_srtp.c
+index dd54616..ec58526 100644
+--- a/src/dtls_srtp.c
++++ b/src/dtls_srtp.c
+@@ -213,8 +213,18 @@ int dtls_srtp_init(DtlsSrtp* dtls_srtp, DtlsSrtpRole role, void* user_data) {
+ 
+   mbedtls_ssl_conf_cert_req_ca_list(&dtls_srtp->conf, MBEDTLS_SSL_CERT_REQ_CA_LIST_DISABLED);
+ 
++  // XCLOUD360 PATCH (from Green-NX): retransmit lost handshake flights 1/2/4s.
++  // Without this, mbedtls uses defaults that don't retransmit in WebRTC rhythm
++  // and any lost ClientHello/ServerHello silently kills the handshake. Must
++  // come after ssl_config_defaults or the preset would overwrite it.
++  mbedtls_ssl_conf_handshake_timeout(&dtls_srtp->conf, 1000, 4000);
++
+   mbedtls_ssl_setup(&dtls_srtp->ssl, &dtls_srtp->conf);
+ 
++  // XCLOUD360 PATCH (from Green-NX): keep DTLS records under common path MTUs
++  // (PPPoE, CGNAT tunnels). 1200 matches what browsers assume for WebRTC.
++  mbedtls_ssl_set_mtu(&dtls_srtp->ssl, 1200);
++
+   return 0;
+ }
+ 
+@@ -381,9 +391,19 @@ static int dtls_srtp_do_handshake(DtlsSrtp* dtls_srtp) {
+ 
+   mbedtls_ssl_set_bio(&dtls_srtp->ssl, dtls_srtp, dtls_srtp->udp_send, dtls_srtp->udp_recv, NULL);
+ 
++  // XCLOUD360 PATCH (from Green-NX): event-driven handshake. The bio recv
++  // callback returns WANT_READ instead of blocking so THIS loop gives the
++  // retransmission timer a chance to fire. Spin cap is a backstop.
++  int spins = 0;
+   do {
+     ret = mbedtls_ssl_handshake(&dtls_srtp->ssl);
+-
++    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
++      if (++spins > 15000) {
++        ret = MBEDTLS_ERR_SSL_TIMEOUT;
++        break;
++      }
++      usleep(1000);
++    }
+   } while (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE);
+ 
+   return ret;
+@@ -422,6 +442,11 @@ static int dtls_srtp_handshake_server(DtlsSrtp* dtls_srtp) {
+ static int dtls_srtp_handshake_client(DtlsSrtp* dtls_srtp) {
+   int ret;
+ 
++  // XCLOUD360 PATCH (from Green-NX): reset ssl context before handshake.
++  // A failed prior attempt leaves ssl mid-handshake; mbedtls docs require
++  // reset before reuse. Safe on a fresh context too — do unconditionally.
++  mbedtls_ssl_session_reset(&dtls_srtp->ssl);
++
+   ret = dtls_srtp_do_handshake(dtls_srtp);
+   if (ret != 0) {
+     LOGE("failed! mbedtls_ssl_handshake returned -0x%.4x\n\n", (unsigned int)-ret);
+@@ -485,16 +510,14 @@ int dtls_srtp_write(DtlsSrtp* dtls_srtp, const unsigned char* buf, size_t len) {
+ }
+ 
+ int dtls_srtp_read(DtlsSrtp* dtls_srtp, unsigned char* buf, size_t len) {
+-  int ret;
+-
++  // XCLOUD360 PATCH (from Green-NX): ZERO retry loop. mbedtls chama nosso
++  // recv (peer_connection_dtls_srtp_recv) que serve 1 datagrama de cada
++  // vez; WANT_READ significa "sem app data neste record" (pode ser
++  // CCS/Alert/handshake control), NAO e' erro. O loop upstream congelava
++  // o worker segurando o peer lock, porque mbedtls pedia mais data
++  // enquanto o pump loop lah fora nao podia rodar.
+   memset(buf, 0, len);
+-
+-  do {
+-    ret = mbedtls_ssl_read(&dtls_srtp->ssl, buf, len);
+-
+-  } while (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE);
+-
+-  return ret;
++  return mbedtls_ssl_read(&dtls_srtp->ssl, buf, len);
+ }
+ 
+ int dtls_srtp_probe(uint8_t* buf) {
+diff --git a/src/peer_connection.c b/src/peer_connection.c
+index c763e80..a72e152 100644
+--- a/src/peer_connection.c
++++ b/src/peer_connection.c
+@@ -53,34 +53,37 @@ static void peer_connection_outgoing_rtp_packet(uint8_t* data, size_t size, void
+   agent_send(&pc->agent, data, size);
+ }
+ 
++// XCLOUD360 PATCH: replaced with Green-NX's event-driven bio callback.
++// Root cause: upstream loop returned -1 on empty read, which mbedtls interprets
++// as connection-close (-0x7280 MBEDTLS_ERR_SSL_CONN_EOF) and aborts handshake.
++// Also gated on PEER_CONNECTION_CONNECTED, but mbedtls flips state to CONNECTED
++// mid-handshake (during key derivation) — the server's final CCS+Finished then
++// went unread and every handshake died. Fix: return WANT_READ instead of -1/0,
++// gate on COMPLETED (bring-up finished) not CONNECTED, and consume agent_ret
++// exactly once (leaving it set re-served same datagram forever, wedging app).
+ static int peer_connection_dtls_srtp_recv(void* ctx, unsigned char* buf, size_t len) {
+-  int recv_max = 0;
+   int ret = -1;
+   DtlsSrtp* dtls_srtp = (DtlsSrtp*)ctx;
+   PeerConnection* pc = (PeerConnection*)dtls_srtp->user_data;
+ 
+-  if (pc->agent_ret > 0 && pc->agent_ret <= len) {
+-    memcpy(buf, pc->agent_buf, pc->agent_ret);
+-    return pc->agent_ret;
++  if (pc->agent_ret > 0 && (size_t)pc->agent_ret <= len) {
++    ret = pc->agent_ret;
++    pc->agent_ret = -1;
++    memcpy(buf, pc->agent_buf, ret);
++    return ret;
+   }
+ 
+-  while (recv_max < CONFIG_TLS_READ_TIMEOUT && pc->state == PEER_CONNECTION_CONNECTED) {
++  if (pc->state != PEER_CONNECTION_COMPLETED) {
+     ret = agent_recv(&pc->agent, buf, len);
+-
+-    if (ret > 0) {
+-      break;
+-    }
+-
+-    recv_max++;
++    return ret > 0 ? ret : MBEDTLS_ERR_SSL_WANT_READ;
+   }
+-  return ret;
++
++  return MBEDTLS_ERR_SSL_WANT_READ;
+ }
+ 
+ static int peer_connection_dtls_srtp_send(void* ctx, const uint8_t* buf, size_t len) {
+   DtlsSrtp* dtls_srtp = (DtlsSrtp*)ctx;
+   PeerConnection* pc = (PeerConnection*)dtls_srtp->user_data;
+-
+-  // LOGD("send %.4x %.4x, %ld", *(uint16_t*)buf, *(uint16_t*)(buf + 2), len);
+   return agent_send(&pc->agent, buf, len);
+ }
+ 
+@@ -415,6 +418,22 @@ void peer_connection_set_remote_description(PeerConnection* pc, const char* sdp,
+     return;
+   }
+ 
++  // XCLOUD360 PATCH: apply the DTLS role parsed from the remote SDP.
++  fprintf(stderr, "[XCLOUD360-PATCH] set_remote_description: parsed role=%d, current dtls_srtp.role=%d (SERVER=%d, CLIENT=%d)\n",
++          (int)role, (int)pc->dtls_srtp.role,
++          (int)DTLS_SRTP_ROLE_SERVER, (int)DTLS_SRTP_ROLE_CLIENT);
++  if (role != pc->dtls_srtp.role) {
++    fprintf(stderr, "[XCLOUD360-PATCH] SWITCHING dtls_srtp role %d -> %d\n",
++            (int)pc->dtls_srtp.role, (int)role);
++    dtls_srtp_reset_session(&pc->dtls_srtp);
++    dtls_srtp_init(&pc->dtls_srtp, role, pc);
++    pc->dtls_srtp.udp_recv = peer_connection_dtls_srtp_recv;
++    pc->dtls_srtp.udp_send = peer_connection_dtls_srtp_send;
++    fprintf(stderr, "[XCLOUD360-PATCH] after re-init dtls_srtp.role=%d\n", (int)pc->dtls_srtp.role);
++  } else {
++    fprintf(stderr, "[XCLOUD360-PATCH] role already matches, NOT re-initing\n");
++  }
++
+   agent_set_remote_description(&pc->agent, (char*)sdp);
+   if (type == SDP_TYPE_ANSWER) {
+     agent_update_candidate_pairs(&pc->agent);
+@@ -432,7 +451,14 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
+ 
+   switch (sdp_type) {
+     case SDP_TYPE_OFFER:
+-      role = DTLS_SRTP_ROLE_SERVER;
++      // XCLOUD360 PATCH (from Green-NX): DTLS role deve ser CLIENT quando
++      // somos o offerer. xCloud (e qualquer WebRTC server que responde
++      // a=setup:passive) espera que o offerer seja o DTLS CLIENT. Se ambos
++      // assumem ROLE_SERVER (o default upstream), AMBOS aguardam
++      // ClientHello e o handshake NUNCA comeca — sintoma exato do dead-
++      // media path. A linha do SDP e' reescrita pra "actpass" na aplicacao
++      // (capture-rtp.cpp), mas o role interno tem que estar como CLIENT.
++      role = DTLS_SRTP_ROLE_CLIENT;
+       agent_clear_candidates(&pc->agent);
+       pc->agent.mode = AGENT_MODE_CONTROLLING;
+       break;
+diff --git a/src/sdp.c b/src/sdp.c
+index b7661a4..3a90259 100644
+--- a/src/sdp.c
++++ b/src/sdp.c
+@@ -27,16 +27,29 @@ void sdp_reset(char* sdp) {
+ }
+ 
+ void sdp_append_h264(char* sdp) {
+-  sdp_append(sdp, "m=video 9 UDP/TLS/RTP/SAVPF 96");
++  // XCLOUD360 PATCH (from Green-NX v1.0.30): mirror EXATO do offer que o
++  // native xCloud (Android app) emite. xCloud pattern-matches o m-line do
++  // offer contra templates por device — offers half-matching sao rejeitados
++  // ("m=video 0") ou caem num "minimal-capability fallback" cujo encoder
++  // e' pinado em single-NALU a ~150 kbps (starvation bitrate: DTLS pode
++  // nem terminar direito). Precisa PT 102 + packetization-mode + max-fs
++  // + max-mbps + rtcp-rsize + recvonly. NAO adicionar a=ssrc / a=sendrecv
++  // (o native NAO tem — sendrecv com PT que o server nao envia = template
++  // miss).
++  sdp_append(sdp, "m=video 9 UDP/TLS/RTP/SAVPF 102");
+   sdp_append(sdp, "c=IN IP4 0.0.0.0");
+-  sdp_append(sdp, "a=rtcp-fb:96 nack");
+-  sdp_append(sdp, "a=rtcp-fb:96 nack pli");
+-  sdp_append(sdp, "a=fmtp:96 profile-level-id=42e01f;level-asymmetry-allowed=1");
+-  sdp_append(sdp, "a=rtpmap:96 H264/90000");
+-  sdp_append(sdp, "a=ssrc:1 cname:webrtc-h264");
+-  sdp_append(sdp, "a=sendrecv");
+   sdp_append(sdp, "a=mid:video");
+   sdp_append(sdp, "a=rtcp-mux");
++  sdp_append(sdp, "a=rtcp-rsize");
++  sdp_append(sdp, "a=rtpmap:102 H264/90000");
++  sdp_append(sdp,
++             "a=fmtp:102 level-asymmetry-allowed=0;packetization-mode=1;"
++             "profile-level-id=42e01f;max-fs=3600;max-mbps=108000");
++  sdp_append(sdp, "a=rtcp-fb:102 goog-remb");
++  sdp_append(sdp, "a=rtcp-fb:102 ccm fir");
++  sdp_append(sdp, "a=rtcp-fb:102 nack");
++  sdp_append(sdp, "a=rtcp-fb:102 nack pli");
++  sdp_append(sdp, "a=recvonly");
+ }
+ 
+ void sdp_append_pcma(char* sdp) {
+@@ -60,13 +73,19 @@ void sdp_append_pcmu(char* sdp) {
+ }
+ 
+ void sdp_append_opus(char* sdp) {
+-  sdp_append(sdp, "m=audio 9 UDP/TLS/RTP/SAVP 111");
++  // XCLOUD360 PATCH (from Green-NX v1.0.30): SAVPF (nao SAVP), stereo fmtp,
++  // recvonly. Native xCloud emite exatamente essas 8 linhas. Sem SAVPF o
++  // server pode rejeitar (SAVPF = SRTP com feedback, requisito p/ WebRTC
++  // moderno). Sem stereo=1 o server pode force downmix. Sem recvonly ele
++  // interpreta como sendrecv e tenta abrir path bidi que nunca sai.
++  sdp_append(sdp, "m=audio 9 UDP/TLS/RTP/SAVPF 111");
+   sdp_append(sdp, "c=IN IP4 0.0.0.0");
+-  sdp_append(sdp, "a=rtpmap:111 opus/48000/2");
+-  sdp_append(sdp, "a=ssrc:6 cname:webrtc-opus");
+-  sdp_append(sdp, "a=sendrecv");
+   sdp_append(sdp, "a=mid:audio");
+   sdp_append(sdp, "a=rtcp-mux");
++  sdp_append(sdp, "a=rtcp-rsize");
++  sdp_append(sdp, "a=rtpmap:111 opus/48000/2");
++  sdp_append(sdp, "a=fmtp:111 minptime=10;useinbandfec=1;stereo=1");
++  sdp_append(sdp, "a=recvonly");
+ }
+ 
+ void sdp_append_datachannel(char* sdp) {
+diff --git a/src/socket.c b/src/socket.c
+index 6f7d8ef..f6325e5 100644
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -65,6 +65,22 @@ int udp_socket_open(UdpSocket* udp_socket, int family, int port) {
+       LOGW("reuse failed. ignore");
+     }
+ 
++    // XCLOUD360 PATCH: bump SO_RCVBUF/SO_SNDBUF pra 4MB. Default kernel Linux
++    // e' 208KB. Keyframe H.264 1080p pode chegar em burst de 500KB+; sem
++    // buffer amplo, kernel dropa datagramas silenciosamente antes de libpeer
++    // ler. Sintoma: DTLS trunca ServerHello fragmentado, handshake morre.
++    // Vale tambem pra send (rajadas de STUN + DTLS flight 2).
++    {
++      int rcvbuf = 4 * 1024 * 1024;
++      int sndbuf = 1 * 1024 * 1024;
++      if (setsockopt(udp_socket->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
++        LOGW("SO_RCVBUF 4MB failed. ignore");
++      }
++      if (setsockopt(udp_socket->fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
++        LOGW("SO_SNDBUF 1MB failed. ignore");
++      }
++    }
++
+     if ((ret = bind(udp_socket->fd, sa, sock_len)) < 0) {
+       LOGE("Failed to bind socket: %d", ret);
+       break;
+diff --git a/third_party/mbedtls b/third_party/mbedtls
+--- a/third_party/mbedtls
++++ b/third_party/mbedtls
+@@ -1 +1 @@
+-Subproject commit 1873d3bfc2da771672bd8e7e8f41f57e0af77f33
++Subproject commit 1873d3bfc2da771672bd8e7e8f41f57e0af77f33-dirty

@@ -1,0 +1,62 @@
+#!/bin/bash
+# XCloud360 — deploy all 4 test ELFs via FTP.
+# Xbox FTP quirks: no absolute paths, only sequential CD, MKD on existing
+# dir returns 550 fatal — so probe with `ls` first.
+set -euo pipefail
+
+CFG="$(dirname "$0")/../dev.local.json"
+[ -f "$CFG" ] || { echo "ERROR: $CFG missing"; exit 1; }
+read_json() { python3 -c "import json; print(json.load(open('$CFG')).get('$1', ''))"; }
+HOST="$(read_json xbox_ip)"
+USER="$(read_json ftp_user)"
+PASS="$(read_json ftp_password)"
+
+which lftp >/dev/null || { echo "ERROR: lftp not installed"; exit 1; }
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+APPS=(rendertest2 yuvsynth h264dec h264play)
+
+echo "[deploy] host: $HOST  user: $USER"
+echo "[deploy] target: Hdd1/apps/XCloud360/tests/<name>/default.elf"
+echo ""
+
+for name in "${APPS[@]}"; do
+    LOCAL="$ROOT/app/$name/${name}.elf32"
+    [ -f "$LOCAL" ] || { echo "ERROR: missing $LOCAL"; exit 2; }
+done
+
+for name in "${APPS[@]}"; do
+    LOCAL="$ROOT/app/$name/${name}.elf32"
+    echo "[deploy] $name  ($(du -h "$LOCAL" | cut -f1))"
+
+    # Xbox FTP: sequential CD, mkdir OK on missing / silent on exists via -f
+    # NOTE: lftp Xbox FTP requires HOST before -e (order matters for this
+    # server; -e HOST at end silently loses login state and every command
+    # reports "Não conectado").
+    lftp -u "$USER,$PASS" "$HOST" -e "
+set ftp:passive-mode true
+set net:timeout 20
+set xfer:clobber yes
+cd Hdd1
+cd apps
+cd XCloud360
+mkdir -f tests
+cd tests
+mkdir -f $name
+cd $name
+put $LOCAL -o default.elf
+put ${LOCAL}.meta.txt -o meta.txt
+put ${LOCAL}.sha256   -o sha256.txt
+ls
+bye
+" 2>&1 | sed 's/^/  /' | tail -8
+    echo ""
+done
+
+echo "[deploy] done. Xbox: dashboard -> HDD -> apps -> XCloud360 -> tests"
+echo ""
+echo "[deploy] recommended order:"
+echo "  1. rendertest2  — SMPTE bars (netboot sanity)"
+echo "  2. yuvsynth     — YUV synth pattern"
+echo "  3. h264dec      — decoder benchmark (texto)"
+echo "  4. h264play     — pipeline completo (imagem + stats)"

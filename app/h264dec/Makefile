@@ -63,7 +63,8 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
                    -L$(LIBXENON_LIB)
 
-.PHONY: $(BUILD) clean embedded
+.PHONY: $(BUILD) clean embedded all
+all: $(BUILD)
 
 # Regenerate the embedded H.264 stream (gitignored, ~17 MB C array from 2.8 MB
 # H.264). Run once after clone. Requires xxd.

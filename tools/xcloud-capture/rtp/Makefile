@@ -38,8 +38,8 @@ LIBS := $(LIBPEER_CORE)/libpeer.a \
 
 TARGET := capture-rtp
 
-$(TARGET): capture-rtp.cpp $(GNX_SRC)
-	$(CXX) $(CXXFLAGS) capture-rtp.cpp $(GNX_SRC) $(LIBS) -o $@
+$(TARGET): capture-rtp.cpp video_jitter.cpp $(GNX_SRC)
+	$(CXX) $(CXXFLAGS) capture-rtp.cpp video_jitter.cpp $(GNX_SRC) $(LIBS) -o $@
 
 clean:
 	rm -f $(TARGET)
