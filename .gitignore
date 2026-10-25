@@ -46,3 +46,9 @@ tools/xcloud-capture/output/
 # embedded stream C arrays — regenerate via app/*/Makefile embedded target
 app/h264dec/source/embedded_stream.c
 app/h264play/source/embedded_stream.c
+
+# test variants (local only) + python cache
+app/h264play/variants/
+__pycache__/
+*.pyc
+*.prev

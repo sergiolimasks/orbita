@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -69,6 +70,11 @@ extern "C" {
 // regardless of which header snapshot is installed under build-pc/dist/.
 int peer_connection_datachannel_send_text_sid(PeerConnection* pc, char* message, size_t len, uint16_t sid);
 int peer_connection_request_keyframe(PeerConnection* pc);
+int peer_connection_send_nack(PeerConnection* pc, uint16_t pid, uint16_t blp);
+int peer_connection_send_remb(PeerConnection* pc, uint32_t bitrate_bps);
+int peer_connection_send_receiver_report(PeerConnection* pc, uint8_t fraction_lost,
+                                         uint32_t cumulative_lost, uint32_t highest_seq_ext,
+                                         uint32_t jitter);
 }
 
 using json = nlohmann::json;
@@ -96,6 +102,66 @@ static std::string redact_secrets(std::string s) {
 
 // -------------------- global capture state ---------------------------
 
+// ------------------------- H.264 parameter-set log -------------------
+//
+// v0.15: confirma o perfil real do stream (o SDP diz 42e01f, Constrained
+// Baseline 3.1, mas isso nunca foi conferido no SPS/PPS de verdade). So
+// le; nada aqui altera o AU que vai pro Xbox.
+
+// Remove emulation-prevention bytes (00 00 03 -> 00 00) de um NAL.
+static std::vector<uint8_t> h264_nal_to_rbsp(const uint8_t* p, size_t n) {
+    std::vector<uint8_t> out;
+    out.reserve(n);
+    size_t zeros = 0;
+    for (size_t k = 0; k < n; k++) {
+        if (zeros >= 2 && p[k] == 0x03) { zeros = 0; continue; }
+        out.push_back(p[k]);
+        zeros = (p[k] == 0) ? zeros + 1 : 0;
+    }
+    return out;
+}
+
+struct H264BitReader {
+    const std::vector<uint8_t>& b;
+    size_t pos = 0;   // em bits
+    bool err = false;
+    H264BitReader(const std::vector<uint8_t>& v, size_t start_byte)
+        : b(v), pos(start_byte * 8) {}
+    unsigned bit() {
+        if (pos >= b.size() * 8) { err = true; return 0; }
+        unsigned v = (b[pos >> 3] >> (7 - (pos & 7))) & 1;
+        pos++;
+        return v;
+    }
+    uint32_t ue() {
+        int lz = 0;
+        while (!err && bit() == 0) { if (++lz > 31) { err = true; return 0; } }
+        if (err) return 0;
+        uint32_t v = 0;
+        for (int k = 0; k < lz; k++) v = (v << 1) | bit();
+        return (uint32_t)(((1ull << lz) - 1) + v);
+    }
+};
+
+// nal aponta pro byte de header do NAL (sem start code).
+static void h264_log_sps(const uint8_t* nal, size_t n) {
+    std::vector<uint8_t> r = h264_nal_to_rbsp(nal, n);
+    if (r.size() < 4) { std::printf("[h264] SPS too short (%zu bytes)\n", n); return; }
+    std::printf("[h264] SPS profile_idc=%u constraint=0x%02x level_idc=%u (%zu bytes)\n",
+                (unsigned)r[1], (unsigned)r[2], (unsigned)r[3], n);
+}
+
+static void h264_log_pps(const uint8_t* nal, size_t n) {
+    std::vector<uint8_t> r = h264_nal_to_rbsp(nal, n);
+    H264BitReader br(r, 1);   // pula o header de 1 byte
+    uint32_t pps_id = br.ue();
+    uint32_t sps_id = br.ue();
+    unsigned ecm = br.bit();
+    if (br.err) { std::printf("[h264] PPS parse error (%zu bytes)\n", n); return; }
+    std::printf("[h264] PPS entropy_coding_mode=%u (%s) pps_id=%u sps_id=%u\n",
+                ecm, ecm ? "CABAC" : "CAVLC", (unsigned)pps_id, (unsigned)sps_id);
+}
+
 // ------------------------- TCP-out server ----------------------------
 //
 // Emits Annex-B H.264 AUs on a length-prefix wire ([uint32_be size][AU])
@@ -105,8 +171,28 @@ static std::string redact_secrets(std::string s) {
 //
 // This lives in-process because otherwise capture-rtp would have to fork+pipe
 // which loses the ability to detect back-pressure and re-request keyframes.
+//
+// Fase 1 (latência): push_au() roda na thread do peer_connection_loop e NUNCA
+// pode bloquear. Antes fazia send() bloqueante (SO_SNDTIMEO 10s) ali dentro:
+// quando o Xbox parava de drenar, a thread que lê o RTP travava, o kernel
+// descartava UDP do xCloud e o jitter buffer virava tempestade de IDR.
+// Agora push_au só enfileira; uma sender thread faz o send(). Fila curta
+// (kMaxQueuedAU) + idade máxima (kMaxAgeMs): se estourar, descarta tudo e
+// segue descartando até o próximo IDR (nunca manda P-frame órfão pro Xbox)
+// e dispara on_congestion pra pedir keyframe. Latência fica limitada em vez
+// de crescer até o ring do Xbox encher.
 class TcpOutServer {
  public:
+    static constexpr size_t   kMaxQueuedAU = 3;
+    static constexpr uint64_t kMaxAgeMs    = 150;
+    // Tolerância pós-IDR: um IDR tem dezenas a centenas de KB e leva várias
+    // janelas TCP do Xbox (~32KB) pra passar; os P-frames logo atrás dele
+    // estouravam os 150ms, disparavam outra congestão → outro IDR → ciclo de
+    // ~1s (o throttle de keyframe). Nesse intervalo os limites são frouxos.
+    static constexpr uint64_t kIdrGraceMs        = 400;
+    static constexpr size_t   kMaxQueuedAUGrace  = 12;
+    static constexpr uint64_t kMaxAgeMsGrace     = 500;
+
     explicit TcpOutServer(int port) : port_(port) {}
     ~TcpOutServer() { stop(); }
 
@@ -127,129 +213,173 @@ class TcpOutServer {
         }
         stop_.store(false);
         accept_thread_ = std::thread([this]{ accept_loop(); });
-        std::printf("[tcp] listening on 0.0.0.0:%d (length-prefix Annex-B AU)\n", port_);
+        sender_thread_ = std::thread([this]{ sender_loop(); });
+        std::printf("[tcp] listening on 0.0.0.0:%d (length-prefix Annex-B AU, queue<=%zu age<=%llums)\n",
+                    port_, kMaxQueuedAU, (unsigned long long)kMaxAgeMs);
         return true;
     }
 
     void stop() {
         stop_.store(true);
+        q_cv_.notify_all();
         if (listen_fd_ >= 0) { ::shutdown(listen_fd_, SHUT_RDWR); ::close(listen_fd_); listen_fd_ = -1; }
-        if (client_fd_ >= 0) { ::shutdown(client_fd_, SHUT_RDWR); ::close(client_fd_); client_fd_ = -1; }
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (client_fd_ >= 0) { ::shutdown(client_fd_, SHUT_RDWR); ::close(client_fd_); client_fd_ = -1; }
+        }
         if (accept_thread_.joinable()) accept_thread_.join();
+        if (sender_thread_.joinable()) sender_thread_.join();
     }
 
-    // Ship a complete Annex-B AU on the length-prefix wire. Caches SPS/PPS
+    // Queue a complete Annex-B AU for the current client. Caches SPS/PPS
     // seen inside the AU so a fresh client that missed the last IDR gets
     // them prepended to the next IDR AU. Gates output on IDR — first frame
     // sent to every new client must be IDR + SPS + PPS (else Xbox decoder
-    // shows garbage until next IDR ~5s later).
+    // shows garbage until next IDR ~5s later). Never blocks.
     void push_au(const uint8_t* au_data, size_t au_size) {
         if (au_size == 0) return;
 
-        // Scan AU for NAL types + cache SPS/PPS as we go.
+        // Scan AU for NAL types + cache SPS/PPS as we go. Accepts both 3-byte
+        // (00 00 01) and 4-byte start codes — x264 output mixes them, and a
+        // missed IDR here would stall the client in wait_idr_ forever.
         bool has_idr = false;
         bool has_sps = false, has_pps = false;
+        bool has_slice = false, any_ref_slice = false;
+        auto is_sc3 = [&](size_t p) {
+            return p + 3 <= au_size && au_data[p] == 0 && au_data[p+1] == 0 && au_data[p+2] == 1;
+        };
         size_t i = 0;
-        while (i + 4 <= au_size) {
-            if (au_data[i] == 0 && au_data[i+1] == 0 && au_data[i+2] == 0 && au_data[i+3] == 1) {
-                if (i + 4 >= au_size) break;
-                size_t nal_start = i + 4;
+        while (i + 3 <= au_size) {
+            if (is_sc3(i)) {
+                if (i + 3 >= au_size) break;
+                size_t nal_start = i + 3;
                 size_t nal_end = nal_start;
-                while (nal_end + 4 <= au_size) {
-                    if (au_data[nal_end] == 0 && au_data[nal_end+1] == 0
-                        && au_data[nal_end+2] == 0 && au_data[nal_end+3] == 1)
-                        break;
-                    nal_end++;
-                }
-                if (nal_end + 4 > au_size) nal_end = au_size;
+                while (nal_end + 3 <= au_size && !is_sc3(nal_end)) nal_end++;
+                if (nal_end + 3 > au_size) nal_end = au_size;
+                size_t next = nal_end;
+                // Leading zero of a following 4-byte start code isn't payload.
+                while (nal_end > nal_start && nal_end < au_size && au_data[nal_end - 1] == 0)
+                    nal_end--;
                 uint8_t nal_type = au_data[nal_start] & 0x1f;
                 if (nal_type == 7) {
                     sps_.assign(au_data + nal_start, au_data + nal_end);
                     has_sps = true;
+                    // 1a vez por conexao (flag armada no accept_loop).
+                    if (log_sps_pending_.exchange(false))
+                        h264_log_sps(au_data + nal_start, nal_end - nal_start);
                 } else if (nal_type == 8) {
                     pps_.assign(au_data + nal_start, au_data + nal_end);
                     has_pps = true;
+                    if (log_pps_pending_.exchange(false))
+                        h264_log_pps(au_data + nal_start, nal_end - nal_start);
                 } else if (nal_type == 5) {
                     has_idr = true;
                 }
-                i = nal_end;
+                if (nal_type == 1 || nal_type == 5) {
+                    has_slice = true;
+                    if (au_data[nal_start] & 0x60) any_ref_slice = true;  // nal_ref_idc
+                }
+                i = next;
             } else {
                 i++;
             }
         }
 
-        if (has_idr) has_seen_idr_.store(true);
+        // Frame não-referência (nal_ref_idc == 0 em todos os slices): nenhum
+        // outro frame depende dele, então dá pra descartar sem quebrar a
+        // imagem. xCloud ignora supportsFps=30 e manda 60; com --drop-nonref
+        // o Xbox recebe só os frames de referência.
+        bool nonref = has_slice && !any_ref_slice;
+        if (nonref) nonref_seen_++;
 
-        int fd;
         {
             std::lock_guard<std::mutex> lk(mu_);
-            fd = client_fd_;
+            if (client_fd_ < 0) return;
         }
-        if (fd < 0) return;
-        if (!has_seen_idr_.load()) return;  // Skip until first IDR.
+        if (nonref && drop_nonref_) { nonref_dropped_++; return; }
 
-        // If this AU is an IDR but is missing SPS/PPS (xCloud often ships
-        // them in separate AUs), prepend the cached ones so a mid-stream
-        // connect can start decoding immediately.
-        std::vector<uint8_t> out;
-        out.reserve(au_size + 64);
-        if (has_idr && !has_sps && !sps_.empty()) {
-            static const uint8_t sc[4] = {0x00, 0x00, 0x00, 0x01};
-            out.insert(out.end(), sc, sc + 4);
-            out.insert(out.end(), sps_.begin(), sps_.end());
-        }
-        if (has_idr && !has_pps && !pps_.empty()) {
-            static const uint8_t sc[4] = {0x00, 0x00, 0x00, 0x01};
-            out.insert(out.end(), sc, sc + 4);
-            out.insert(out.end(), pps_.begin(), pps_.end());
-        }
-        out.insert(out.end(), au_data, au_data + au_size);
-
-        uint32_t size_be = htonl((uint32_t)out.size());
-        // Sync write. Socket is blocking with SO_SNDTIMEO=10s (set in
-        // accept_loop). Short writes are handled by looping; EINTR is
-        // retried; only genuine errors (EAGAIN=timeout, ECONNRESET, EPIPE)
-        // close the client.
+        bool congested = false;
         {
-            const uint8_t* hbuf = reinterpret_cast<const uint8_t*>(&size_be);
-            ssize_t hsent = 0;
-            while (hsent < 4) {
-                ssize_t w = ::send(fd, hbuf + hsent, 4 - hsent, MSG_NOSIGNAL);
-                if (w < 0 && errno == EINTR) continue;
-                if (w <= 0) {
-                    std::fprintf(stderr, "[tcp] header send failed at %zd/4 errno=%d (%s) — closing client\n",
-                                 hsent, errno, std::strerror(errno));
-                    close_client_locked();
-                    return;
+            std::lock_guard<std::mutex> lk(q_mu_);
+            auto now = std::chrono::steady_clock::now();
+            if (has_idr) {
+                // IDR zera as referências: o que ainda está na fila só
+                // adicionaria latência, então joga fora e recomeça daqui.
+                dropped_ += queue_.size();
+                queue_.clear();
+                wait_idr_ = false;
+                grace_until_ = now + std::chrono::milliseconds(kIdrGraceMs);
+            } else if (wait_idr_) {
+                dropped_++;
+                return;
+            } else if (queue_.size() >= (now < grace_until_ ? kMaxQueuedAUGrace
+                                                             : kMaxQueuedAU)) {
+                dropped_ += queue_.size() + 1;
+                queue_.clear();
+                wait_idr_ = true;
+                congested = true;
+                congest_queue_++;
+            }
+            if (!congested) {
+                QueuedAU q;
+                q.idr = has_idr;
+                q.t_enq = std::chrono::steady_clock::now();
+                q.bytes.reserve(au_size + 4 + 64);
+                q.bytes.resize(4);
+                static const uint8_t sc[4] = {0x00, 0x00, 0x00, 0x01};
+                if (has_idr && !has_sps && !sps_.empty()) {
+                    q.bytes.insert(q.bytes.end(), sc, sc + 4);
+                    q.bytes.insert(q.bytes.end(), sps_.begin(), sps_.end());
                 }
-                hsent += w;
+                if (has_idr && !has_pps && !pps_.empty()) {
+                    q.bytes.insert(q.bytes.end(), sc, sc + 4);
+                    q.bytes.insert(q.bytes.end(), pps_.begin(), pps_.end());
+                }
+                q.bytes.insert(q.bytes.end(), au_data, au_data + au_size);
+                uint32_t size_be = htonl((uint32_t)(q.bytes.size() - 4));
+                std::memcpy(q.bytes.data(), &size_be, 4);
+                queue_.push_back(std::move(q));
             }
         }
-        ssize_t sent = 0;
-        while (sent < (ssize_t)out.size()) {
-            ssize_t w = ::send(fd, out.data() + sent, out.size() - sent, MSG_NOSIGNAL);
-            if (w < 0 && errno == EINTR) continue;
-            if (w <= 0) {
-                std::fprintf(stderr, "[tcp] body send failed at %zd/%zu errno=%d (%s) — closing client\n",
-                             sent, out.size(), errno, std::strerror(errno));
-                close_client_locked();
-                return;
-            }
-            sent += w;
+        if (congested) {
+            congestion_events_++;
+            if (on_congestion_) on_congestion_();
+        } else {
+            q_cv_.notify_one();
         }
     }
 
- public:
-    // Signals accept_loop that a new client connected; process resets the
-    // IDR flag so the next IDR AU triggers stream start for the new client.
-    // Optional callback fires when a fresh client attaches so caller can
-    // request an out-of-band keyframe via RTCP PLI + xcloud message.
+    // Callbacks fire on the accept / pc-loop / sender threads; they must only
+    // set flags, never touch the PeerConnection directly.
     void set_on_new_client(std::function<void()> cb) { on_new_client_ = std::move(cb); }
+    void set_on_congestion(std::function<void()> cb) { on_congestion_ = std::move(cb); }
+
+    void set_drop_nonref(bool v) { drop_nonref_ = v; }
+
+    uint64_t dropped() const { return dropped_.load(); }
+    uint64_t congestion_events() const { return congestion_events_.load(); }
+    uint64_t congest_queue() const { return congest_queue_.load(); }
+    uint64_t congest_age() const { return congest_age_.load(); }
+    uint64_t nonref_seen() const { return nonref_seen_.load(); }
+    uint64_t nonref_dropped() const { return nonref_dropped_.load(); }
+    // True while a connected client is starved waiting for the next IDR.
+    bool waiting_idr() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (client_fd_ < 0) return false;
+        }
+        std::lock_guard<std::mutex> lk(q_mu_);
+        return wait_idr_;
+    }
 
  private:
-    void close_client_locked() {
-        // mu_ NOT held; caller from push_au holds nothing but is about to
-        // return. Acquire briefly to swap out the fd.
+    struct QueuedAU {
+        std::vector<uint8_t> bytes;   // [uint32_be size][annex-b AU]
+        bool idr = false;
+        std::chrono::steady_clock::time_point t_enq;
+    };
+
+    void close_client() {
         int fd;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -257,8 +387,63 @@ class TcpOutServer {
             client_fd_ = -1;
         }
         if (fd >= 0) ::close(fd);
-        has_seen_idr_.store(false);
+        std::lock_guard<std::mutex> lk(q_mu_);
+        queue_.clear();
+        wait_idr_ = true;
     }
+
+    void sender_loop() {
+        while (!stop_.load()) {
+            QueuedAU q;
+            bool stale = false;
+            {
+                std::unique_lock<std::mutex> lk(q_mu_);
+                q_cv_.wait_for(lk, std::chrono::milliseconds(100),
+                               [this]{ return stop_.load() || !queue_.empty(); });
+                if (stop_.load()) break;
+                if (queue_.empty()) continue;
+                q = std::move(queue_.front());
+                queue_.pop_front();
+                uint64_t age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - q.t_enq).count();
+                uint64_t max_age = (q.t_enq < grace_until_) ? kMaxAgeMsGrace : kMaxAgeMs;
+                if (!q.idr && age_ms > max_age) {
+                    // Xbox drenando devagar: frame velho só aumenta o atraso.
+                    dropped_ += queue_.size() + 1;
+                    queue_.clear();
+                    wait_idr_ = true;
+                    stale = true;
+                    congest_age_++;
+                }
+            }
+            if (stale) {
+                congestion_events_++;
+                if (on_congestion_) on_congestion_();
+                continue;
+            }
+            int fd;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                fd = client_fd_;
+            }
+            if (fd < 0) continue;
+            // Blocking send is fine here: this thread owns the socket and a
+            // stall never reaches the RTP receive path.
+            size_t sent = 0;
+            while (sent < q.bytes.size()) {
+                ssize_t w = ::send(fd, q.bytes.data() + sent, q.bytes.size() - sent, MSG_NOSIGNAL);
+                if (w < 0 && errno == EINTR) continue;
+                if (w <= 0) {
+                    std::fprintf(stderr, "[tcp] send failed at %zu/%zu errno=%d (%s) — closing client\n",
+                                 sent, q.bytes.size(), errno, std::strerror(errno));
+                    close_client();
+                    break;
+                }
+                sent += (size_t)w;
+            }
+        }
+    }
+
     void accept_loop() {
         while (!stop_.load()) {
             sockaddr_in ca = {};
@@ -273,40 +458,74 @@ class TcpOutServer {
             }
             std::printf("[tcp] client connected from %s:%d — waiting for next IDR\n",
                         inet_ntoa(ca.sin_addr), ntohs(ca.sin_port));
-            // Larger send buf, no Nagle — matches orchestrator overlay server.
             int yes = 1;
             setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-            int sndbuf = 256 * 1024;
+            // Buffer do kernel pequeno (Linux dobra → ~128KB): cabe um IDR,
+            // mas não esconde segundos de vídeo atrasado fora da nossa fila.
+            int sndbuf = 64 * 1024;
             setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-            // Bounded blocking send: without SO_SNDTIMEO, EAGAIN kills the
-            // client on the very first IDR when Xbox's TCP window is still
-            // in slow-start and can't absorb a 16KB+ burst. With timeout,
-            // kernel blocks the send until Xbox drains — or gives up cleanly
-            // if Xbox actually died (RST/route lost).
+            // Pacing: sem isso o kernel manda a janela inteira (~20 pacotes)
+            // de rajada; a NIC do Xbox (polling a 1ms) perde o fim da rajada,
+            // e cada perda de cauda vira RTO de ~200ms = vídeo travado.
+            // 10MB/s: um IDR de 200KB sai em ~20ms, 1 pacote a cada ~150us.
+            unsigned int pace = 10u * 1000 * 1000;
+            setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE, &pace, sizeof(pace));
+            // Bounded blocking send in sender_loop: gives up cleanly if the
+            // Xbox actually died (RST/route lost) instead of hanging forever.
             struct timeval sndto{10, 0};   // 10 s
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-            // Reset IDR gating on each new client — first AU sent must be IDR
-            // (with SPS/PPS prepended by push_au above).
-            has_seen_idr_.store(false);
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 if (client_fd_ >= 0) ::close(client_fd_);
                 client_fd_ = fd;
             }
+            // v0.18: o áudio vai por UDP pro mesmo Xbox (IP do cliente de vídeo).
+            client_ip_.store(ca.sin_addr.s_addr);
+            // v0.15: loga SPS/PPS na primeira vez que aparecerem nesta conexao.
+            log_sps_pending_.store(true);
+            log_pps_pending_.store(true);
+            {
+                // First AU sent to a new client must be IDR (with SPS/PPS
+                // prepended by push_au above).
+                std::lock_guard<std::mutex> lk(q_mu_);
+                queue_.clear();
+                wait_idr_ = true;
+            }
             if (on_new_client_) on_new_client_();
         }
     }
 
+ public:
+    // v0.18: IPv4 (network order) do último cliente de vídeo; 0 = nenhum ainda.
+    uint32_t client_ip() const { return client_ip_.load(); }
+ private:
+    std::atomic<uint32_t> client_ip_{0};
     int port_;
     int listen_fd_ = -1;
     int client_fd_ = -1;
     std::mutex mu_;
     std::atomic<bool> stop_{false};
-    std::atomic<bool> has_seen_idr_{false};
     std::thread accept_thread_;
+    std::thread sender_thread_;
     std::vector<uint8_t> sps_;
     std::vector<uint8_t> pps_;
+    std::atomic<bool> log_sps_pending_{false};
+    std::atomic<bool> log_pps_pending_{false};
     std::function<void()> on_new_client_;
+    std::function<void()> on_congestion_;
+
+    std::mutex q_mu_;
+    std::condition_variable q_cv_;
+    std::deque<QueuedAU> queue_;
+    bool wait_idr_ = true;
+    std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> congestion_events_{0};
+    std::chrono::steady_clock::time_point grace_until_{};
+    std::atomic<uint64_t> congest_queue_{0};
+    std::atomic<uint64_t> congest_age_{0};
+    bool drop_nonref_ = false;
+    std::atomic<uint64_t> nonref_seen_{0};
+    std::atomic<uint64_t> nonref_dropped_{0};
 };
 
 struct CaptureCtx {
@@ -317,6 +536,14 @@ struct CaptureCtx {
     std::atomic<uint64_t> video_nals{0};
     std::atomic<uint64_t> audio_bytes{0};
     std::atomic<uint64_t> audio_frames{0};
+    // v0.18: payload Opus de cada pacote RTP -> UDP <Xbox>:audio_port com
+    // header de 6 bytes (seq u16 BE, timestamp RTP u32 BE). Nunca no TCP do
+    // vídeo (head-of-line blocking). audio_port 0 = desligado.
+    int                   audio_port = 9004;
+    int                   audio_fd = -1;
+    uint32_t              audio_dst_logged = 0;
+    std::atomic<uint64_t> audio_fwd{0};
+    std::atomic<uint64_t> audio_fwd_err{0};
     std::atomic<uint64_t> keyframe_requests{0};
     std::mutex ice_local_mu;
     std::vector<std::string> ice_local_candidates;
@@ -346,6 +573,17 @@ struct CaptureCtx {
     int  video_w    = 1280;
     int  video_h    = 720;
 
+    // Fase 1: pedidos de keyframe vindos de fora da thread do peer (TCP-out
+    // congestionado, cliente novo, Xbox via UDP "KFRQ") só marcam flag; a
+    // pc_thread atende com throttle de 1/s, igual ao Green-NX
+    // (Engine::request_keyframe_locked). Cada IDR é um pico grande de bytes:
+    // pedir um por pacote perdido realimentava a congestão.
+    std::atomic<bool>     kf_wanted{false};
+    std::atomic<bool>     kf_force{false};    // ignora throttle (cliente novo)
+    uint64_t              last_kf_ms = 0;     // só pc_thread
+    uint64_t              last_rr_ms = 0;     // só pc_thread
+    std::atomic<uint64_t> nacks_sent{0};
+
     // ---- Input channel state (P11) -------------------------------------
     // Green-NX behaviour: the "input" DataChannel must receive a fresh
     // absolute gamepad snapshot at 125 Hz (every 8ms) with a monotonic
@@ -356,7 +594,13 @@ struct CaptureCtx {
     // arrives, we still send the zero frame (menu stays put but session
     // survives — enough to prove decode/render throughput on real gameplay).
     std::mutex               input_mu;
-    gnx::xcloud::GamepadFrame current_gamepad{};
+    // v0.19: até 4 controles do Xbox (byte 0 do frame UDP = slot).
+    // present: slots que já mandaram frame; announced: já avisados ao xCloud
+    // com gamepadChanged (o 0 vai no handshake).
+    static constexpr int kMaxPads = 4;
+    gnx::xcloud::GamepadFrame current_gamepad[kMaxPads]{};
+    std::atomic<unsigned>    pad_present{1};
+    std::atomic<unsigned>    pad_announced{1};
     gnx::xcloud::InputSerializer input_ser;
     std::atomic<bool>        input_run{false};
     std::thread              input_send_thread;
@@ -474,19 +718,36 @@ static bool send_on_channel_text(PeerConnection* pc, const char* label,
 static bool send_on_channel_binary(PeerConnection* pc, const char* label,
                                    const std::vector<uint8_t>& data);
 
+static uint64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// PLI + xCloud videoKeyframeRequested, no máximo 1/s (Green-NX
+// Engine::request_keyframe_locked). Só chamar da pc_thread — callbacks do
+// libpeer rodam nela; outras threads usam ctx->kf_wanted.
+static void request_keyframe_throttled(CaptureCtx* ctx, bool force) {
+    if (!ctx->pc || !ctx->handshake_done.load()) return;
+    uint64_t now = steady_ms();
+    if (!force && now - ctx->last_kf_ms < 1000) return;
+    ctx->last_kf_ms = now;
+    peer_connection_request_keyframe(ctx->pc);
+    send_on_channel_text(ctx->pc, "control",
+        gnx::xcloud::video_keyframe_requested());
+    ctx->keyframe_requests.fetch_add(1);
+}
+
 // libpeer (green-nx patched) delivers each RAW RTP packet (12-byte header +
-// payload). Substituímos H264Depayloader por VideoJitterBuffer com reorder de
-// 200ms + waiting_keyframe gating. Se um frame perder pacote, ele espera
-// retransmissão; se não vier, drop + pedir novo IDR — nunca alimenta decoder
+// payload). Substituímos H264Depayloader por VideoJitterBuffer com reorder +
+// waiting_keyframe gating. Se um frame perder pacote, manda RTCP NACK e espera
+// a retransmissão; se não vier, drop + pedir novo IDR — nunca alimenta decoder
 // com P-frame quebrado. Callbacks setados em main junto com tcp_out.
 static void on_video_track(uint8_t* data, size_t size, void* userdata) {
     auto* ctx = static_cast<CaptureCtx*>(userdata);
     if (size == 0) return;
-    uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
     bool want_kf = false;
     g_video_jitter.receive(
-        data, size, now_ms,
+        data, size, steady_ms(),
         // emit — AU pronto e in-order
         [ctx](const uint8_t* au, size_t n) {
             if (ctx->h264_fp) std::fwrite(au, 1, n, ctx->h264_fp);
@@ -494,22 +755,16 @@ static void on_video_track(uint8_t* data, size_t size, void* userdata) {
             ctx->video_nals.fetch_add(1);
             if (ctx->tcp_out) ctx->tcp_out->push_au(au, n);
         },
-        // nack — libpeer não expõe RTCP NACK direto; fallback pedir keyframe
-        [ctx](uint16_t /*pid*/, uint16_t /*blp*/) {
+        // nack — retransmissão (RFC 4585). Antes pedia um IDR inteiro a cada
+        // pacote perdido/fora de ordem: tempestade de keyframes.
+        [ctx](uint16_t pid, uint16_t blp) {
             if (ctx->pc) {
-                peer_connection_request_keyframe(ctx->pc);
-                send_on_channel_text(ctx->pc, "control",
-                    gnx::xcloud::video_keyframe_requested());
-                ctx->keyframe_requests.fetch_add(1);
+                peer_connection_send_nack(ctx->pc, pid, blp);
+                ctx->nacks_sent.fetch_add(1);
             }
         },
         &want_kf);
-    if (want_kf && ctx->pc) {
-        peer_connection_request_keyframe(ctx->pc);
-        send_on_channel_text(ctx->pc, "control",
-            gnx::xcloud::video_keyframe_requested());
-        ctx->keyframe_requests.fetch_add(1);
-    }
+    if (want_kf) request_keyframe_throttled(ctx, false);
 }
 
 // Depayloader emit target. Called with a complete Annex-B access unit.
@@ -521,12 +776,47 @@ static void on_h264_au(const uint8_t* au, size_t n, CaptureCtx* ctx) {
     if (ctx->tcp_out) ctx->tcp_out->push_au(au, n);
 }
 
+// v0.18: até a v0.17 o callback saía no `!opus_fp` ANTES de contar — o
+// launcher roda com --no-file, então o áudio chegava (libpeer entrega o pacote
+// RTP inteiro, já decifrado) e era jogado fora sem nem aparecer no log.
+// Roda na thread do peer_connection_loop: só parse + 1 sendto não bloqueante.
 static void on_audio_track(uint8_t* data, size_t size, void* userdata) {
     auto* ctx = static_cast<CaptureCtx*>(userdata);
-    if (!ctx->opus_fp || size == 0) return;
-    std::fwrite(data, 1, size, ctx->opus_fp);
-    ctx->audio_bytes.fetch_add(size);
+    if (size < 12 || (data[0] >> 6) != 2) return;
+    if (ctx->opus_fp) std::fwrite(data, 1, size, ctx->opus_fp);   // como antes: RTP cru
+    size_t off = 12 + 4u * (data[0] & 0x0f);                       // CSRCs
+    if ((data[0] & 0x10) && off + 4 <= size)                       // header extension
+        off += 4 + 4u * (((size_t)data[off + 2] << 8) | data[off + 3]);
+    size_t end = size;
+    if ((data[0] & 0x20) && end > off) {                           // padding
+        size_t pad = data[end - 1];
+        end = pad <= end - off ? end - pad : off;
+    }
+    if (off >= end) return;
+    const size_t n = end - off;
+    ctx->audio_bytes.fetch_add(n);
     ctx->audio_frames.fetch_add(1);
+
+    if (ctx->audio_fd < 0 || !ctx->tcp_out || n > 1500) return;
+    uint32_t ip = ctx->tcp_out->client_ip();
+    if (!ip) return;                                               // Xbox ainda não conectou
+    if (ip != ctx->audio_dst_logged) {
+        ctx->audio_dst_logged = ip;
+        in_addr ia{}; ia.s_addr = ip;
+        std::printf("[audio] Opus -> %s:%d (UDP, seq+ts+payload)\n",
+                    inet_ntoa(ia), ctx->audio_port);
+    }
+    uint8_t pkt[6 + 1500];
+    std::memcpy(pkt, data + 2, 2);                                 // seq (já BE)
+    std::memcpy(pkt + 2, data + 4, 4);                             // timestamp (já BE)
+    std::memcpy(pkt + 6, data + off, n);
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons((uint16_t)ctx->audio_port);
+    to.sin_addr.s_addr = ip;
+    ssize_t w = ::sendto(ctx->audio_fd, pkt, 6 + n, MSG_DONTWAIT, (sockaddr*)&to, sizeof(to));
+    if (w == (ssize_t)(6 + n)) ctx->audio_fwd.fetch_add(1);
+    else ctx->audio_fwd_err.fetch_add(1);
 }
 
 static void on_request_keyframe(void* userdata) {
@@ -578,7 +868,9 @@ static bool send_on_channel_binary(PeerConnection* pc, const char* label,
     int rc = peer_connection_datachannel_send_sid(
         pc, const_cast<char*>(reinterpret_cast<const char*>(payload.data())),
         payload.size(), sid);
-    std::printf("[dc] send-bin [%s sid=%u len=%zu]\n", label, sid, payload.size());
+    // Input sai a até 125Hz — logar cada pacote só enche o log.
+    if (rc < 0 || std::strcmp(label, "input") != 0)
+        std::printf("[dc] send-bin [%s sid=%u len=%zu] rc=%d\n", label, sid, payload.size(), rc);
     return rc >= 0;
 }
 
@@ -601,9 +893,13 @@ static void input_send_loop(CaptureCtx* ctx) {
      * mudar E pelo menos a cada 50ms (heartbeat pra manter absolute state
      * "vivo" no encoder xCloud). Se send falha (SCTP EAGAIN), backoff
      * escalonado: 8ms → 20ms → 100ms. Evita saturar peer connection e
-     * degradar canal RTP de video que corre no MESMO ICE. */
-    gnx::xcloud::GamepadFrame last_sent{};
-    auto last_send_time = steady_clock::now();
+     * degradar canal RTP de video que corre no MESMO ICE.
+     * v0.19: o mesmo, por controle; controle novo é anunciado com
+     * gamepadChanged antes do primeiro frame dele. */
+    constexpr int kMaxPads = CaptureCtx::kMaxPads;
+    gnx::xcloud::GamepadFrame last_sent[kMaxPads]{};
+    steady_clock::time_point last_send_time[kMaxPads];
+    for (auto& t : last_send_time) t = steady_clock::now();
     int consec_fails = 0;
     while (ctx->input_run.load()) {
         if (!ctx->handshake_done.load() || ctx->pc == nullptr) {
@@ -617,55 +913,70 @@ static void input_send_loop(CaptureCtx* ctx) {
             consec_fails = 0;
             continue;
         }
-        auto now = steady_clock::now();
-        double elapsed_ms =
-            duration_cast<duration<double, std::milli>>(
-                now - ctx->t_input_start).count();
-
-        gnx::xcloud::GamepadFrame snapshot;
-        {
-            std::lock_guard<std::mutex> lk(ctx->input_mu);
-            snapshot = ctx->current_gamepad;
-        }
-        /* State-change detect (byte-compare struct). Heartbeat 50ms. */
-        bool changed = std::memcmp(&snapshot, &last_sent, sizeof(snapshot)) != 0;
-        auto since_last = duration_cast<milliseconds>(now - last_send_time).count();
-        bool need_heartbeat = since_last >= 50;
-        if (!changed && !need_heartbeat) {
-            std::this_thread::sleep_for(milliseconds(4));
-            continue;
+        unsigned present = ctx->pad_present.load();
+        for (int i = 1; i < kMaxPads; i++) {
+            unsigned bit = 1u << i;
+            if ((present & bit) && !(ctx->pad_announced.load() & bit)) {
+                send_on_channel_text(ctx->pc, "control",
+                                     gnx::xcloud::gamepad_changed((uint8_t)i, true));
+                ctx->pad_announced.fetch_or(bit);
+                std::printf("[input] controle %d do Xbox -> gamepadChanged(%d, added)\n", i, i);
+            }
         }
 
-        std::vector<uint8_t> pkt;
-        bool has_press;
-        {
-            std::lock_guard<std::mutex> lk(ctx->input_mu);
-            const auto& g = ctx->current_gamepad;
-            has_press = g.a || g.b || g.x || g.y || g.dpad_up || g.dpad_down
-                     || g.dpad_left || g.dpad_right || g.menu || g.view;
-            pkt = ctx->input_ser.gamepad_packet(g, elapsed_ms);
-        }
-        static bool logged_first_send = false;
-        if (has_press && !logged_first_send) {
-            std::printf("[input-send] first frame with button press queued (pkt %zuB)\n", pkt.size());
-            logged_first_send = true;
-        }
-        bool ok = send_on_channel_binary(ctx->pc, "input", pkt);
-        if (ok) {
-            last_sent = snapshot;
-            last_send_time = now;
-            consec_fails = 0;
-            std::this_thread::sleep_for(milliseconds(4));
-        } else {
+        bool failed = false;
+        for (int i = 0; i < kMaxPads && !failed; i++) {
+            if (!(present & (1u << i))) continue;
+            auto now = steady_clock::now();
+            double elapsed_ms =
+                duration_cast<duration<double, std::milli>>(
+                    now - ctx->t_input_start).count();
+
+            gnx::xcloud::GamepadFrame snapshot;
             {
                 std::lock_guard<std::mutex> lk(ctx->input_mu);
-                ctx->input_ser.rollback_sequence();
+                snapshot = ctx->current_gamepad[i];
             }
-            consec_fails++;
+            /* State-change detect (byte-compare struct). Heartbeat 50ms. */
+            bool changed = std::memcmp(&snapshot, &last_sent[i], sizeof(snapshot)) != 0;
+            auto since_last = duration_cast<milliseconds>(now - last_send_time[i]).count();
+            if (!changed && since_last < 50) continue;
+
+            std::vector<uint8_t> pkt;
+            bool has_press = snapshot.a || snapshot.b || snapshot.x || snapshot.y
+                          || snapshot.dpad_up || snapshot.dpad_down
+                          || snapshot.dpad_left || snapshot.dpad_right
+                          || snapshot.menu || snapshot.view;
+            {
+                std::lock_guard<std::mutex> lk(ctx->input_mu);
+                pkt = ctx->input_ser.gamepad_packet(snapshot, elapsed_ms);
+            }
+            static bool logged_first_send = false;
+            if (has_press && !logged_first_send) {
+                std::printf("[input-send] first frame with button press queued (pkt %zuB)\n", pkt.size());
+                logged_first_send = true;
+            }
+            bool ok = send_on_channel_binary(ctx->pc, "input", pkt);
+            if (ok) {
+                last_sent[i] = snapshot;
+                last_send_time[i] = now;
+                consec_fails = 0;
+            } else {
+                {
+                    std::lock_guard<std::mutex> lk(ctx->input_mu);
+                    ctx->input_ser.rollback_sequence();
+                }
+                consec_fails++;
+                failed = true;
+            }
+        }
+        if (failed) {
             /* Backoff pra não afogar SCTP nem log. 8ms → 20ms → 100ms. */
             int wait_ms = (consec_fails < 3) ? 8
                         : (consec_fails < 10) ? 20 : 100;
             std::this_thread::sleep_for(milliseconds(wait_ms));
+        } else {
+            std::this_thread::sleep_for(milliseconds(4));
         }
     }
 }
@@ -697,9 +1008,19 @@ static void input_udp_loop(CaptureCtx* ctx, int port) {
         return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
     };
 
-    uint8_t buf[64];
+    uint8_t buf[512];
     while (ctx->input_run.load()) {
         ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        // Fase 1: Xbox pede IDR depois de erro de decode / backlog.
+        if (n == 4 && std::memcmp(buf, "KFRQ", 4) == 0) {
+            ctx->kf_wanted.store(true);
+            continue;
+        }
+        // Telemetria do h264play (v0.14.2+): decode/exibição/backlog a cada 2s.
+        if (n > 5 && std::memcmp(buf, "STAT ", 5) == 0) {
+            std::printf("[xbox] %.*s\n", (int)n - 5, reinterpret_cast<const char*>(buf) + 5);
+            continue;
+        }
         if (n < 15) continue;   // too short (timeout returns -1/EAGAIN too)
         gnx::xcloud::GamepadFrame f{};
         f.index = buf[0];
@@ -717,9 +1038,11 @@ static void input_udp_loop(CaptureCtx* ctx, int port) {
         f.right_x = rd_i16(buf + 11) / 32767.0f;
         f.right_y = rd_i16(buf + 13) / 32767.0f;
         {
+            if (f.index >= CaptureCtx::kMaxPads) f.index = 0;
             std::lock_guard<std::mutex> lk(ctx->input_mu);
-            ctx->current_gamepad = f;
+            ctx->current_gamepad[f.index] = f;
         }
+        ctx->pad_present.fetch_or(1u << f.index);
         /* Log-once when any button is first seen from Xbox — proves the
          * UDP recv path is being processed, not just the socket bound. */
         static bool logged_first_press = false;
@@ -780,8 +1103,10 @@ static void on_channel_message(char* data, size_t size, void* userdata, uint16_t
     if (!ctx->pc) return;
     char* label = peer_connection_lookup_sid_label(ctx->pc, sid);
     std::string preview(data, std::min<size_t>(size, 240));
-    std::printf("[dc] recv [%s sid=%u len=%zu] %s\n",
-                label ? label : "sid?", sid, size, preview.c_str());
+    // Canal input (vibração/ack, várias por segundo) não vai pro log.
+    if (!label || std::strcmp(label, "input") != 0)
+        std::printf("[dc] recv [%s sid=%u len=%zu] %s\n",
+                    label ? label : "sid?", sid, size, preview.c_str());
     if (!label) return;
 
     if (std::strcmp(label, "message") == 0 && !ctx->handshake_done.load()) {
@@ -793,6 +1118,9 @@ static void on_channel_message(char* data, size_t size, void* userdata, uint16_t
             // (mandatory or xCloud rejects further control commands).
             send_on_channel_text(ctx->pc, "control", gnx::xcloud::authorization_request());
             send_on_channel_text(ctx->pc, "control", gnx::xcloud::gamepad_changed(0, true));
+            // v0.19: sessão nova: os controles 1-3 que já estão no Xbox são
+            // anunciados de novo pelo input_send_loop.
+            ctx->pad_announced.store(1);
             // Ask for 720p (matches session tier).
             send_on_channel_text(ctx->pc, "control", gnx::xcloud::user_requested_resolution("720"));
             // Startup messages carry ClientDeviceCapabilities + quality knobs
@@ -857,14 +1185,25 @@ int main(int argc, char** argv) {
     ::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     // ---- args ------------------------------------------------------------
-    if (argc < 2) {
+    // v0.18: --help de verdade. Antes "--help" virava TITLE_ID e abria sessão.
+    bool want_help = argc < 2;
+    for (int i = 1; i < argc; i++) {
+        if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h")) want_help = true;
+    }
+    if (want_help) {
         std::fprintf(stderr,
             "usage: %s <TITLE_ID> [--out DIR] [--seconds N] [--ads]\n"
-            "                     [--tcp-out PORT] [--no-file]\n"
+            "                     [--tcp-out PORT] [--no-file] [--kbps N] [--fps N]\n"
             "  --tcp-out PORT  Serve length-prefix Annex-B AUs on this TCP port.\n"
-            "  --no-file       Skip writing stream.h264 (useful when --tcp-out is set).\n",
+            "  --no-file       Skip writing stream.h264 (useful when --tcp-out is set).\n"
+            "  --kbps N        Max video bitrate asked from xCloud (default 3000).\n"
+            "  --fps N         Framerate asked from xCloud (default 30).\n"
+            "  --drop-nonref   Don't forward non-reference frames to the TCP client.\n"
+            "  --audio-port N  UDP port on the video client (Xbox) for the Opus\n"
+            "                  track: [seq u16 BE][rtp ts u32 BE][payload]. Default\n"
+            "                  9004, 0 = don't forward audio.\n",
             argv[0]);
-        return 2;
+        return argc < 2 ? 2 : 0;
     }
     std::string title_id = argv[1];
     std::string out_root = "tools/xcloud-capture/output";
@@ -872,6 +1211,7 @@ int main(int argc, char** argv) {
     bool ad_supported = false;
     int  tcp_out_port = 0;   // 0 = no TCP-out (capture-only mode)
     bool no_file = false;    // skip stream.h264 file when true
+    bool drop_nonref = false;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--out" && i + 1 < argc)     { out_root = argv[++i]; }
@@ -879,6 +1219,10 @@ int main(int argc, char** argv) {
         else if (a == "--ads")                { ad_supported = true; }
         else if (a == "--tcp-out" && i + 1 < argc) { tcp_out_port = std::atoi(argv[++i]); }
         else if (a == "--no-file")            { no_file = true; }
+        else if (a == "--kbps" && i + 1 < argc)    { g_ctx.video_kbps.store(std::atoi(argv[++i])); }
+        else if (a == "--fps" && i + 1 < argc)     { g_ctx.video_fps = std::atoi(argv[++i]); }
+        else if (a == "--drop-nonref")        { drop_nonref = true; }
+        else if (a == "--audio-port" && i + 1 < argc) { g_ctx.audio_port = std::atoi(argv[++i]); }
     }
 
     // ---- output dir -------------------------------------------------------
@@ -1059,6 +1403,26 @@ int main(int argc, char** argv) {
             // speed on hot bursts (keyframe H264 = 40+ packets in one shot).
             while (!stop_flag.load()) {
                 int drained = peer_connection_loop(pc);
+                bool force = g_ctx.kf_force.exchange(false);
+                // Enquanto o cliente TCP espera IDR, repete o pedido (1/s):
+                // o xCloud às vezes ignora um PLI e o próximo IDR periódico
+                // demora vários segundos — tudo descartado nesse meio tempo.
+                bool starving = g_ctx.tcp_out && g_ctx.tcp_out->waiting_idr();
+                if (g_ctx.kf_wanted.exchange(false) || force || starving)
+                    request_keyframe_throttled(&g_ctx, force);
+                // RTCP Receiver Report + REMB a cada 1s (Green-NX engine.cpp
+                // "receiver etiquette"). Sem REMB o xCloud ignora
+                // maxBitrateKbps: pedimos 1500 e veio ~2.7Mbps.
+                uint64_t now_ms = steady_ms();
+                if (g_ctx.handshake_done.load() && now_ms - g_ctx.last_rr_ms >= 1000) {
+                    g_ctx.last_rr_ms = now_ms;
+                    uint8_t fraction; uint32_t cumulative, highest_ext;
+                    if (g_video_jitter.report_stats(&fraction, &cumulative, &highest_ext))
+                        peer_connection_send_receiver_report(pc, fraction, cumulative,
+                                                             highest_ext, 0);
+                    peer_connection_send_remb(
+                        pc, (uint32_t)g_ctx.video_kbps.load() * 1000u);
+                }
                 if (drained <= 0)
                     std::this_thread::sleep_for(std::chrono::microseconds(500));
                 // else: immediate re-poll, no sleep.
@@ -1082,6 +1446,33 @@ int main(int argc, char** argv) {
             while ((p = offer_sdp.find(needle, p)) != std::string::npos) {
                 offer_sdp.replace(p, needle.size(), repl);
                 p += repl.size();
+            }
+        }
+        {
+            // Teto de banda do vídeo no offer (b=AS kbps + b=TIAS bps), como os
+            // tweaks de xCloud no navegador. Só a seção m=video, logo depois do
+            // c= dela. O REMB sozinho não é respeitado (combate passa de 3Mbps).
+            int kbps = g_ctx.video_kbps.load();
+            size_t mv = offer_sdp.find("m=video");
+            size_t c  = mv == std::string::npos ? mv : offer_sdp.find("\nc=", mv);
+            size_t nx = mv == std::string::npos ? mv : offer_sdp.find("\nm=", mv + 1);
+            if (kbps > 0 && c != std::string::npos && (nx == std::string::npos || c < nx)) {
+                size_t eol = offer_sdp.find('\n', c + 1);
+                if (eol != std::string::npos) {
+                    bool crlf = eol > 0 && offer_sdp[eol - 1] == '\r';
+                    std::string nl = crlf ? "\r\n" : "\n";
+                    std::string as = "b=AS:" + std::to_string(kbps);
+                    std::string tias = "b=TIAS:" + std::to_string((long long)kbps * 1000);
+                    offer_sdp.insert(eol + 1, as + nl + tias + nl);
+                    static bool logged = false;
+                    if (!logged) {
+                        logged = true;
+                        std::printf("[sdp] video bandwidth cap: %s %s (m=video)\n",
+                                    as.c_str(), tias.c_str());
+                    }
+                }
+            } else {
+                std::printf("[sdp] WARN: m=video/c= not found, no b=AS cap\n");
             }
         }
         std::printf("[sdp] offer size=%zu  ice-ufrag(local)=%s\n",
@@ -1285,18 +1676,31 @@ int main(int argc, char** argv) {
             delete tcp_srv;
             tcp_srv = nullptr;
         } else {
+            tcp_srv->set_drop_nonref(drop_nonref);
+            // v0.18: socket do áudio antes de publicar tcp_out (o callback do
+            // áudio roda na thread do pc e lê os dois).
+            if (g_ctx.audio_port > 0 && g_ctx.audio_port < 65536) {
+                int afd = ::socket(AF_INET, SOCK_DGRAM, 0);
+                if (afd >= 0) {
+                    ::fcntl(afd, F_SETFL, ::fcntl(afd, F_GETFL) | O_NONBLOCK);
+                    int tos = 0xb8;   // DSCP EF, como áudio de VoIP
+                    ::setsockopt(afd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+                    g_ctx.audio_fd = afd;
+                    std::printf("[audio] forward Opus to <video client>:%d/udp\n", g_ctx.audio_port);
+                } else {
+                    std::perror("[audio] socket");
+                }
+            }
+            std::atomic_thread_fence(std::memory_order_release);
             g_ctx.tcp_out = tcp_srv;
             // On every fresh TCP client, ask the server for an IDR so the
             // Xbox decoder can start rendering without waiting for the next
             // periodic keyframe (5-10s otherwise). Fire both RTCP PLI (from
             // libpeer) and the xCloud app-level keyframe request message.
-            tcp_srv->set_on_new_client([&]{
-                if (g_ctx.pc) {
-                    peer_connection_request_keyframe(g_ctx.pc);
-                    send_on_channel_text(g_ctx.pc, "control",
-                        gnx::xcloud::video_keyframe_requested());
-                }
-            });
+            // Runs on the accept thread: only flag it, pc_thread does the send.
+            tcp_srv->set_on_new_client([&]{ g_ctx.kf_force.store(true); });
+            // Fila TCP estourou e passou a descartar até o próximo IDR.
+            tcp_srv->set_on_congestion([&]{ g_ctx.kf_wanted.store(true); });
         }
     }
 
@@ -1307,16 +1711,24 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         auto js = g_video_jitter.stats();
         std::printf("[cap] t+%2ds  video: %llu AUs / %llu bytes | "
-                    "audio: %llu frames / %llu bytes | kfr_req: %llu | "
-                    "jit: pkts=%u drops=%u nacks=%u resyncs=%u %s\n",
+                    "audio: %llu frames / %llu bytes fwd=%llu | kfr_req: %llu | "
+                    "jit: pkts=%u drops=%u nacks=%u resyncs=%u %s| "
+                    "tcp: dropAU=%llu congest=%llu(q%llu/a%llu) nonref=%llu/%llu\n",
                     s + 1,
                     (unsigned long long)g_ctx.video_nals.load(),
                     (unsigned long long)g_ctx.video_bytes.load(),
                     (unsigned long long)g_ctx.audio_frames.load(),
                     (unsigned long long)g_ctx.audio_bytes.load(),
+                    (unsigned long long)g_ctx.audio_fwd.load(),
                     (unsigned long long)g_ctx.keyframe_requests.load(),
                     js.packets, js.dropped, js.nacks, js.resyncs,
-                    g_video_jitter.waiting_keyframe() ? "[WAIT_KF]" : "");
+                    g_video_jitter.waiting_keyframe() ? "[WAIT_KF] " : "",
+                    (unsigned long long)(tcp_srv ? tcp_srv->dropped() : 0),
+                    (unsigned long long)(tcp_srv ? tcp_srv->congestion_events() : 0),
+                    (unsigned long long)(tcp_srv ? tcp_srv->congest_queue() : 0),
+                    (unsigned long long)(tcp_srv ? tcp_srv->congest_age() : 0),
+                    (unsigned long long)(tcp_srv ? tcp_srv->nonref_dropped() : 0),
+                    (unsigned long long)(tcp_srv ? tcp_srv->nonref_seen() : 0));
     }
 
     // ---- shutdown ---------------------------------------------------------
@@ -1360,6 +1772,8 @@ int main(int argc, char** argv) {
         {"video_bytes",        g_ctx.video_bytes.load()},
         {"audio_frames",       g_ctx.audio_frames.load()},
         {"audio_bytes",        g_ctx.audio_bytes.load()},
+        {"audio_forwarded",    g_ctx.audio_fwd.load()},
+        {"audio_forward_errors", g_ctx.audio_fwd_err.load()},
         {"keyframe_requests",  g_ctx.keyframe_requests.load()},
         {"final_pc_state",     peer_connection_state_to_string(g_ctx.pc_state.load())},
         {"ice_ufrag_local_prefix",  g_ctx.ice_ufrag_local.substr(0, 4) + "..."},

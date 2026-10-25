@@ -1,0 +1,192 @@
+diff -ruN
+--- a/drivers/ppc/c_except.c	2026-10-25 01:25:16.603833457 -0300
++++ b/drivers/ppc/c_except.c	2026-10-25 01:50:17.835840159 -0300
+@@ -85,6 +85,14 @@
+ 		
+ 	flush_console();
+ 	
++	/* GIP diagnostics (usblog.c, weak; static buffers only, safe here) */
++	{
++		extern const char *usblog_crash_tail(void) __attribute__((weak));
++		if (usblog_crash_tail) {
++			strncat(text, usblog_crash_tail(), 2000);
++			flush_console();
++		}
++	}
+ 	sprintf(text,"%spir=%016llx dar=%016llx\nsr0=%016llx sr1=%016llx lr=%016llx\n\n",
+ 			text,context[39],context[38],context[36],context[37],context[32]);
+ 	
+@@ -98,15 +106,6 @@
+ 	flush_console();
+ 	
+ 	_cpu_print_stack((void*)(u32)context[36],(void*)(u32)context[32],(void*)(u32)context[1]);
+-
+-	/* GIP diagnostics: last USB/GIP log lines (usblog.c, weak; static
+-	 * buffers only, safe here) so a photo of this screen shows the step */
+-	flush_console();
+-	{
+-		extern const char *usblog_crash_tail(void) __attribute__((weak));
+-		if (usblog_crash_tail)
+-			strncat(text, usblog_crash_tail(), sizeof(text) - 1);
+-	}
+ 	
+ 	strcat(text,"\n\nOn uart: 'x'=Xell, 'h'=Halt, 'r'=Reboot\n\n");
+ 
+diff -ruN
+--- a/drivers/usb/ohci.c	2026-10-25 01:25:16.603647003 -0300
++++ b/drivers/usb/ohci.c	2026-10-25 01:50:17.835653313 -0300
+@@ -413,6 +413,17 @@
+     *  	   transfer descriptor, or NULL
+     ********************************************************************* */
+ 
++/* GIP hardening: free-TD accounting (low-water mark in the GIP summary) */
++int ohci_td_low_water = 1 << 30;
++unsigned ohci_td_refused;
++static int _ohci_count_free(ohci_softc_t *softc)
++{
++    int n = 0;
++    ohci_transfer_t *t = softc->ohci_transfer_freelist;
++    while (t && n < OHCI_TDPOOL_SIZE + 1) { n++; t = t->t_next; }
++    return n;
++}
++
+ static ohci_transfer_t *_ohci_allocxfer(ohci_softc_t *softc)
+ {
+     ohci_transfer_t *t;
+@@ -436,6 +447,7 @@
+ 	}
+ 
+     softc->ohci_transfer_freelist = t->t_next;
++    { int nf = _ohci_count_free(softc); if (nf < ohci_td_low_water) ohci_td_low_water = nf; }
+ 
+     td = ohci_td_from_transfer(softc,t);
+ 
+@@ -955,7 +967,7 @@
+      * Get the head of the queue
+      */
+ 
+-    doneq = BSWAP32(donehead);
++    doneq = BSWAP32(donehead) & M_OHCI_ED_PTRMASK;
+ 
+     td = (ohci_td_t *) OHCI_PTOV(doneq);
+     transfer = ohci_transfer_from_td(softc,td);
+@@ -991,7 +1003,7 @@
+ 	    }
+ #endif
+ 
+-	doneq = BSWAP32(td->td_next_td);
++	doneq = BSWAP32(td->td_next_td) & M_OHCI_ED_PTRMASK;
+ 
+ 	val = G_OHCI_TD_CC(BSWAP32(td->td_control));
+ 
+@@ -1262,7 +1274,9 @@
+     ept = _ohci_allocept(softc);
+     ed = ohci_ed_from_endpoint(softc,ept);
+ 
++    if (!ept) { usblog_bc("bc ohci: out of EDs"); return NULL; }
+     tailtransfer = _ohci_allocxfer(softc);
++    if (!tailtransfer) { usblog_bc("bc ohci: out of TDs creating an ED"); _ohci_freeept(softc,ept); return NULL; }
+     tailtd = ohci_td_from_transfer(softc,tailtransfer);
+ 
+     /*
+@@ -1594,6 +1608,18 @@
+ 	return ohci_roothub_xfer(bus,uept,ur);
+ 	}
+ 
++    /* GIP hardening: refuse (request left idle with an error status)
++     * instead of building TDs from a NULL transfer when the pool is empty */
++    {
++	int need = ur->ur_length > 0 ? (ur->ur_length + (OHCI_TD_MAX_DATA - 16) - 1) / (OHCI_TD_MAX_DATA - 16) + 1 : 1;
++	if (_ohci_count_free(softc) < need) {
++	    if (ohci_td_refused++ < 8) usblog_bc("bc ohci: out of TDs (need %d), transfer refused", need);
++	    ur->ur_inprogress = 0;
++	    ur->ur_status = UR_ERR_BUFFEROVERRUN;
++	    return -1;
++	    }
++    }
++
+     /*
+      * Set up the TD flags based on the 
+      * request type.
+diff -ruN
+--- a/drivers/usb/usbgip.c	2026-10-25 01:50:40.475650337 -0300
++++ b/drivers/usb/usbgip.c	2026-10-25 01:50:17.833341341 -0300
+@@ -190,7 +190,10 @@
+     if (sc->bc_tx < GIP_BC_N) usblog_bc("bc tx#%u queue OUT cmd %02x len %d", sc->tx, sc->cur_cmd, n);
+     int r = usb_queue_request(sc->oreq);
+     if (sc->bc_tx++ < GIP_BC_N) usblog_bc("bc tx#%u queued -> %d", sc->tx, r);
+-    if (r != 0) usblog("pad%d tx#%u usb_queue_request returned %d", sc->index, sc->tx, r);
++    if (r != 0) {
++        usblog("pad%d tx#%u usb_queue_request returned %d (packet dropped)", sc->index, sc->tx, r);
++        sc->out_busy = 0;
++    }
+ }
+ 
+ static int gip_out_cb(usbreq_t *ur)
+@@ -385,7 +388,11 @@
+ 
+     ur->ur_length = sc->mps_in;
+     ur->ur_flags = UR_FLAG_IN | UR_FLAG_SHORTOK;
+-    usb_queue_request(ur);      /* re-queueing also clears an OHCI ED halt */
++    if (usb_queue_request(ur) != 0) {   /* re-queueing also clears an OHCI ED halt */
++        sc->read_started = 0;           /* refused (HC out of TDs): tick retries */
++        sc->early_ms = usblog_now_ms();
++        usblog("pad%d IN re-queue refused, retrying from tick", sc->index);
++    }
+     if (bc) usblog_bc("bc in_cb #%u re-queued", sc->bc_rx);
+     return 0;
+ }
+@@ -402,6 +409,7 @@
+     usblog_bc("bc first IN queue (%s)", why);
+     r = usb_queue_request(sc->ireq);
+     usblog_bc("bc first IN queued -> %d", r);
++    if (r != 0) { sc->read_started = 0; sc->early_ms = usblog_now_ms(); }
+     usblog("pad%d IN 0x%02x read queued (%s) -> %d, len %d, interval %d", sc->index, sc->ep_in,
+            why, r, sc->mps_in, sc->ival_in);
+ }
+@@ -424,6 +432,11 @@
+                       sc->st.n_input, sc->st.n_announce, sc->in_err, sc->last_in_err);
+     }
+     if (!any && cap > 12) n = snprintf(out, cap, " no GIP pad");
++    if (n >= 0 && n < cap - 1) {
++        extern int ohci_td_low_water;
++        extern unsigned ohci_td_refused;
++        n += snprintf(out + n, cap - n, " tdmin%d/ref%u", ohci_td_low_water, ohci_td_refused);
++    }
+     return n;
+ }
+ 
+diff -ruN
+--- a/drivers/usb/usblog.c	2026-10-25 01:25:16.601742881 -0300
++++ b/drivers/usb/usblog.c	2026-10-25 01:50:17.833526003 -0300
+@@ -81,7 +81,7 @@
+ 
+ /* crash ring: the last UL_CRASH lines (100 chars) for the libxenon red
+  * screen (c_except.c calls usblog_crash_tail() through a weak hook) */
+-#define UL_CRASH      12
++#define UL_CRASH      10
+ #define UL_CRASH_COLS 100
+ static char ul_crash[UL_CRASH][UL_CRASH_COLS];
+ static unsigned ul_ncrash;
+@@ -120,12 +120,19 @@
+  * only string copies into a static buffer. */
+ const char *usblog_crash_tail(void)
+ {
+-    static char out[UL_CRASH * (UL_CRASH_COLS + 1) + 64];
++    static char out[UL_CRASH * (UL_CRASH_COLS + 1) + 320];
+     unsigned i, first = ul_ncrash > UL_CRASH ? ul_ncrash - UL_CRASH : 0;
+     size_t n, k;
+-    static const char h[] = "\nlast USB/GIP log lines (oldest first):\n";
++    static const char h[] = "\n[gip] state:";
++    static const char h2[] = "\n[gip] last log lines (oldest first):\n";
+     memcpy(out, h, sizeof(h) - 1);
+     n = sizeof(h) - 1;
++    if (usbgip_summary) {                       /* pad state + OHCI TD low-water, one line */
++        int k2 = usbgip_summary(out + n, 160);
++        if (k2 > 0) n += (k2 < 159 ? (size_t)k2 : 159);
++    }
++    memcpy(out + n, h2, sizeof(h2) - 1);
++    n += sizeof(h2) - 1;
+     for (i = first; i < ul_ncrash; i++) {
+         const char *l = ul_crash[i % UL_CRASH];
+         for (k = 0; k < UL_CRASH_COLS - 1 && l[k]; k++) ;

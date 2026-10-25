@@ -10,7 +10,9 @@ namespace xcloud360 {
 namespace {
 
 constexpr size_t kMaxAccessUnitBytes = 2 * 1024 * 1024;
-constexpr uint64_t kHoldMs = 200;
+// Fase 1: 200 -> 100ms. Com RTCP NACK real (antes era só pedido de IDR), a
+// retransmissão chega em ~1 RTT; segurar 200ms só congelava a fila inteira.
+constexpr uint64_t kHoldMs = 100;
 constexpr size_t kMaxFrames = 32;
 const uint8_t kStartCode[4] = {0x00, 0x00, 0x00, 0x01};
 

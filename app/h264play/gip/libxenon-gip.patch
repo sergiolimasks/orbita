@@ -1,0 +1,2107 @@
+diff -ruN
+--- a/drivers/input/input.c	2026-09-07 14:57:42.171622570 -0300
++++ b/drivers/input/input.c	2026-10-25 03:21:16.213173974 -0300
+@@ -22,8 +22,10 @@
+ }
+ 
+ extern int usbctrl_set_rumble(int port, uint8_t l, uint8_t r);
++extern int usbgip_set_rumble(int port, uint8_t l, uint8_t r);
+ 
+ void set_controller_rumble(int port, uint8_t l, uint8_t r)
+ {
+-	usbctrl_set_rumble(port, l, r);
++	if (usbctrl_set_rumble(port, l, r) < 0)
++		usbgip_set_rumble(port, l, r);
+ }
+diff -ruN
+--- a/drivers/ppc/c_except.c	2026-09-07 14:57:42.190098311 -0300
++++ b/drivers/ppc/c_except.c	2026-10-25 03:21:16.249806564 -0300
+@@ -85,6 +85,14 @@
+ 		
+ 	flush_console();
+ 	
++	/* GIP diagnostics (usblog.c, weak; static buffers only, safe here) */
++	{
++		extern const char *usblog_crash_tail(void) __attribute__((weak));
++		if (usblog_crash_tail) {
++			strncat(text, usblog_crash_tail(), 2000);
++			flush_console();
++		}
++	}
+ 	sprintf(text,"%spir=%016llx dar=%016llx\nsr0=%016llx sr1=%016llx lr=%016llx\n\n",
+ 			text,context[39],context[38],context[36],context[37],context[32]);
+ 	
+diff -ruN
+--- a/drivers/usb/gip_proto.c	1969-12-31 21:00:00.000000000 -0300
++++ b/drivers/usb/gip_proto.c	2026-10-25 03:21:16.246311987 -0300
+@@ -0,0 +1,319 @@
++/*
++ * gip_proto.c - GIP (Xbox One / Series wired pad) protocol layer.
++ *
++ * Derived code, see gip_proto.h and GIP-CONTROLLER.md "Licensing":
++ *  - xpad (GPL-2.0-or-later): init quirk table + bytes, report 0x20 layout,
++ *    guide ack, rumble.
++ *  - xone (GPL-2.0-or-later): header framing (LEB128), chunk ack layout,
++ *    "sequence never 0".
++ *  - XboxInput / riffmaster-rgh360 (GPL-3.0): identify request, 15-byte
++ *    locale POWER packet, the host-reactive order for Microsoft pads.
++ */
++#include <string.h>
++#include "gip_proto.h"
++
++#define SEQ0 0x00
++
++/* ---- xpad init list (third-party pads) */
++static const uint8_t pkt_power_on[] = { GIP_CMD_POWER, GIP_OPT_INTERNAL, SEQ0, 0x01, 0x00 };
++static const uint8_t pkt_s_init[] = { GIP_CMD_POWER, GIP_OPT_INTERNAL, SEQ0, 0x0f, 0x06 };
++static const uint8_t pkt_extra_input[] = { 0x4d, 0x10, 0x01, 0x02, 0x07, 0x00 };
++static const uint8_t pkt_hori_ack_id[] = {
++    GIP_CMD_ACK, GIP_OPT_INTERNAL, SEQ0, 0x09,
++    0x00, GIP_CMD_IDENTIFY, GIP_OPT_INTERNAL, 0x3a, 0x00, 0x00, 0x00, 0x80, 0x00 };
++static const uint8_t pkt_led_on[] = { GIP_CMD_LED, GIP_OPT_INTERNAL, SEQ0, 0x03, 0x00, 0x01, 0x14 };
++static const uint8_t pkt_auth_done[] = { GIP_CMD_AUTHENTICATE, GIP_OPT_INTERNAL, SEQ0, 0x02, 0x01, 0x00 };
++static const uint8_t pkt_rumble_begin[] = {
++    GIP_CMD_RUMBLE, 0x00, SEQ0, 0x09, 0x00, 0x0f, 0x00, 0x00, 0x1d, 0x1d, 0xff, 0x00, 0x00 };
++static const uint8_t pkt_rumble_end[] = {
++    GIP_CMD_RUMBLE, 0x00, SEQ0, 0x09, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
++/* ---- host-reactive sequence (Windows capture via riffmaster PROTOCOL.md, XboxInput) */
++static const uint8_t pkt_identify[] = { GIP_CMD_IDENTIFY, GIP_OPT_INTERNAL, SEQ0, 0x00 };
++static const uint8_t pkt_locale[] = { GIP_CMD_POWER, GIP_OPT_INTERNAL, SEQ0, 0x0f,
++    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 'U', 'S', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
++
++typedef struct {
++    uint16_t vid, pid;          /* 0 = any */
++    const uint8_t *data;
++    uint8_t len;
++} init_entry_t;
++
++#define E(v, p, a) { (v), (p), (a), (uint8_t)sizeof(a) }
++/* Same order as xpad's xboxone_init_packets[]. */
++static const init_entry_t init_table[] = {
++    E(0x0e6f, 0x0165, pkt_hori_ack_id),
++    E(0x0f0d, 0x0067, pkt_hori_ack_id),
++    E(0x0000, 0x0000, pkt_power_on),
++    E(0x045e, 0x02ea, pkt_s_init),
++    E(0x045e, 0x0b00, pkt_s_init),
++    E(0x045e, 0x0b00, pkt_extra_input),
++    E(0x0000, 0x0000, pkt_led_on),
++    E(0x0000, 0x0000, pkt_auth_done),
++    E(0x24c6, 0x541a, pkt_rumble_begin),
++    E(0x24c6, 0x542a, pkt_rumble_begin),
++    E(0x24c6, 0x543a, pkt_rumble_begin),
++    E(0x24c6, 0x541a, pkt_rumble_end),
++    E(0x24c6, 0x542a, pkt_rumble_end),
++    E(0x24c6, 0x543a, pkt_rumble_end),
++};
++#undef E
++
++static void put(gip_pkt_t *out, const uint8_t *d, int n, uint8_t flags)
++{
++    memset(out, 0, sizeof(*out));
++    memcpy(out->data, d, n);
++    out->len = (uint8_t)n;
++    out->flags = flags;
++}
++
++int gip_build_init(uint16_t vid, uint16_t pid, gip_pkt_t *out, int max)
++{
++    int n = 0;
++    unsigned i;
++    for (i = 0; i < sizeof(init_table) / sizeof(init_table[0]) && n < max; i++) {
++        const init_entry_t *e = &init_table[i];
++        if (e->vid && e->vid != vid) continue;
++        if (e->pid && e->pid != pid) continue;
++        put(&out[n], e->data, e->len, GIP_PF_STAMP_SEQ | GIP_PF_INIT);
++        n++;
++    }
++    if (n > 0) out[n - 1].flags |= GIP_PF_INIT_LAST;
++    return n;
++}
++
++void gip_build_power_on(gip_pkt_t *out, int seq_zero)
++{
++    /* XboxInput's early power-on is exactly 05 20 00 01 00 (sequence 0) */
++    put(out, pkt_power_on, sizeof(pkt_power_on), seq_zero ? 0 : GIP_PF_STAMP_SEQ);
++}
++
++void gip_build_identify(gip_pkt_t *out) { put(out, pkt_identify, sizeof(pkt_identify), GIP_PF_STAMP_SEQ); }
++void gip_build_locale(gip_pkt_t *out) { put(out, pkt_locale, sizeof(pkt_locale), GIP_PF_STAMP_SEQ); }
++void gip_build_led_on(gip_pkt_t *out) { put(out, pkt_led_on, sizeof(pkt_led_on), GIP_PF_STAMP_SEQ); }
++
++void gip_build_ack(gip_pkt_t *out, uint8_t seq, uint8_t cmd, uint16_t received, uint16_t remaining)
++{
++    memset(out, 0, sizeof(*out));
++    out->data[0] = GIP_CMD_ACK;
++    out->data[1] = GIP_OPT_INTERNAL;
++    out->data[2] = seq;                 /* echo the pad's sequence */
++    out->data[3] = 0x09;
++    out->data[4] = 0x00;
++    out->data[5] = cmd;
++    out->data[6] = GIP_OPT_INTERNAL;
++    out->data[7] = (uint8_t)(received & 0xff);
++    out->data[8] = (uint8_t)(received >> 8);
++    out->data[9] = 0x00;
++    out->data[10] = 0x00;
++    out->data[11] = (uint8_t)(remaining & 0xff);
++    out->data[12] = (uint8_t)(remaining >> 8);
++    out->len = 13;
++    out->flags = 0;
++}
++
++void gip_build_rumble(gip_pkt_t *out, uint8_t l, uint8_t r)
++{
++    memset(out, 0, sizeof(*out));
++    out->data[0] = GIP_CMD_RUMBLE;
++    out->data[1] = 0x00;
++    out->data[2] = SEQ0;
++    out->data[3] = 0x09;
++    out->data[4] = 0x00;
++    out->data[5] = 0x0f;                /* all motors */
++    out->data[6] = 0x00;
++    out->data[7] = 0x00;
++    out->data[8] = (uint8_t)(l / 2);
++    out->data[9] = (uint8_t)(r / 2);
++    out->data[10] = 0xff;
++    out->data[11] = 0x00;
++    out->data[12] = 0xff;
++    out->len = 13;
++    out->flags = GIP_PF_STAMP_SEQ;
++}
++
++uint8_t gip_next_seq(uint8_t *ctr)
++{
++    uint8_t s = *ctr;
++    if (s == 0) s = 1;
++    *ctr = (uint8_t)(s + 1);
++    return s;
++}
++
++static int rd_varint(const uint8_t *b, int len, uint32_t *v)
++{
++    uint32_t x = 0;
++    int i;
++    for (i = 0; i < 4 && i < len; i++) {
++        x |= (uint32_t)(b[i] & 0x7f) << (7 * i);
++        if (!(b[i] & 0x80)) { *v = x; return i + 1; }
++    }
++    return 0;
++}
++
++int gip_decode_header(const uint8_t *b, int len, gip_hdr_t *h)
++{
++    int n, off = 3;
++    if (!b || len < 4) return 0;
++    h->cmd = b[0]; h->opt = b[1]; h->seq = b[2];
++    h->plen = 0; h->coff = 0;
++    n = rd_varint(b + off, len - off, &h->plen);
++    if (!n) return 0;
++    off += n;
++    if (h->opt & GIP_OPT_CHUNK) {
++        n = rd_varint(b + off, len - off, &h->coff);
++        if (!n) return 0;
++        off += n;
++    }
++    h->hlen = off;
++    return 1;
++}
++
++static inline int16_t rd_s16(const uint8_t *p) { return (int16_t)(uint16_t)(p[0] | (p[1] << 8)); }
++static inline uint16_t rd_u16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
++
++static unsigned char trig8(uint16_t v)
++{
++    if (v > 1023) v = 1023;             /* GIP triggers are 10 bit */
++    return (unsigned char)(v >> 2);     /* 0..255 like the 360 report */
++}
++
++int gip_parse_ex(gip_state_t *st, const uint8_t *b, int len, gip_pkt_t *ack, int *consumed)
++{
++    gip_hdr_t h;
++    int ev = 0;
++    if (consumed) *consumed = 0;
++    if (!b || len < 4 || !gip_decode_header(b, len, &h)) { st->n_short++; return 0; }
++    if (h.cmd == 0x00) return 0;                    /* zero padding: end of data */
++    long total = (long)h.hlen + (long)h.plen;
++    if (total > len) {
++        /* truncated: the 0x20 report is still usable if its 18 bytes are there
++         * (some firmwares pad the length); anything else is dropped */
++        if (!(h.cmd == GIP_CMD_INPUT && len >= 18)) { st->n_short++; return 0; }
++        total = len;
++    }
++    if (consumed) *consumed = (int)total;
++    const uint8_t *p = b + h.hlen;
++    int plen_have = (int)(total - h.hlen);
++
++    if ((h.opt & GIP_OPT_ACK) && ack) {
++        uint32_t received, remaining = 0;
++        if (h.opt & GIP_OPT_CHUNK) {
++            if (h.opt & GIP_OPT_CHUNK_START) {
++                st->chunk_total = h.coff;      /* first chunk: offset = total length */
++                received = h.plen;
++            } else {
++                received = h.coff + h.plen;
++            }
++            remaining = st->chunk_total > received ? st->chunk_total - received : 0;
++        } else {
++            received = h.plen;
++        }
++        gip_build_ack(ack, h.seq, h.cmd, (uint16_t)received, (uint16_t)remaining);
++        st->n_acks++;
++        ev |= GIP_EV_ACK;
++    }
++
++    switch (h.cmd) {
++    case GIP_CMD_INPUT:
++        if (h.opt & GIP_OPT_INTERNAL) break;
++        if (h.hlen != 4 || total < 18) { st->n_short++; break; }
++        {
++            struct controller_data_s *c = &st->c;
++            c->start = !!(b[4] & 0x04);   /* Menu */
++            c->back  = !!(b[4] & 0x08);   /* View */
++            c->a     = !!(b[4] & 0x10);
++            c->b     = !!(b[4] & 0x20);
++            c->x     = !!(b[4] & 0x40);
++            c->y     = !!(b[4] & 0x80);
++            c->up    = !!(b[5] & 0x01);
++            c->down  = !!(b[5] & 0x02);
++            c->left  = !!(b[5] & 0x04);
++            c->right = !!(b[5] & 0x08);
++            c->lb    = !!(b[5] & 0x10);
++            c->rb    = !!(b[5] & 0x20);
++            c->s1_z  = !!(b[5] & 0x40);
++            c->s2_z  = !!(b[5] & 0x80);
++            c->lt    = trig8(rd_u16(b + 6));
++            c->rt    = trig8(rd_u16(b + 8));
++            /* Raw GIP sticks use the same convention as the raw 360 report
++             * usbctrl.c hands out (Y positive = up): no sign flip. */
++            c->s1_x  = rd_s16(b + 10);
++            c->s1_y  = rd_s16(b + 12);
++            c->s2_x  = rd_s16(b + 14);
++            c->s2_y  = rd_s16(b + 16);
++        }
++        st->have_input = 1;
++        st->n_input++;
++        ev |= GIP_EV_INPUT;
++        break;
++
++    case GIP_CMD_VIRTUAL_KEY:
++        if (plen_have < 1) { st->n_short++; break; }
++        st->c.logo = (p[0] & 0x03) ? 1 : 0;
++        st->n_guide++;
++        ev |= GIP_EV_GUIDE;
++        break;
++
++    case GIP_CMD_ANNOUNCE:
++        if (!(h.opt & GIP_OPT_INTERNAL)) break;
++        if (plen_have >= 12) {
++            st->ann_vid = rd_u16(p + 8);
++            st->ann_pid = rd_u16(p + 10);
++        }
++        st->n_announce++;
++        ev |= GIP_EV_ANNOUNCE;
++        break;
++
++    case GIP_CMD_IDENTIFY:
++        if (!(h.opt & GIP_OPT_INTERNAL)) break;
++        st->n_identify++;
++        ev |= GIP_EV_IDENTIFY;
++        /* chunked reply ends with a zero-length chunk; an unchunked reply is
++         * complete by itself */
++        if (!(h.opt & GIP_OPT_CHUNK) || h.plen == 0) ev |= GIP_EV_IDENTIFY_DONE;
++        break;
++
++    case GIP_CMD_STATUS:
++        ev |= GIP_EV_STATUS;
++        break;
++
++    default:
++        st->n_other++;
++        break;
++    }
++    return ev;
++}
++
++int gip_parse(gip_state_t *st, const uint8_t *b, int len, gip_pkt_t *ack)
++{
++    return gip_parse_ex(st, b, len, ack, NULL);
++}
++
++typedef struct { uint16_t pid; const char *name; } ms_model_t;
++static const ms_model_t ms_models[] = {
++    { 0x02d1, "Xbox One" },
++    { 0x02dd, "Xbox One (2015 fw)" },
++    { 0x02e3, "Xbox One Elite" },
++    { 0x02ea, "Xbox One S" },
++    { 0x0b00, "Xbox Elite Series 2" },
++    { 0x0b0a, "Xbox Adaptive" },
++    { 0x0b12, "Xbox Series X|S" },
++};
++
++int gip_is_known_pid(uint16_t vid, uint16_t pid)
++{
++    unsigned i;
++    if (vid != 0x045e) return 0;
++    for (i = 0; i < sizeof(ms_models) / sizeof(ms_models[0]); i++)
++        if (ms_models[i].pid == pid) return 1;
++    return 0;
++}
++
++const char *gip_model_name(uint16_t vid, uint16_t pid)
++{
++    unsigned i;
++    if (vid == 0x045e)
++        for (i = 0; i < sizeof(ms_models) / sizeof(ms_models[0]); i++)
++            if (ms_models[i].pid == pid) return ms_models[i].name;
++    return "GIP pad";
++}
+diff -ruN
+--- a/drivers/usb/gip_proto.h	1969-12-31 21:00:00.000000000 -0300
++++ b/drivers/usb/gip_proto.h	2026-10-25 03:21:16.246498081 -0300
+@@ -0,0 +1,117 @@
++/*
++ * gip_proto.h - Xbox One / Series "Game Input Protocol" (GIP) over wired USB.
++ *
++ * Pure protocol layer (no USB, no malloc, no globals): builds the host->pad
++ * packets and parses pad->host packets into the libxenon
++ * struct controller_data_s.  Host-testable (hosttest/test_gip.c).
++ *
++ * Sources (see app/h264play/GIP-CONTROLLER.md, "Licensing"):
++ *  - Linux xpad (GPL-2.0-or-later): report 0x20 layout, xpad init quirk table
++ *    (third-party pads), guide ack, rumble layout.
++ *  - medusalix/xone (GPL-2.0-or-later): header/varint framing, chunk ack.
++ *  - XboxInput (GPL-3.0) and riffmaster-rgh360 docs/PROTOCOL.md (GPL-3.0):
++ *    the host-reactive sequence that works for 045e:0b12 on an Xbox 360 USB
++ *    host (power-on, IDENTIFY on announce, chunk acks, 15-byte locale POWER,
++ *    power-on, LED; no auth), and its exact bytes.
++ */
++#ifndef GIP_PROTO_H
++#define GIP_PROTO_H
++
++#include <stdint.h>
++#include <input/input.h>
++
++/* GIP commands (byte 0 of every packet) */
++#define GIP_CMD_ACK          0x01
++#define GIP_CMD_ANNOUNCE     0x02
++#define GIP_CMD_STATUS       0x03
++#define GIP_CMD_IDENTIFY     0x04
++#define GIP_CMD_POWER        0x05
++#define GIP_CMD_AUTHENTICATE 0x06
++#define GIP_CMD_VIRTUAL_KEY  0x07   /* Guide/Xbox button */
++#define GIP_CMD_RUMBLE       0x09
++#define GIP_CMD_LED          0x0a
++#define GIP_CMD_FIRMWARE     0x0c
++#define GIP_CMD_INPUT        0x20
++
++/* options (byte 1) */
++#define GIP_OPT_ACK          0x10
++#define GIP_OPT_INTERNAL     0x20
++#define GIP_OPT_CHUNK_START  0x40
++#define GIP_OPT_CHUNK        0x80
++
++#define GIP_MAX_PKT          64     /* full-speed interrupt mps */
++#define GIP_MAX_INIT         8      /* longest init list for one model is 5 */
++
++/* gip_pkt_t.flags */
++#define GIP_PF_STAMP_SEQ     0x01   /* byte 2 gets the next host sequence number at send time */
++#define GIP_PF_INIT          0x02   /* part of the init sequence */
++#define GIP_PF_INIT_LAST     0x04   /* last packet of the init sequence */
++#define GIP_PF_EARLY_POWER   0x08   /* the first power-on: start reading when it completes */
++
++typedef struct {
++    uint8_t len;
++    uint8_t flags;
++    uint8_t data[GIP_MAX_PKT];
++} gip_pkt_t;
++
++typedef struct {
++    uint8_t cmd, opt, seq;
++    uint32_t plen;        /* payload length (LEB128) */
++    uint32_t coff;        /* chunk offset (LEB128, only with GIP_OPT_CHUNK) */
++    int hlen;             /* header length in bytes */
++} gip_hdr_t;
++
++/* Parser state for one pad (kept by the USB glue, one per pad). */
++typedef struct {
++    struct controller_data_s c;   /* last published state (input + guide) */
++    int have_input;               /* got at least one valid 0x20 report */
++    uint32_t chunk_total;         /* total length announced by the last CHUNK_START */
++    unsigned n_input, n_guide, n_announce, n_acks, n_short, n_other, n_identify;
++    uint16_t ann_vid, ann_pid;    /* from the last announce */
++} gip_state_t;
++
++/* gip_parse() return bits */
++#define GIP_EV_INPUT         0x01   /* st->c changed from a 0x20 report */
++#define GIP_EV_GUIDE         0x02   /* st->c.logo changed from a 0x07 report */
++#define GIP_EV_ANNOUNCE      0x04   /* pad (re)announced itself */
++#define GIP_EV_ACK           0x08   /* *ack was filled and must be sent */
++#define GIP_EV_IDENTIFY      0x10   /* an identify reply (chunk) arrived */
++#define GIP_EV_IDENTIFY_DONE 0x20   /* ... and it was the last one */
++#define GIP_EV_STATUS        0x40
++
++/* Decode the variable-length GIP header at b.  0 on error. */
++int gip_decode_header(const uint8_t *b, int len, gip_hdr_t *h);
++
++/* xpad init list for (vid,pid) (xpad xboxone_init_packets order).  Packets
++ * get GIP_PF_STAMP_SEQ|GIP_PF_INIT, the last one also GIP_PF_INIT_LAST.
++ * Used for third-party pads.  Returns the number of packets (<= max). */
++int gip_build_init(uint16_t vid, uint16_t pid, gip_pkt_t *out, int max);
++
++/* Host-reactive sequence (Microsoft pads, as XboxInput / Windows do it) */
++void gip_build_power_on(gip_pkt_t *out, int seq_zero);  /* 05 20 ss 01 00 */
++void gip_build_identify(gip_pkt_t *out);                /* 04 20 ss 00 */
++void gip_build_locale(gip_pkt_t *out);                  /* 05 20 ss 0f 06 00.. 'U' 'S' 00.. */
++void gip_build_led_on(gip_pkt_t *out);                  /* 0a 20 ss 03 00 01 14 */
++
++/* Ack for a packet that asked for one (opt & GIP_OPT_ACK).  Unchunked:
++ * same bytes as xpad's mode_report_ack for cmd 0x07.  Chunked: xone's
++ * gip_pkt_acknowledge with received/remaining. */
++void gip_build_ack(gip_pkt_t *out, uint8_t seq, uint8_t cmd, uint16_t received, uint16_t remaining);
++
++/* Rumble (xpad layout): l = strong/left motor, r = weak/right, 0..255. */
++void gip_build_rumble(gip_pkt_t *out, uint8_t l, uint8_t r);
++
++/* Host sequence counter: 1..255, never 0 (xone: "sequence is always > 0"). */
++uint8_t gip_next_seq(uint8_t *ctr);
++
++/* Parse the FIRST packet in buf.  Updates st->c in place; fills *ack when the
++ * packet requested an acknowledgement.  *consumed (if not NULL) = bytes of
++ * that packet (header + payload), 0 if buf holds no further packet.  Never
++ * reads past len.  A USB transfer can carry several GIP packets. */
++int gip_parse_ex(gip_state_t *st, const uint8_t *buf, int len, gip_pkt_t *ack, int *consumed);
++int gip_parse(gip_state_t *st, const uint8_t *buf, int len, gip_pkt_t *ack);
++
++int gip_is_known_pid(uint16_t vid, uint16_t pid);
++const char *gip_model_name(uint16_t vid, uint16_t pid);
++
++#endif
+diff -ruN
+--- a/drivers/usb/ohci.c	2026-09-07 14:57:42.190823079 -0300
++++ b/drivers/usb/ohci.c	2026-10-25 03:21:16.249407346 -0300
+@@ -64,6 +64,20 @@
+ #include "usbchap9.h"
+ #include "usbd.h"
+ #include "ohci.h"
++#include "usblog.h"
++
++/* GIP v5.1: REAL uncached alias for the OHCI descriptor pools.  libxenon's
++ * page table (drivers/ppc/vm.c) maps RAM cached at 0x80000000 and
++ * cache-inhibited at 0xA0000000; cfe.h's UNCADDR(x) = x|0x80000000 is the
++ * CACHED alias, so EDs/TDs/HCCA lived in cache while the (non-snooped)
++ * OHCI DMA read stale memory: an ED inserted into the periodic list could
++ * stay invisible to the HC (v5: IN ED never visited, CC=F forever, while
++ * the OUT ED behind the old link ran).  tinyehci flushes its descriptors
++ * for the same reason.  Data buffers keep their flush/invalidate. */
++#undef PHYSADDR
++#undef UNCADDR
++#define PHYSADDR(x)  ((x) & 0x1FFFFFFFUL)
++#define UNCADDR(x)   (PHYSADDR(x) | 0xA0000000UL)
+ 
+ 
+ /*  *********************************************************************
+@@ -412,6 +426,17 @@
+     *  	   transfer descriptor, or NULL
+     ********************************************************************* */
+ 
++/* GIP hardening: free-TD accounting (low-water mark in the GIP summary) */
++int ohci_td_low_water = 1 << 30;
++unsigned ohci_td_refused;
++static int _ohci_count_free(ohci_softc_t *softc)
++{
++    int n = 0;
++    ohci_transfer_t *t = softc->ohci_transfer_freelist;
++    while (t && n < OHCI_TDPOOL_SIZE + 1) { n++; t = t->t_next; }
++    return n;
++}
++
+ static ohci_transfer_t *_ohci_allocxfer(ohci_softc_t *softc)
+ {
+     ohci_transfer_t *t;
+@@ -435,6 +460,7 @@
+ 	}
+ 
+     softc->ohci_transfer_freelist = t->t_next;
++    { int nf = _ohci_count_free(softc); if (nf < ohci_td_low_water) ohci_td_low_water = nf; }
+ 
+     td = ohci_td_from_transfer(softc,t);
+ 
+@@ -517,7 +543,7 @@
+     *  	   base pointer, or NULL if request fails
+     ********************************************************************* */
+ 
+-#define CACHE_ALIGN    32       /* XXX place holder, big enough to now. */
++#define CACHE_ALIGN    128      /* GIP v5.1: Xenon L2 line (was 32) */
+ #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
+ 
+ static void * _ohci_dma_alloc(size_t size, unsigned int align)
+@@ -954,7 +980,7 @@
+      * Get the head of the queue
+      */
+ 
+-    doneq = BSWAP32(donehead);
++    doneq = BSWAP32(donehead) & M_OHCI_ED_PTRMASK;
+ 
+     td = (ohci_td_t *) OHCI_PTOV(doneq);
+     transfer = ohci_transfer_from_td(softc,td);
+@@ -990,7 +1016,7 @@
+ 	    }
+ #endif
+ 
+-	doneq = BSWAP32(td->td_next_td);
++	doneq = BSWAP32(td->td_next_td) & M_OHCI_ED_PTRMASK;
+ 
+ 	val = G_OHCI_TD_CC(BSWAP32(td->td_control));
+ 
+@@ -1261,7 +1287,9 @@
+     ept = _ohci_allocept(softc);
+     ed = ohci_ed_from_endpoint(softc,ept);
+ 
++    if (!ept) { usblog_bc("bc ohci: out of EDs"); return NULL; }
+     tailtransfer = _ohci_allocxfer(softc);
++    if (!tailtransfer) { usblog_bc("bc ohci: out of TDs creating an ED"); _ohci_freeept(softc,ept); return NULL; }
+     tailtd = ohci_td_from_transfer(softc,tailtransfer);
+ 
+     /*
+@@ -1328,7 +1356,24 @@
+ 	}
+     else if (flags & UP_TYPE_INTR) {
+ 	/* XXX Choose place in inttable properly. */
+-	_ohci_queueept(softc,softc->ohci_inttable[0],ept);
++	/* GIP: usb_open_pipe_interval() puts the interval in the flags.  The
++	 * nodes 31 (=inttable[0], 32 ms), 15, 7, 3, 1, 0 (1 ms) are one
++	 * parent chain, so ohci_ept_delete() still finds the ED walking from
++	 * inttable[0].  Without the flag: unchanged (32 ms leaf). */
++	{
++	int ival = (flags >> UP_IVAL_SHIFT) & 0xff;
++	int node = ival >= 32 ? 31 : ival >= 16 ? 15 : ival >= 8 ? 7 :
++	           ival >= 4 ? 3 : ival >= 2 ? 1 : 0;
++	if (ival && softc->ohci_edtable[node]) {
++	    usblog_bc("bc ohci: ED %p ep %d mps %d ival %d -> tree node %d (%p)",
++	              (void *)ept, eptnum, mps, ival, node, (void *)softc->ohci_edtable[node]);
++	    _ohci_queueept(softc,softc->ohci_edtable[node],ept);
++	    usblog_bc("bc ohci: ED %p linked (next phys %08x)", (void *)ept,
++	              (unsigned)BSWAP32(ed->ed_next_ed));
++	    }
++	else
++	    _ohci_queueept(softc,softc->ohci_inttable[0],ept);
++	}
+ 	}
+ 
+     return (usb_ept_t *) ept;
+@@ -1576,6 +1621,18 @@
+ 	return ohci_roothub_xfer(bus,uept,ur);
+ 	}
+ 
++    /* GIP hardening: refuse (request left idle with an error status)
++     * instead of building TDs from a NULL transfer when the pool is empty */
++    {
++	int need = ur->ur_length > 0 ? (ur->ur_length + (OHCI_TD_MAX_DATA - 16) - 1) / (OHCI_TD_MAX_DATA - 16) + 1 : 1;
++	if (_ohci_count_free(softc) < need) {
++	    if (ohci_td_refused++ < 8) usblog_bc("bc ohci: out of TDs (need %d), transfer refused", need);
++	    ur->ur_inprogress = 0;
++	    ur->ur_status = UR_ERR_BUFFEROVERRUN;
++	    return -1;
++	    }
++    }
++
+     /*
+      * Set up the TD flags based on the 
+      * request type.
+@@ -2260,3 +2317,68 @@
+ 
+     return 0;
+ }
++
++
++/*  *********************************************************************
++    *  GIP v5 diagnostics: raw OHCI state of one endpoint and of the HC.
++    *  Read-only.  vis = how many of the 32 HCCA interrupt slots reach the ED
++    *  (0 = the HC can never visit it).
++    ********************************************************************* */
++
++int ohci_debug_ept(usbdev_t *dev,int epaddr,char *out,int cap)
++{
++    usbpipe_t *pipe;
++    ohci_softc_t *softc;
++    ohci_endpoint_t *ept;
++    ohci_ed_t *ed;
++    uint32_t c, h, t, nx, tdc = 0, cbp = 0, be = 0, tdn = 0;
++    int vis = 0, slot;
++
++    if (!dev || !dev->ud_bus) return snprintf(out,cap,"no dev");
++    pipe = dev->ud_pipes[USB_EPADDR_TO_IDX(epaddr)];
++    if (!pipe || !pipe->up_hwendpoint) return snprintf(out,cap,"ep%02x no pipe",epaddr);
++    softc = (ohci_softc_t *) dev->ud_bus->ub_hwsoftc;
++    ept = (ohci_endpoint_t *) pipe->up_hwendpoint;
++    ed = ohci_ed_from_endpoint(softc,ept);
++    c = BSWAP32(ed->ed_control);
++    h = BSWAP32(ed->ed_headp);
++    t = BSWAP32(ed->ed_tailp);
++    nx = BSWAP32(ed->ed_next_ed);
++    if ((h & M_OHCI_ED_PTRMASK) && (h & M_OHCI_ED_PTRMASK) != (t & M_OHCI_ED_PTRMASK)) {
++	ohci_td_t *td = (ohci_td_t *) OHCI_PTOV(h & M_OHCI_ED_PTRMASK);
++	tdc = BSWAP32(td->td_control);
++	cbp = BSWAP32(td->td_cbp);
++	be = BSWAP32(td->td_be);
++	tdn = BSWAP32(td->td_next_td);
++	}
++    for (slot = 0; slot < OHCI_INTTABLE_SIZE; slot++) {
++	uint32_t ph = BSWAP32(softc->ohci_hcca->hcca_inttable[slot]) & M_OHCI_ED_PTRMASK;
++	int k = 0;
++	while (ph && k++ < 256) {
++	    if (ph == ept->ep_phys) { vis++; break; }
++	    ph = BSWAP32(((ohci_ed_t *) OHCI_PTOV(ph))->ed_next_ed) & M_OHCI_ED_PTRMASK;
++	    }
++	}
++    return snprintf(out,cap,"bus%d a%d ep%02x ed c=%08x h=%08x t=%08x n=%08x vis%d td c=%08x cbp=%08x be=%08x nx=%08x",
++		    dev->ud_bus->ub_num,dev->ud_address,epaddr,(unsigned)c,(unsigned)h,(unsigned)t,(unsigned)nx,vis,
++		    (unsigned)tdc,(unsigned)cbp,(unsigned)be,(unsigned)tdn);
++}
++
++int ohci_debug_hc(usbbus_t *bus,char *out,int cap)
++{
++    ohci_softc_t *softc = (ohci_softc_t *) bus->ub_hwsoftc;
++    uint32_t ra = OHCI_READCSR(softc,R_OHCI_RHDSCRA);
++    int ndp = ra & 0xff, n, i;
++    n = snprintf(out,cap,"hc%d ctl=%08x fm=%04x pced=%08x pst=%08x ist=%08x ien=%08x hcca0=%08x dh=%08x rh",
++		 bus->ub_num,(unsigned)OHCI_READCSR(softc,R_OHCI_CONTROL),
++		 (unsigned)(OHCI_READCSR(softc,R_OHCI_FMNUMBER) & 0xffff),
++		 (unsigned)OHCI_READCSR(softc,R_OHCI_PERIODCURRENTED),
++		 (unsigned)OHCI_READCSR(softc,R_OHCI_PERIODICSTART),
++		 (unsigned)OHCI_READCSR(softc,R_OHCI_INTSTATUS),
++		 (unsigned)OHCI_READCSR(softc,R_OHCI_INTENABLE),
++		 (unsigned)BSWAP32(softc->ohci_hcca->hcca_inttable[0]),
++		 (unsigned)BSWAP32(softc->ohci_hcca->hcca_donehead));
++    for (i = 1; i <= ndp && i <= 4 && n > 0 && n < cap - 12; i++)
++	n += snprintf(out + n,cap - n," %08x",(unsigned)OHCI_READCSR(softc,R_OHCI_RHPORTSTATUS(i)));
++    return n;
++}
+diff -ruN
+--- a/drivers/usb/tinyehci/ehci.c	2026-09-07 14:57:42.192146617 -0300
++++ b/drivers/usb/tinyehci/ehci.c	2026-10-25 03:21:16.247614050 -0300
+@@ -246,6 +246,7 @@
+ }
+ 
+ #include "ehci-mem.c"
++#include "../usblog.h"
+ 
+ /* one-time init, only for memory state */
+ static int ehci_init(struct ehci_hcd * ehci, int default_ctrlr) {
+@@ -847,6 +848,8 @@
+ 	handshake_mode = f;
+ 	if (!(status & PORT_PE)) {
+ 		printf("EHCI bus %d port %d: low speed, releasing to OHCI\n",ehci->bus_id,port+1);
++		usblog("ehci bus %d port %d: not high-speed (status %08x), releasing to OHCI",
++		       ehci->bus_id, port+1, (unsigned)status);
+ 
+ 		// that means is low speed device so release
+ 		status |= PORT_OWNER;
+diff -ruN
+--- a/drivers/usb/tinyehci/usbstorage.c	2026-09-07 14:57:42.192146617 -0300
++++ b/drivers/usb/tinyehci/usbstorage.c	2026-10-25 03:21:16.247880440 -0300
+@@ -1243,7 +1243,8 @@
+ 					device_data->__dev = dev;					
+ 
+ 					if (USBStorage_Try_Device(device_data) == 0) {
+-						printf("EHCI bus %d device %d: vendor %04X product %04X : Mass-Storage Device\n", j, dev->id, device_data->__vid, device_data->__pid);
++						printf("EHCI bus %d device %d: vendor %04X product %04X : Mass-Storage Device\n", j, dev->id, device_data->__vid, device_data->__pid);
++						usblog("ehci bus %d device %d: %04x:%04x mass storage", j, dev->id, device_data->__vid, device_data->__pid);
+ 
+ 						first_access = TRUE;
+ 						handshake_mode = 0;
+@@ -1273,7 +1274,11 @@
+ 
+ #endif
+ 
+-				if (status & 1) {
++				if (status & 1) {
++					static unsigned n_ehci_reset_log;
++					if (n_ehci_reset_log++ < 16)
++						usblog("ehci bus %d port %d: connect status %08x, resetting (#%u)", j, i,
++						       (unsigned)status, n_ehci_reset_log);
+ 					if (ehci_reset_port2(ehci, i) < 0) {
+ 						ehci_msleep(100);
+ 						ehci_reset_port(ehci, i);
+diff -ruN
+--- a/drivers/usb/usbctrl.c	2026-09-07 14:57:42.192146617 -0300
++++ b/drivers/usb/usbctrl.c	2026-10-25 03:21:16.249649267 -0300
+@@ -73,6 +73,7 @@
+ static int controller_mask = 0;
+ 
+ usbdev_t *RFdev;
++unsigned usbctrl_rx_count;	/* GIP v5 diagnostics: IN completions */
+ 
+ typedef struct usbctrl_softc_s {
+ 	int uhid_ipipe;
+@@ -121,6 +122,27 @@
+ 	return usb_simple_request(RFdev, 0x40, 0x02, controllerMask, 0x00);
+ }
+ 
++/* Controller slots shared with usbgip.c (Xbox One pads): lowest free
++ * index 0..3, same rule as the wired/wireless 360 code below. */
++int usbctrl_slot_alloc(void)
++{
++	int i;
++	for (i = 0; i < 4 && (controller_mask & (1<<i)); ++i);
++	if (i >= 4)
++		return -1;
++	controller_mask |= 1<<i;
++	usbctrl_set_rol(controller_mask);
++	return i;
++}
++
++void usbctrl_slot_free(int i)
++{
++	if (i < 0 || i >= 4)
++		return;
++	controller_mask &= ~(1<<i);
++	usbctrl_set_rol(controller_mask);
++}
++
+ int usbctrl_set_leds(usbctrl_softc_t * softc, uint8_t clear) {
+     usbdev_t *dev = softc->dev;
+     usbreq_t *ur;
+@@ -318,6 +340,7 @@
+ 
+ 	struct controller_data_s c;
+ 	unsigned char *b = ur->ur_buffer;
++	{ extern unsigned usbctrl_rx_count; usbctrl_rx_count++; }   /* GIP v5 diagnostics */
+ 	
+ 	if (uhid->is_wireless)
+ 	{
+diff -ruN
+--- a/drivers/usb/usbd.c	2026-09-07 14:57:42.192625954 -0300
++++ b/drivers/usb/usbd.c	2026-10-25 03:21:16.248328213 -0300
+@@ -1260,3 +1260,41 @@
+ 
+     return NULL;
+ }
++
++
++/*  *********************************************************************
++    *  usb_open_pipe_interval(dev,epdesc,interval_ms)
++    *
++    *  usb_open_pipe() for an interrupt endpoint that must be polled at its
++    *  bInterval (Xbox One / Series GIP pads).  Other pipe types ignore it.
++    ********************************************************************* */
++
++int usb_open_pipe_interval(usbdev_t *dev,usb_endpoint_descr_t *epdesc,int interval_ms)
++{
++    int res;
++    int flags = 0;
++
++    if (USB_ENDPOINT_DIR_IN(epdesc->bEndpointAddress)) flags |= UP_TYPE_IN;
++    else flags |= UP_TYPE_OUT;
++
++    switch (epdesc->bmAttributes & USB_ENDPOINT_TYPE_MASK) {
++	case USB_ENDPOINT_TYPE_CONTROL:	flags |= UP_TYPE_CONTROL; break;
++	case USB_ENDPOINT_TYPE_ISOCHRONOUS: flags |= UP_TYPE_ISOC; break;
++	case USB_ENDPOINT_TYPE_BULK:	flags |= UP_TYPE_BULK; break;
++	case USB_ENDPOINT_TYPE_INTERRUPT:
++	    flags |= UP_TYPE_INTR;
++	    if (interval_ms < 1) interval_ms = 1;
++	    if (interval_ms > 255) interval_ms = 255;
++	    flags |= interval_ms << UP_IVAL_SHIFT;
++	    break;
++	}
++
++    res = usb_create_pipe(dev,
++			  epdesc->bEndpointAddress,
++			  GETUSBFIELD(epdesc,wMaxPacketSize),
++			  flags);
++
++    if (res < 0) return res;
++
++    return epdesc->bEndpointAddress;
++}
+diff -ruN
+--- a/drivers/usb/usbdevs.c	2026-09-07 14:57:42.192625954 -0300
++++ b/drivers/usb/usbdevs.c	2026-10-25 03:21:16.247094591 -0300
+@@ -59,6 +59,7 @@
+ 
+ #include "usbchap9.h"
+ #include "usbd.h"
++#include "usblog.h"
+ 
+ /*  *********************************************************************
+     *  The list of drivers we support.  If you add more drivers,
+@@ -68,6 +69,7 @@
+ extern usb_driver_t usbhub_driver;
+ extern usb_driver_t usbhid_driver;
+ extern usb_driver_t usbctrl_driver;
++extern usb_driver_t usbgip_driver;
+ #ifdef USB11_MASS_STORAGE
+ extern usb_driver_t usbmass_driver;
+ #endif
+@@ -101,6 +103,23 @@
+     {CLASS_ANY,	0x045e,0x28f,	&dummy_driver}, // play and charge kit, not a controller - let's ignore it
+ 
+     /*
++     * Xbox One / Series wired pads (GIP, usbgip.c).  Third-party GIP pads
++     * (PowerA, PDP, Hori...) are caught by the class 0xFF/0x47/0xD0 check in
++     * usb_find_driver().  The Xbox Wireless Adapter is a WiFi dongle, not a
++     * GIP pad: keep it on the dummy driver.
++     */
++    {CLASS_ANY,	0x045e,0x02d1,	&usbgip_driver}, // Xbox One
++    {CLASS_ANY,	0x045e,0x02dd,	&usbgip_driver}, // Xbox One (2015 firmware)
++    {CLASS_ANY,	0x045e,0x02e3,	&usbgip_driver}, // Xbox One Elite
++    {CLASS_ANY,	0x045e,0x02ea,	&usbgip_driver}, // Xbox One S
++    {CLASS_ANY,	0x045e,0x0b00,	&usbgip_driver}, // Xbox Elite Series 2
++    {CLASS_ANY,	0x045e,0x0b0a,	&usbgip_driver}, // Xbox Adaptive Controller
++    {CLASS_ANY,	0x045e,0x0b12,	&usbgip_driver}, // Xbox Series X|S
++    {CLASS_ANY,	0x045e,0x02e6,	&dummy_driver}, // Xbox Wireless Adapter (2015)
++    {CLASS_ANY,	0x045e,0x02fe,	&dummy_driver}, // Xbox Wireless Adapter (2017)
++    {CLASS_ANY,	0x045e,0x091e,	&dummy_driver}, // Xbox Wireless Adapter (Surface)
++
++    /*
+      * Mass storage devices
+      */
+ 
+@@ -155,7 +174,7 @@
+     *      pointer to device driver or NULL
+     ********************************************************************* */
+ 
+-usb_driver_t *usb_find_driver(usbdev_t *dev)
++static usb_driver_t *usb_find_driver_impl(usbdev_t *dev)
+ {
+     usb_device_descr_t *devdescr;
+     usb_interface_descr_t *ifdescr;
+@@ -187,6 +206,19 @@
+     list++;
+     }
+     
++    // GIP (Xbox One protocol) device: vendor class, subclass 71, protocol 208,
++    // on the device descriptor or on interface 0
++    {
++        usb_interface_descr_t *if0 = usb_find_cfg_descr(dev, USB_INTERFACE_DESCRIPTOR_TYPE, 0);
++        if ((devdescr->bDeviceClass == 0xFF && devdescr->bDeviceSubClass == 0x47 &&
++             devdescr->bDeviceProtocol == 0xD0) ||
++            (if0 && if0->bInterfaceClass == 0xFF && if0->bInterfaceSubClass == 0x47 &&
++             if0->bInterfaceProtocol == 0xD0)) {
++            printf("%s\n", usbgip_driver.udrv_name);
++            return &usbgip_driver;
++        }
++    }
++
+     // try to detected wired controller
+     int i;
+     for (i = 0; i < devdescr->bNumConfigurations; i++) {
+@@ -204,3 +236,22 @@
+ 
+     return NULL;
+ }
++
++
++/* GIP diagnostics: one line per enumerated device, with the driver it got */
++usb_driver_t *usb_find_driver(usbdev_t *dev)
++{
++    usb_device_descr_t *d = &dev->ud_devdescr;
++    usb_interface_descr_t *if0 = usb_find_cfg_descr(dev, USB_INTERFACE_DESCRIPTOR_TYPE, 0);
++    usb_driver_t *drv = usb_find_driver_impl(dev);
++    usblog("enum bus %d addr %d %04x:%04x bcdDevice %04x usb %04x mps0 %d dev %02x/%02x/%02x "
++           "if0 %02x/%02x/%02x -> %s",
++           dev->ud_bus ? dev->ud_bus->ub_num : -1, dev->ud_address,
++           GETUSBFIELD(d, idVendor), GETUSBFIELD(d, idProduct), GETUSBFIELD(d, bcdDevice),
++           GETUSBFIELD(d, bcdUSB), d->bMaxPacketSize0,
++           d->bDeviceClass, d->bDeviceSubClass, d->bDeviceProtocol,
++           if0 ? if0->bInterfaceClass : 0xff, if0 ? if0->bInterfaceSubClass : 0xff,
++           if0 ? if0->bInterfaceProtocol : 0xff, drv ? drv->udrv_name : "NO DRIVER");
++    usblog_note_enum(GETUSBFIELD(d, idVendor), GETUSBFIELD(d, idProduct), drv ? drv->udrv_name : NULL);
++    return drv;
++}
+diff -ruN
+--- a/drivers/usb/usbd.h	2026-09-07 14:57:42.192625954 -0300
++++ b/drivers/usb/usbd.h	2026-10-25 03:21:16.248199628 -0300
+@@ -227,6 +227,10 @@
+ int usb_get_device_status(usbdev_t *dev,usb_device_status_t *status);
+ int usb_set_configuration(usbdev_t *dev,int config);
+ int usb_open_pipe(usbdev_t *dev,usb_endpoint_descr_t *epdesc);
++/* GIP: like usb_open_pipe, but an interrupt pipe is polled every
++ * interval_ms (rounded down to 1/2/4/8/16/32) instead of every 32 ms */
++int usb_open_pipe_interval(usbdev_t *dev,usb_endpoint_descr_t *epdesc,int interval_ms);
++#define UP_IVAL_SHIFT 16	/* interval (ms) in bits 16..23 of the pipe flags */
+ int usb_simple_request(usbdev_t *dev,uint8_t reqtype,int bRequest,int wValue,int wIndex);
+ void usb_complete_request(usbreq_t *ur,int status);
+ int usb_get_device_descriptor(usbdev_t *dev,usb_device_descr_t *dscr,int smallflg);
+diff -ruN
+--- a/drivers/usb/usbgip.c	1969-12-31 21:00:00.000000000 -0300
++++ b/drivers/usb/usbgip.c	2026-10-25 03:21:30.993428792 -0300
+@@ -0,0 +1,772 @@
++/*
++ * usbgip.c - libxenon driver for WIRED Xbox One / One S / Elite / Series X|S
++ * pads (and third-party GIP pads) over USB.
++ *
++ * The pad shows up to the app as an ordinary libxenon controller: reports
++ * are decoded by gip_proto.c into struct controller_data_s and published
++ * with set_controller_data() on a slot shared with usbctrl.c (360 pads), so
++ * a One pad and a 360 pad can be plugged at the same time.
++ *
++ * Two start-up modes:
++ *  - HOST (Microsoft pads, VID 045e): the sequence that works for 045e:0b12
++ *    on this console under the retail kernel (XboxInput v1.2, GPL-3.0) and
++ *    that Windows uses (riffmaster-rgh360 docs/PROTOCOL.md capture):
++ *      SET_CONFIGURATION, open OUT + IN (bInterval honoured), early power-on
++ *      05 20 00 01 00, start reading when it completes; on ANNOUNCE send
++ *      IDENTIFY 04 20 ss 00 (re-sent at most once a second while the pad keeps
++ *      announcing); ack the chunked identify reply; on its last chunk send the
++ *      15-byte locale POWER, power-on and LED.  No SET_INTERFACE, no auth.
++ *  - XPAD (third-party pads): the Linux xpad sequence (SET_INTERFACE(1,0),
++ *    power-on/LED/auth-done + per-PID quirks at attach, re-sent on announce).
++ *
++ * Memory: everything is allocated once in attach (softc, two DMA buffers,
++ * one IN and one OUT usbreq) and freed in detach.  Both requests are reused
++ * for the life of the device: nothing is allocated per packet.
++ *
++ * Threading: like the rest of libxenon USB, everything here runs inside
++ * usb_do_poll() (XCloud360: only the network thread, hw thread 1).
++ * usbgip_set_rumble() must be called from that same thread.
++ *
++ * Diagnostics: every step goes through usblog() (RAM history, paced UDP).
++ */
++#include <input/input.h>
++#include "cfe.h"            /* hosttest/ supplies a mock with the same name */
++
++#include "usbchap9.h"
++#include "usbd.h"
++#include "gip_proto.h"
++#include "usblog.h"
++
++#define CACHE_ALIGN 128     /* Xenon cache line: keep DMA buffers on their own lines */
++#define BUFF_ALIGN  128
++#define GIP_ALIGN(n, a) (((n) + ((a) - 1)) & ~((a) - 1))
++#define gip_dma_alloc(n) (KMALLOC(GIP_ALIGN((n), CACHE_ALIGN), BUFF_ALIGN))
++#define gip_dma_free(p)  (KFREE(p))
++
++#define GIP_QLEN        16    /* power of two */
++#define GIP_MAX_PADS    4
++#define GIP_MAX_DEVS    8
++#if GIP_DEBUG
++#define GIP_LOG_RX      16    /* hex-dump the first N IN packets */
++#define GIP_LOG_TX      40    /* log the first N OUT packets (errors always, up to GIP_LOG_ERR) */
++#define GIP_DLOG(...)   usblog(__VA_ARGS__)
++#else
++#define GIP_LOG_RX      0     /* production: no per-packet lines */
++#define GIP_LOG_TX      0
++#define GIP_DLOG(...)   do { if (0) usblog(__VA_ARGS__); } while (0)
++#endif
++#define GIP_LOG_ERR     12
++#define GIP_RETRY_MS    3000  /* nothing received at all: resend the (early) power-on */
++#define GIP_MAX_RETRY   5
++#define GIP_READ_FORCE_MS 1000 /* early power-on never completed: start reading anyway */
++#define GIP_IDENT_MS    1000  /* identify re-send period while the pad keeps announcing */
++#define GIP_STATS_MS    10000
++#define GIP_STUCK_MS    1000
++
++/* 1 = GIP interrupt pipes polled at bInterval (usb_open_pipe_interval, 4 ms);
++ * 0 = stock libxenon placement (every interrupt ED on the 32 ms leaf).
++ * Bisect switch: variants/gip.elf32 = 1, variants/gip-slot32.elf32 = 0. */
++#ifndef GIP_OHCI_INTERVAL
++#define GIP_OHCI_INTERVAL 1
++#endif
++#define GIP_BC_N        8     /* breadcrumbs for the first N transfers each way */
++#define GIP_IN_BUF      512   /* IN DMA buffer (variant in512 reads 512 bytes) */
++#define GIP_DUMP_MS     250   /* raw OHCI ED/TD dump period while a pad is attached */
++#define GIP_DUMP_FOR_MS 60000 /* ... for the first minute after attach */
++
++/* v5 bisect: one variant per plug-in (cycling), so a single hardware session
++ * tests several.  base = v4.2 behaviour. */
++enum { GV_BASE, GV_NOCFG, GV_SETIF00, GV_ALT1, GV_IN32, GV_IN512, GV_2IN, GV_SEQ1, GV_N };
++static const char *const gv_name[GV_N] = {
++    "base", "no-setcfg", "setif0.0", "alt1", "in32", "in512", "2in", "seq1" };
++#ifndef GIP_VARIANT_CYCLE
++#define GIP_VARIANT_CYCLE GIP_DEBUG      /* production: always "base" */
++#endif
++int usbgip_force_variant = -1;   /* >= 0: always this one (host test) */
++static unsigned gip_plug_count;
++
++/* libxenon OHCI / usbctrl diagnostics (ohci.c, usbctrl.c) */
++extern int ohci_debug_ept(usbdev_t *dev, int epaddr, char *out, int cap);
++extern int ohci_debug_hc(usbbus_t *bus, char *out, int cap);
++extern usbdev_t *RFdev;
++extern unsigned usbctrl_rx_count;
++
++#define GIP_MODE_XPAD   0
++#define GIP_MODE_HOST   1
++
++/* shared with usbctrl.c (360 pads) so both drivers use the same 4 slots */
++extern int  usbctrl_slot_alloc(void);
++extern void usbctrl_slot_free(int slot);
++
++typedef struct usbgip_softc_s {
++    usbdev_t *dev;
++    int index;                 /* controller slot 0..3, -1 = none */
++    uint16_t vid, pid;
++    int mode;
++    int variant;
++    int in_len;                /* IN request length (mps, or 32/512 by variant) */
++    usbreq_t *ireq2;           /* variant 2in: a second IN request */
++    uint8_t *ibuf2;
++    uint64_t attach_ms, dump_ms, dump1s_ms;
++    int ep_in, ep_out;         /* endpoint addresses (usb_open_pipe) */
++    int mps_in, mps_out, ival_in, ival_out;
++    uint8_t *ibuf, *obuf;      /* DMA buffers, mps sized */
++    usbreq_t *ireq, *oreq;     /* reused forever; NULL once freed */
++    int read_started;
++    int out_busy;              /* oreq is queued in the HC */
++    uint64_t out_since_ms;     /* when oreq was queued */
++    int out_stuck_logged;
++    uint8_t cur_flags;         /* flags of the packet in flight */
++    uint8_t cur_cmd, cur_seq;
++    gip_pkt_t q[GIP_QLEN];
++    unsigned q_r, q_w;
++    uint8_t seq;
++    gip_state_t st;
++    /* HOST mode handshake */
++    uint64_t early_ms;         /* when the (last) early power-on was queued */
++    int identify_sent, identify_reply, identify_done, identify_tries;
++    uint64_t identify_ms;
++    /* both modes */
++    int init_runs;             /* how many times the init sequence was sent */
++    int init_retries;          /* timer-driven resends */
++    int init_ok;               /* last init sequence fully completed by the HC */
++    int init_err;              /* an init packet failed */
++    uint64_t init_ms;          /* when the last init sequence started */
++    int logged_input;
++    unsigned bc_tx, bc_rx, bc_out;
++    unsigned rx, rx_bytes, rx_last_stats, tx, tx_ok;
++    unsigned in_err, out_err, q_drops, n_err_logged;
++    int last_in_err, last_out_err;
++    uint64_t stats_ms;
++} usbgip_softc_t;
++
++static usbgip_softc_t *gip_pads[GIP_MAX_PADS];     /* by slot, for rumble */
++static usbgip_softc_t *gip_devs[GIP_MAX_DEVS];     /* every attached pad, for tick */
++
++static int usbgip_attach(usbdev_t *dev, usb_driver_t *drv);
++static int usbgip_detach(usbdev_t *dev);
++
++usb_driver_t usbgip_driver = {
++    "Xbox One controller (GIP)",
++    usbgip_attach,
++    usbgip_detach
++};
++
++/* ------------------------------------------------------------- slots */
++
++static void gip_take_slot(usbgip_softc_t *sc)
++{
++    if (sc->index >= 0) return;
++    sc->index = usbctrl_slot_alloc();
++    if (sc->index >= 0 && sc->index < GIP_MAX_PADS) {
++        gip_pads[sc->index] = sc;
++        GIP_DLOG("pad %04x:%04x got controller slot %d", sc->vid, sc->pid, sc->index);
++    }
++}
++
++static void gip_publish(usbgip_softc_t *sc)
++{
++    if (sc->index < 0) gip_take_slot(sc);   /* all 4 were busy at attach */
++    if (sc->index >= 0) set_controller_data(sc->index, &sc->st.c);
++}
++
++/* ------------------------------------------------------------- output */
++
++static int gip_out_cb(usbreq_t *ur);
++static void gip_kick(usbgip_softc_t *sc);
++static void gip_start_read(usbgip_softc_t *sc, const char *why);
++
++static int gip_enqueue(usbgip_softc_t *sc, const gip_pkt_t *p)
++{
++    if (sc->q_w - sc->q_r >= GIP_QLEN) {
++        if (sc->q_drops++ < 3) usblog("pad%d tx queue full, dropping cmd %02x", sc->index, p->data[0]);
++        return -1;
++    }
++    sc->q[sc->q_w % GIP_QLEN] = *p;
++    sc->q_w++;
++    return 0;
++}
++
++static int gip_dev_gone(usbgip_softc_t *sc)
++{
++    return (sc->dev->ud_flags & UD_FLAG_REMOVING) != 0;
++}
++
++static void gip_kick(usbgip_softc_t *sc)
++{
++    gip_pkt_t *p;
++    char hex[3 * 20 + 1];
++    if (sc->out_busy || !sc->oreq || sc->q_r == sc->q_w || gip_dev_gone(sc)) return;
++    p = &sc->q[sc->q_r % GIP_QLEN];
++    sc->q_r++;
++    if (p->flags & GIP_PF_STAMP_SEQ) p->data[2] = gip_next_seq(&sc->seq);
++    int n = p->len > sc->mps_out ? sc->mps_out : p->len;
++    memcpy(sc->obuf, p->data, n);
++    sc->cur_flags = p->flags;
++    sc->cur_cmd = p->data[0];
++    sc->cur_seq = p->data[2];
++    sc->oreq->ur_buffer = sc->obuf;
++    sc->oreq->ur_length = n;
++    sc->oreq->ur_flags = UR_FLAG_OUT;
++    sc->oreq->ur_callback = gip_out_cb;
++    sc->oreq->ur_ref = sc;
++    sc->out_busy = 1;
++    sc->out_stuck_logged = 0;
++    sc->out_since_ms = usblog_now_ms();
++    sc->tx++;
++    if (sc->tx <= GIP_LOG_TX) {
++        usblog_hex(hex, p->data, n, 20);
++        usblog("pad%d tx#%u%s ep 0x%02x len %d: %s", sc->index, sc->tx,
++               (p->flags & GIP_PF_INIT) ? " init" : "", sc->ep_out, n, hex);
++    }
++    if (sc->bc_tx < GIP_BC_N) usblog_bc("bc tx#%u queue OUT cmd %02x len %d", sc->tx, sc->cur_cmd, n);
++    int r = usb_queue_request(sc->oreq);
++    if (sc->bc_tx++ < GIP_BC_N) usblog_bc("bc tx#%u queued -> %d", sc->tx, r);
++    if (r != 0) {
++        usblog("pad%d tx#%u usb_queue_request returned %d (packet dropped)", sc->index, sc->tx, r);
++        sc->out_busy = 0;
++    }
++}
++
++static int gip_out_cb(usbreq_t *ur)
++{
++    usbgip_softc_t *sc = ur->ur_ref;
++    if (sc->bc_out++ < GIP_BC_N)
++        usblog_bc("bc out_cb tx#%u status %d xferred %d", sc->tx, ur->ur_status, ur->ur_xferred);
++    sc->out_busy = 0;
++
++    if (ur->ur_status == UR_ERR_CANCELLED || gip_dev_gone(sc)) {
++        usb_free_request(ur);
++        sc->oreq = NULL;
++        return 0;
++    }
++    if (ur->ur_status != 0) {
++        sc->out_err++;
++        sc->last_out_err = ur->ur_status;
++        if (sc->cur_flags & GIP_PF_INIT) sc->init_err = ur->ur_status;
++        if (sc->n_err_logged++ < GIP_LOG_ERR)
++            usblog("pad%d tx#%u cmd %02x seq %u FAILED: usb status %d (xferred %d)", sc->index,
++                   sc->tx, sc->cur_cmd, sc->cur_seq, ur->ur_status, ur->ur_xferred);
++    } else {
++        sc->tx_ok++;
++        if (sc->tx <= GIP_LOG_TX)
++            usblog("pad%d tx#%u done ok (%d bytes, %u ms)", sc->index, sc->tx, ur->ur_xferred,
++                   (unsigned)(usblog_now_ms() - sc->out_since_ms));
++    }
++    if (sc->cur_flags & GIP_PF_EARLY_POWER)
++        gip_start_read(sc, ur->ur_status ? "early power-on failed" : "early power-on done");
++    if (sc->cur_flags & GIP_PF_INIT_LAST) {
++        if (!sc->init_err) {
++            sc->init_ok = 1;
++            usblog("pad%d %04x:%04x init ok (run %d, %s, %s mode)", sc->index, sc->vid, sc->pid,
++                   sc->init_runs, gip_model_name(sc->vid, sc->pid),
++                   sc->mode == GIP_MODE_HOST ? "host" : "xpad");
++        } else {
++            usblog("pad%d %04x:%04x init FAILED (usb status %d)", sc->index, sc->vid,
++                   sc->pid, sc->init_err);
++        }
++    }
++    gip_kick(sc);
++    return 0;
++}
++
++/* XPAD mode: the whole xpad list at once */
++static void gip_xpad_init(usbgip_softc_t *sc, const char *why)
++{
++    gip_pkt_t init[GIP_MAX_INIT];
++    int i, n = gip_build_init(sc->vid, sc->pid, init, GIP_MAX_INIT);
++    sc->init_runs++;
++    sc->init_ok = 0;
++    sc->init_err = 0;
++    sc->init_ms = usblog_now_ms();
++    GIP_DLOG("pad%d init run %d (%s): %d xpad packets, tx queue %u, out %s", sc->index,
++           sc->init_runs, why, n, sc->q_w - sc->q_r, sc->out_busy ? "busy" : "idle");
++    for (i = 0; i < n; i++) gip_enqueue(sc, &init[i]);
++    gip_kick(sc);
++}
++
++/* HOST mode step 1: early power-on 05 20 00 01 00, then start reading */
++static void gip_host_early_power(usbgip_softc_t *sc, const char *why)
++{
++    gip_pkt_t p;
++    gip_build_power_on(&p, 1);
++    if (sc->variant == GV_SEQ1) p.data[2] = 1;       /* variant: sequence 1 instead of 0 */
++    p.flags |= GIP_PF_EARLY_POWER;
++    sc->early_ms = usblog_now_ms();
++    usblog_bc("bc pad%d early power-on (%s)", sc->index, why);
++    gip_enqueue(sc, &p);
++    gip_kick(sc);
++}
++
++/* HOST mode step 3: after the identify reply */
++static void gip_host_power_up(usbgip_softc_t *sc)
++{
++    gip_pkt_t p;
++    sc->init_runs++;
++    sc->init_ok = 0;
++    sc->init_err = 0;
++    sc->init_ms = usblog_now_ms();
++    usblog_bc("bc pad%d identify complete (%u chunks): locale POWER, power-on, LED", sc->index,
++           sc->st.n_identify);
++    gip_build_locale(&p);   p.flags |= GIP_PF_INIT; gip_enqueue(sc, &p);
++    gip_build_power_on(&p, 0); p.flags |= GIP_PF_INIT; gip_enqueue(sc, &p);
++    gip_build_led_on(&p);   p.flags |= GIP_PF_INIT | GIP_PF_INIT_LAST; gip_enqueue(sc, &p);
++    gip_kick(sc);
++}
++
++static void gip_host_send_identify(usbgip_softc_t *sc, const char *why)
++{
++    gip_pkt_t p;
++    gip_build_identify(&p);
++    sc->identify_sent = 1;
++    sc->identify_tries++;
++    sc->identify_ms = usblog_now_ms();
++    usblog_bc("bc pad%d -> IDENTIFY (%s, try %d)", sc->index, why, sc->identify_tries);
++    gip_enqueue(sc, &p);
++}
++
++int usbgip_set_rumble(int port, uint8_t l, uint8_t r)
++{
++    usbgip_softc_t *sc;
++    gip_pkt_t p;
++    if (port < 0 || port >= GIP_MAX_PADS || !(sc = gip_pads[port])) return -1;
++    gip_build_rumble(&p, l, r);
++    gip_enqueue(sc, &p);
++    gip_kick(sc);
++    return 0;
++}
++
++/* ------------------------------------------------------------- input */
++
++static void gip_handle_one(usbgip_softc_t *sc, int ev, const gip_pkt_t *ack, int len)
++{
++    uint64_t now = usblog_now_ms();
++    if (ev & GIP_EV_ACK) gip_enqueue(sc, ack);
++
++    if (ev & GIP_EV_ANNOUNCE) {
++        GIP_DLOG("pad%d announce #%u: vid %04x pid %04x", sc->index, sc->st.n_announce,
++               sc->st.ann_vid, sc->st.ann_pid);
++        if (sc->mode == GIP_MODE_HOST) {
++            if (sc->identify_done) {
++                /* the pad rebooted its GIP side: start over */
++                usblog("pad%d re-announced after power-up: restarting handshake", sc->index);
++                sc->identify_sent = sc->identify_reply = sc->identify_done = 0;
++                sc->identify_tries = 0;
++                sc->st.n_identify = 0;
++            }
++            if (!sc->identify_reply &&
++                (!sc->identify_sent || now - sc->identify_ms >= GIP_IDENT_MS))
++                gip_host_send_identify(sc, sc->identify_sent ? "pad still announcing" : "announce");
++        } else {
++            gip_xpad_init(sc, sc->st.n_announce > 1 ? "re-announce" : "announce");
++        }
++    }
++    if (ev & GIP_EV_IDENTIFY) sc->identify_reply = 1;
++    if ((ev & GIP_EV_IDENTIFY_DONE) && sc->mode == GIP_MODE_HOST && !sc->identify_done) {
++        sc->identify_done = 1;
++        gip_host_power_up(sc);
++    }
++    if (ev & (GIP_EV_INPUT | GIP_EV_GUIDE)) {
++        gip_publish(sc);
++        if (!sc->logged_input && (ev & GIP_EV_INPUT)) {
++            sc->logged_input = 1;
++            usblog("pad%d %04x:%04x first input (len %d, init %s)", sc->index, sc->vid,
++                   sc->pid, len, sc->init_ok ? "ok" : "pending");
++        }
++    }
++}
++
++static void gip_handle(usbgip_softc_t *sc, const uint8_t *b, int len)
++{
++    int off = 0, guard = 0;
++    while (off + 4 <= len && guard++ < 16) {       /* several GIP packets per transfer */
++        gip_pkt_t ack;
++        int used = 0;
++        int ev = gip_parse_ex(&sc->st, b + off, len - off, &ack, &used);
++        if (used <= 0) break;
++        gip_handle_one(sc, ev, &ack, used);
++        off += used;
++    }
++    gip_kick(sc);
++}
++
++static int gip_in_cb(usbreq_t *ur)
++{
++    usbgip_softc_t *sc = ur->ur_ref;
++    char hex[3 * 20 + 1];
++
++    if (ur->ur_status == UR_ERR_CANCELLED || gip_dev_gone(sc)) {
++        if (ur == sc->ireq2) sc->ireq2 = NULL; else sc->ireq = NULL;
++        usb_free_request(ur);
++        return 0;
++    }
++    int bc = sc->bc_rx++ < GIP_BC_N;
++    if (bc) usblog_bc("bc in_cb #%u status %d xferred %d", sc->bc_rx, ur->ur_status, ur->ur_xferred);
++    if (ur->ur_status == 0 || ur->ur_status == UR_ERR_DATAUNDERRUN) {
++        sc->rx++;
++        sc->rx_bytes += ur->ur_xferred;
++        if (sc->rx <= GIP_LOG_RX) {
++            usblog_hex(hex, ur->ur_buffer, ur->ur_xferred, 20);
++            usblog("pad%d rx#%u st %d len %d: %s", sc->index, sc->rx, ur->ur_status,
++                   ur->ur_xferred, hex);
++        }
++        gip_handle(sc, ur->ur_buffer, ur->ur_xferred);
++        if (bc) usblog_bc("bc in_cb #%u parsed", sc->bc_rx);
++    } else {
++        sc->in_err++;
++        sc->last_in_err = ur->ur_status;
++        if (sc->n_err_logged++ < GIP_LOG_ERR)
++            usblog("pad%d rx error: usb status %d (errors %u)", sc->index, ur->ur_status, sc->in_err);
++    }
++
++    ur->ur_length = sc->in_len;
++    ur->ur_flags = UR_FLAG_IN | UR_FLAG_SHORTOK;
++    if (usb_queue_request(ur) != 0) {   /* re-queueing also clears an OHCI ED halt */
++        sc->read_started = 0;           /* refused (HC out of TDs): tick retries */
++        sc->early_ms = usblog_now_ms();
++        usblog("pad%d IN re-queue refused, retrying from tick", sc->index);
++    }
++    if (bc) usblog_bc("bc in_cb #%u re-queued", sc->bc_rx);
++    return 0;
++}
++
++static void gip_start_read(usbgip_softc_t *sc, const char *why)
++{
++    int r;
++    if (sc->read_started || !sc->ireq || gip_dev_gone(sc)) return;
++    sc->read_started = 1;
++    sc->ireq->ur_callback = gip_in_cb;
++    sc->ireq->ur_ref = sc;
++    sc->ireq->ur_length = sc->in_len;
++    sc->ireq->ur_flags = UR_FLAG_IN | UR_FLAG_SHORTOK;
++    usblog_bc("bc first IN queue (%s)", why);
++    r = usb_queue_request(sc->ireq);
++    usblog_bc("bc first IN queued -> %d", r);
++    if (r != 0) { sc->read_started = 0; sc->early_ms = usblog_now_ms(); }
++    if (r == 0 && sc->ireq2 && !sc->ireq2->ur_inprogress) {
++        sc->ireq2->ur_callback = gip_in_cb;
++        sc->ireq2->ur_ref = sc;
++        sc->ireq2->ur_length = sc->in_len;
++        sc->ireq2->ur_flags = UR_FLAG_IN | UR_FLAG_SHORTOK;
++        int r2 = usb_queue_request(sc->ireq2);
++        GIP_DLOG("pad%d second IN TD queued -> %d", sc->index, r2);
++    }
++    GIP_DLOG("pad%d IN 0x%02x read queued (%s) -> %d, len %d, interval %d, variant %s", sc->index,
++           sc->ep_in, why, r, sc->in_len, sc->ival_in, gv_name[sc->variant]);
++}
++
++/* ------------------------------------------------------------- summary */
++
++/* one-line state of every GIP pad, for usblog's periodic summary line */
++int usbgip_summary(char *out, int cap)
++{
++    int i, n = 0, any = 0;
++    out[0] = 0;
++    for (i = 0; i < GIP_MAX_DEVS && n >= 0 && n < cap - 1; i++) {
++        usbgip_softc_t *sc = gip_devs[i];
++        if (!sc) continue;
++        any = 1;
++        n += snprintf(out + n, cap - n, " p%d %04x:%04x v=%s %s%s id%d/%d r%d rt%d tx%u/%u e%d rx%u in%u an%u ie%u/%d",
++                      sc->index, sc->vid, sc->pid, gv_name[sc->variant], sc->mode == GIP_MODE_HOST ? "H" : "X",
++                      sc->init_ok ? "init-ok" : "init-no", sc->identify_tries, sc->identify_done,
++                      sc->init_runs, sc->init_retries, sc->tx_ok, sc->tx, sc->last_out_err, sc->rx,
++                      sc->st.n_input, sc->st.n_announce, sc->in_err, sc->last_in_err);
++    }
++    if (!any && cap > 12) n = snprintf(out, cap, " no GIP pad");
++    if (n >= 0 && n < cap - 1) {
++        extern int ohci_td_low_water;
++        extern unsigned ohci_td_refused;
++        n += snprintf(out + n, cap - n, " tdmin%d/ref%u rfrx%u", ohci_td_low_water, ohci_td_refused,
++                      usbctrl_rx_count);
++    }
++    return n;
++}
++
++/* ------------------------------------------------------------- tick */
++
++/* Called from usb_do_poll() (usbmain.c) once per poll. */
++void usbgip_tick(void)
++{
++    int i;
++    uint64_t now = usblog_now_ms();
++    for (i = 0; i < GIP_MAX_DEVS; i++) {
++        usbgip_softc_t *sc = gip_devs[i];
++        if (!sc || gip_dev_gone(sc)) continue;
++
++        if (sc->mode == GIP_MODE_HOST) {
++            if (!sc->read_started && now - sc->early_ms >= GIP_READ_FORCE_MS)
++                gip_start_read(sc, "early power-on not completed after 1 s");
++            /* nothing at all received: the power-on may have been lost */
++            if (sc->read_started && sc->rx == 0 && sc->init_retries < GIP_MAX_RETRY &&
++                now - sc->early_ms >= GIP_RETRY_MS) {
++                sc->init_retries++;
++                usblog("pad%d nothing received %u ms after power-on (tx %u ok %u err %u last %d, "
++                       "rx_err %u last %d): retry %d/%d", sc->index, (unsigned)(now - sc->early_ms),
++                       sc->tx, sc->tx_ok, sc->out_err, sc->last_out_err, sc->in_err,
++                       sc->last_in_err, sc->init_retries, GIP_MAX_RETRY);
++                gip_host_early_power(sc, "retry timer");
++            }
++        } else if (!sc->st.have_input && sc->st.n_announce == 0 &&
++                   sc->init_retries < GIP_MAX_RETRY && now - sc->init_ms >= GIP_RETRY_MS) {
++            sc->init_retries++;
++            usblog("pad%d no announce/input %u ms after init (rx %u, rx_err %u last %d, "
++                   "tx %u ok %u err %u last %d): retry %d/%d", sc->index,
++                   (unsigned)(now - sc->init_ms), sc->rx, sc->in_err, sc->last_in_err, sc->tx,
++                   sc->tx_ok, sc->out_err, sc->last_out_err, sc->init_retries, GIP_MAX_RETRY);
++            gip_xpad_init(sc, "retry timer");
++        }
++        if (sc->out_busy && !sc->out_stuck_logged && now > sc->out_since_ms &&
++            now - sc->out_since_ms > GIP_STUCK_MS) {
++            sc->out_stuck_logged = 1;
++            usblog("pad%d tx#%u cmd %02x still not completed after %u ms (OUT never acked by HC)",
++                   sc->index, sc->tx, sc->cur_cmd, (unsigned)(now - sc->out_since_ms));
++        }
++#if GIP_DEBUG
++        /* raw OHCI state: is the IN ED ever visited by the HC? */
++        if (now - sc->attach_ms < GIP_DUMP_FOR_MS && now - sc->dump_ms >= GIP_DUMP_MS) {
++            char l[200];
++            sc->dump_ms = now;
++            ohci_debug_ept(sc->dev, sc->ep_in, l, sizeof(l));
++            usblog_quiet("dump pad%d v=%s rx%u IN %s", sc->index, gv_name[sc->variant], sc->rx, l);
++            if (now - sc->dump1s_ms >= 1000) {
++                sc->dump1s_ms = now;
++                ohci_debug_hc(sc->dev->ud_bus, l, sizeof(l));
++                usblog_quiet("dump %s", l);
++                ohci_debug_ept(sc->dev, sc->ep_out, l, sizeof(l));
++                usblog_quiet("dump pad%d OUT %s", sc->index, l);
++                if (RFdev) {
++                    ohci_debug_ept(RFdev, 0x81, l, sizeof(l));
++                    usblog_quiet("dump RF 02aa rx%u IN %s", usbctrl_rx_count, l);
++                }
++            }
++        }
++#endif
++        if (GIP_DEBUG && now - sc->stats_ms >= GIP_STATS_MS) {
++            sc->stats_ms = now;
++            usblog_quiet("pad%d stats: rx %u (+%u) in=%u guide=%u ann=%u ident=%u acks=%u rx_err %u "
++                         "(last %d) tx %u ok %u err %u (last %d) drops %u init %s runs %d",
++                         sc->index, sc->rx, sc->rx - sc->rx_last_stats, sc->st.n_input,
++                         sc->st.n_guide, sc->st.n_announce, sc->st.n_identify, sc->st.n_acks,
++                         sc->in_err, sc->last_in_err, sc->tx, sc->tx_ok, sc->out_err,
++                         sc->last_out_err, sc->q_drops, sc->init_ok ? "ok" : "not-ok", sc->init_runs);
++            sc->rx_last_stats = sc->rx;
++        }
++    }
++}
++
++/* ------------------------------------------------------------- attach */
++
++/* Log every interface/endpoint; return the interrupt IN/OUT endpoints of
++ * interface 0, alt 0 (the GIP data interface; 1 = audio, 2 = bulk).  xpad,
++ * xone and XboxInput all use alt 0 of interface 0 and never select alt 1. */
++static void gip_find_eps(usbdev_t *dev, usb_endpoint_descr_t **in, usb_endpoint_descr_t **out, int want_alt)
++{
++    static const char *tn[4] = { "ctrl", "isoc", "bulk", "intr" };
++    uint8_t *p, *end;
++    int cur_if = -1, cur_alt = -1;
++    *in = *out = NULL;
++    if (!dev->ud_cfgdescr) { usblog("  no config descriptor"); return; }
++    p = (uint8_t *)dev->ud_cfgdescr;
++    end = p + GETUSBFIELD(dev->ud_cfgdescr, wTotalLength);
++    while (p + 2 <= end) {
++        uint8_t blen = p[0], type = p[1];
++        if (blen < 2 || p + blen > end) {
++            usblog("  bad descriptor (len %u type %02x) at offset %d", blen, type,
++                   (int)(p - (uint8_t *)dev->ud_cfgdescr));
++            break;
++        }
++        if (type == USB_INTERFACE_DESCRIPTOR_TYPE && blen >= 9) {
++            cur_if = p[2];
++            cur_alt = p[3];
++            GIP_DLOG("  if %d alt %d: %d eps class %02x/%02x/%02x", p[2], p[3], p[4], p[5], p[6], p[7]);
++        } else if (type == USB_ENDPOINT_DESCRIPTOR_TYPE && blen >= 7) {
++            usb_endpoint_descr_t *ep = (usb_endpoint_descr_t *)p;
++            int t = ep->bmAttributes & USB_ENDPOINT_TYPE_MASK;
++            GIP_DLOG("    ep 0x%02x %s %s mps %d interval %d", ep->bEndpointAddress,
++                   USB_ENDPOINT_DIR_IN(ep->bEndpointAddress) ? "IN " : "OUT", tn[t & 3],
++                   GETUSBFIELD(ep, wMaxPacketSize), p[6]);
++            if (cur_if == 0 && cur_alt == want_alt && t == USB_ENDPOINT_TYPE_INTERRUPT) {
++                if (USB_ENDPOINT_DIR_IN(ep->bEndpointAddress)) { if (!*in) *in = ep; }
++                else if (!*out) *out = ep;
++            }
++        }
++        p += blen;
++    }
++}
++
++static void gip_free_softc(usbgip_softc_t *sc)
++{
++    int i;
++    for (i = 0; i < GIP_MAX_DEVS; i++) if (gip_devs[i] == sc) gip_devs[i] = NULL;
++    if (sc->ireq && !sc->ireq->ur_inprogress) { usb_free_request(sc->ireq); sc->ireq = NULL; }
++    if (sc->oreq && !sc->oreq->ur_inprogress) { usb_free_request(sc->oreq); sc->oreq = NULL; }
++    if (sc->ireq2 && !sc->ireq2->ur_inprogress) { usb_free_request(sc->ireq2); sc->ireq2 = NULL; }
++    if (sc->ireq || sc->oreq || sc->ireq2) {
++        /* still owned by the HC: leak the softc rather than risk a callback
++         * into freed memory (never seen: pipes are destroyed before detach) */
++        usblog("request still in flight at detach, leaking %u bytes", (unsigned)sizeof(*sc));
++        return;
++    }
++    if (sc->ibuf) gip_dma_free(sc->ibuf);
++    if (sc->ibuf2) gip_dma_free(sc->ibuf2);
++    if (sc->obuf) gip_dma_free(sc->obuf);
++    KFREE(sc);
++}
++
++static int usbgip_attach(usbdev_t *dev, usb_driver_t *drv)
++{
++    usb_config_descr_t *cfg = dev->ud_cfgdescr;
++    usb_endpoint_descr_t *epin, *epout;
++    usbgip_softc_t *sc;
++    int i, r;
++
++    dev->ud_drv = drv;
++    dev->ud_private = NULL;
++
++    uint16_t vid = GETUSBFIELD(&dev->ud_devdescr, idVendor);
++    uint16_t pid = GETUSBFIELD(&dev->ud_devdescr, idProduct);
++
++    usblog_bc("bc attach %04x:%04x (ival=%d build)", vid, pid, GIP_OHCI_INTERVAL);
++    usblog("attach %04x:%04x %s bus %d addr %d %s-speed cfg %d ifaces %d", vid, pid,
++           gip_model_name(vid, pid), dev->ud_bus ? dev->ud_bus->ub_num : -1, dev->ud_address,
++           (dev->ud_flags & UD_FLAG_LOWSPEED) ? "low" : "full",
++           cfg ? cfg->bConfigurationValue : -1, cfg ? cfg->bNumInterfaces : -1);
++    /* v5.1 cycle: base first (v4.2 + the uncached-descriptor fix), no-setcfg dropped */
++    static const int cycle[] = { GV_BASE, GV_SETIF00, GV_ALT1, GV_IN32, GV_IN512, GV_2IN, GV_SEQ1 };
++    int variant = usbgip_force_variant >= 0 ? usbgip_force_variant % GV_N :
++                  GIP_VARIANT_CYCLE ? cycle[gip_plug_count % (sizeof(cycle) / sizeof(cycle[0]))] : GV_BASE;
++    gip_plug_count++;
++    GIP_DLOG("%04x:%04x plug #%u: variant %s", vid, pid, gip_plug_count, gv_name[variant]);
++    gip_find_eps(dev, &epin, &epout, variant == GV_ALT1 ? 1 : 0);
++    usblog_bc("bc attach: eps in %p out %p", (void *)epin, (void *)epout);
++    if (!cfg || !epin || !epout) {
++        usblog("%04x:%04x: no interrupt IN/OUT on interface 0 alt 0, ignoring", vid, pid);
++        return 0;
++    }
++
++    sc = KMALLOC(sizeof(*sc), 0);
++    if (!sc) { usblog("attach: out of memory"); return -1; }
++    memset(sc, 0, sizeof(*sc));
++    sc->dev = dev;
++    sc->index = -1;
++    sc->vid = vid;
++    sc->pid = pid;
++    sc->mode = (vid == 0x045e) ? GIP_MODE_HOST : GIP_MODE_XPAD;
++    sc->variant = variant;
++    sc->attach_ms = usblog_now_ms();
++    sc->mps_in = GETUSBFIELD(epin, wMaxPacketSize);
++    sc->mps_out = GETUSBFIELD(epout, wMaxPacketSize);
++    sc->ival_in = epin->bInterval ? epin->bInterval : 4;
++    sc->ival_out = epout->bInterval ? epout->bInterval : 4;
++    if (sc->mps_in <= 0 || sc->mps_in > GIP_MAX_PKT) sc->mps_in = GIP_MAX_PKT;
++    if (sc->mps_out <= 0 || sc->mps_out > GIP_MAX_PKT) sc->mps_out = GIP_MAX_PKT;
++    sc->in_len = variant == GV_IN32 ? 32 : variant == GV_IN512 ? GIP_IN_BUF : sc->mps_in;
++    sc->ibuf = gip_dma_alloc(GIP_IN_BUF);
++    sc->obuf = gip_dma_alloc(GIP_MAX_PKT);
++    usblog_bc("bc attach: softc %p ibuf %p obuf %p", (void *)sc, (void *)sc->ibuf, (void *)sc->obuf);
++    if (!sc->ibuf || !sc->obuf) { usblog("attach: no DMA buffer"); goto fail; }
++    memset(sc->ibuf, 0, GIP_IN_BUF);
++    if (variant == GV_2IN) {
++        sc->ibuf2 = gip_dma_alloc(GIP_IN_BUF);
++        if (!sc->ibuf2) { usblog("attach: no DMA buffer"); goto fail; }
++    }
++
++    if (variant == GV_NOCFG) {
++        GIP_DLOG("variant no-setcfg: SET_CONFIGURATION skipped");
++    } else {
++        usblog_bc("bc attach: SET_CONFIGURATION");
++        r = usb_set_configuration(dev, cfg->bConfigurationValue);
++        GIP_DLOG("SET_CONFIGURATION %d -> %d (%s mode)", cfg->bConfigurationValue, r,
++               sc->mode == GIP_MODE_HOST ? "host" : "xpad");
++    }
++    if (variant == GV_SETIF00 || variant == GV_ALT1) {
++        int alt = variant == GV_ALT1 ? 1 : 0;
++        r = usb_simple_request(dev, USBREQ_DIR_OUT | USBREQ_TYPE_STD | USBREQ_REC_INTERFACE,
++                               USB_REQUEST_SET_INTERFACE, alt, 0);
++        GIP_DLOG("variant %s: SET_INTERFACE(0, alt %d) -> %d", gv_name[variant], alt, r);
++    }
++
++    /* xpad only: audio interface to alt 0 (some PowerA pads need it).
++     * XboxInput does NOT send it for Microsoft pads (incl. 0b12). */
++    if (sc->mode == GIP_MODE_XPAD && cfg->bNumInterfaces > 1) {
++        r = usb_simple_request(dev, USBREQ_DIR_OUT | USBREQ_TYPE_STD | USBREQ_REC_INTERFACE,
++                               USB_REQUEST_SET_INTERFACE, 0, 1);
++        GIP_DLOG("SET_INTERFACE(1, alt 0) -> %d", r);
++    }
++
++    /* OUT first then IN (same order as usbctrl.c), each scheduled at its
++     * bInterval instead of libxenon's default 32 ms interrupt leaf */
++#if GIP_OHCI_INTERVAL
++    usblog_bc("bc attach: open OUT 0x%02x ival %d", epout->bEndpointAddress, sc->ival_out);
++    sc->ep_out = usb_open_pipe_interval(dev, epout, sc->ival_out);
++    usblog_bc("bc attach: OUT -> %d; open IN 0x%02x ival %d", sc->ep_out, epin->bEndpointAddress, sc->ival_in);
++    sc->ep_in = usb_open_pipe_interval(dev, epin, sc->ival_in);
++    usblog_bc("bc attach: IN -> %d", sc->ep_in);
++#else
++    sc->ival_in = sc->ival_out = 32;    /* stock libxenon: the 32 ms leaf */
++    usblog_bc("bc attach: open OUT 0x%02x (stock 32 ms)", epout->bEndpointAddress);
++    sc->ep_out = usb_open_pipe(dev, epout);
++    usblog_bc("bc attach: OUT -> %d; open IN 0x%02x (stock 32 ms)", sc->ep_out, epin->bEndpointAddress);
++    sc->ep_in = usb_open_pipe(dev, epin);
++    usblog_bc("bc attach: IN -> %d", sc->ep_in);
++#endif
++    GIP_DLOG("pipes: in 0x%02x mps %d ival %d, out 0x%02x mps %d ival %d", sc->ep_in, sc->mps_in,
++           sc->ival_in, sc->ep_out, sc->mps_out, sc->ival_out);
++    if (sc->ep_in < 0 || sc->ep_out < 0) { usblog("attach: usb_open_pipe failed"); goto fail; }
++
++    sc->ireq = usb_make_request(dev, sc->ep_in, sc->ibuf, sc->in_len, UR_FLAG_IN | UR_FLAG_SHORTOK);
++    if (variant == GV_2IN)
++        sc->ireq2 = usb_make_request(dev, sc->ep_in, sc->ibuf2, sc->in_len, UR_FLAG_IN | UR_FLAG_SHORTOK);
++    sc->oreq = usb_make_request(dev, sc->ep_out, sc->obuf, 0, UR_FLAG_OUT);
++    if (!sc->ireq || !sc->oreq) { usblog("attach: usb_make_request failed"); goto fail; }
++    usblog_bc("bc attach: requests ireq %p oreq %p", (void *)sc->ireq, (void *)sc->oreq);
++
++    dev->ud_private = sc;
++    for (i = 0; i < GIP_MAX_DEVS; i++) if (!gip_devs[i]) { gip_devs[i] = sc; break; }
++    gip_take_slot(sc);
++    sc->stats_ms = usblog_now_ms();
++    usblog("pad%d connected %04x:%04x, variant %s, IN len %d", sc->index, vid, pid,
++           gv_name[variant], sc->in_len);
++
++    if (sc->mode == GIP_MODE_HOST) {
++        if (pid == 0x02d1) {
++            /* XboxInput: the 2013 pad announces without a power-on first */
++            sc->early_ms = usblog_now_ms();
++            gip_start_read(sc, "02d1: read before power-on");
++        } else {
++            gip_host_early_power(sc, "attach");
++        }
++    } else {
++        gip_start_read(sc, "xpad mode");
++        gip_xpad_init(sc, "attach");
++    }
++    usblog_bc("bc attach done");
++    return 0;
++
++fail:
++    usblog("%04x:%04x attach failed", vid, pid);
++    gip_free_softc(sc);
++    return -1;
++}
++
++static int usbgip_detach(usbdev_t *dev)
++{
++    usbgip_softc_t *sc = dev->ud_private;
++    if (!sc) return 0;
++    dev->ud_private = NULL;
++
++    if (sc->index >= 0) {
++        /* don't leave the last report latched (stuck stick / held button) */
++        struct controller_data_s zero;
++        memset(&zero, 0, sizeof(zero));
++        set_controller_data(sc->index, &zero);
++        if (sc->index < GIP_MAX_PADS && gip_pads[sc->index] == sc) gip_pads[sc->index] = NULL;
++        usbctrl_slot_free(sc->index);
++    }
++    usblog("pad%d (%04x:%04x) detached: rx %u in=%u guide=%u ann=%u ident=%u acks=%u rx_err %u "
++           "tx %u ok %u err %u drops %u", sc->index, sc->vid, sc->pid, sc->rx, sc->st.n_input,
++           sc->st.n_guide, sc->st.n_announce, sc->st.n_identify, sc->st.n_acks, sc->in_err,
++           sc->tx, sc->tx_ok, sc->out_err, sc->q_drops);
++    gip_free_softc(sc);
++    return 0;
++}
+diff -ruN
+--- a/drivers/usb/usbhub.c	2026-09-07 14:57:42.192625954 -0300
++++ b/drivers/usb/usbhub.c	2026-10-25 03:21:16.247387935 -0300
+@@ -49,6 +49,7 @@
+ 
+ #include "usbchap9.h"
+ #include "usbd.h"
++#include "usblog.h"
+ 
+ /* For systems with non-coherent DMA, allocate all buffers to be
+    cache-aligned and multiples of a cache line in size, so that they
+@@ -752,6 +753,10 @@
+ 		 */
+ 
+ 		usbhub_reset_device(dev,idx+1,portstatus);
++		usblog("hub bus %d hub %d port %d: connect, port status after reset %04x (%s)",
++		       dev->ud_bus->ub_num, dev->ud_address, idx+1,
++		       GETUSBFIELD(portstatus,wPortStatus),
++		       (GETUSBFIELD(portstatus,wPortStatus) & USB_PORT_STATUS_LOWSPD) ? "low-speed" : "full-speed");
+ 		current = GETUSBFIELD(portstatus,wPortStatus);
+ 		changed = GETUSBFIELD(portstatus,wPortChange);
+ 
+@@ -784,6 +789,10 @@
+ 
+ 		addr = usb_new_address(newdev->ud_bus);
+ 		res = usb_set_address(newdev,addr);
++		usblog("hub bus %d port %d: new address %d -> %d, %04x:%04x mps0 %d",
++		       dev->ud_bus->ub_num, idx+1, addr, res,
++		       GETUSBFIELD(&newdev->ud_devdescr,idVendor), GETUSBFIELD(&newdev->ud_devdescr,idProduct),
++		       newdev->ud_devdescr.bMaxPacketSize0);
+ 
+ 		/*
+ 		 * Get the configuration descriptor and all the
+@@ -847,6 +856,9 @@
+ 		 */
+ 
+ 		newdev = softc->uhub_devices[idx];	/* Get device pointer */
++		usblog("hub bus %d hub %d port %d: disconnect (%s)", dev->ud_bus->ub_num,
++		       dev->ud_address, idx+1,
++		       (newdev && newdev->ud_drv) ? newdev->ud_drv->udrv_name : "no driver");
+ 
+ 		if (newdev) usbhub_markdetached(newdev);		/* mark device and all subordinate 
+ 							   devices as "removing" */
+diff -ruN
+--- a/drivers/usb/usblog.c	1969-12-31 21:00:00.000000000 -0300
++++ b/drivers/usb/usblog.c	2026-10-25 03:21:45.385396046 -0300
+@@ -0,0 +1,283 @@
++/*
++ * usblog.c - USB/GIP diagnostics that survive boot and can never block.
++ *
++ * - usblog() only formats into a static history (first UL_BOOT lines since
++ *   boot + the last UL_RECENT).  It prints on the console only during the
++ *   boot phase (before UL_QUIET_MS); after that it is RAM-only, so nothing
++ *   slow (console scroll) ever runs on the network thread inside
++ *   usb_do_poll().
++ * - Nothing is sent from usblog() itself or from USB callbacks.  The only
++ *   caller of the app's np_log_line() (weak) is usblog_tick(), once per
++ *   usb_do_poll(), at most ONE line per UL_PACE_MS.  np_log_line() never
++ *   waits (it drops when its 64-line ring is full); we never loop.
++ * - Order of what a tick sends: the one-line summary (every UL_SUM_MS for the
++ *   first 2 minutes, then every 30 s), else the next unsent history line.
++ *   At UL_REPLAY_S[] the cursor rewinds to 0, so the whole history (boot
++ *   enumeration included) is re-sent: the UDP pipe does not exist yet while
++ *   USB enumerates at boot.  Lines overwritten before they were sent are
++ *   counted ("dropped").
++ * No malloc, no locks.
++ */
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include "usblog.h"
++
++#ifdef GIP_HOSTTEST
++extern uint64_t mock_now_ms;
++uint64_t usblog_now_ms(void) { return mock_now_ms; }
++#else
++#include <ppc/timebase.h>
++uint64_t usblog_now_ms(void) { return mftb() / (PPC_TIMEBASE_FREQ / 1000); }
++#endif
++
++/* XCloud360 login/net_pipe.c: queues "LOG <text>" for UDP :9003, never
++ * blocks (drops when full).  Weak: other apps link and get nothing. */
++extern void np_log_line(const char *text) __attribute__((weak));
++/* usbgip.c: one-line state of every GIP pad (weak so usblog stands alone) */
++extern int usbgip_summary(char *out, int n) __attribute__((weak));
++
++#define UL_COLS     168
++#define UL_BOOT     96
++#define UL_RECENT   48
++#define UL_QUIET_MS 6000      /* console output only before this (boot / warm-up) */
++#define UL_PACE_MS  4         /* at most one UDP line per 4 ms (250/s) */
++#if GIP_DEBUG
++#define UL_SUM_MS   2000
++#else
++#define UL_SUM_MS   30000     /* production: one summary every 30 s */
++#endif
++#define UL_SUM_FAST_UNTIL_MS 120000
++#define UL_SUM_SLOW_MS 30000
++#define UL_ENUM_MAX 6
++
++static char ul_boot[UL_BOOT][UL_COLS];
++static char ul_recent[UL_RECENT][UL_COLS];
++static unsigned ul_total;              /* lines ever logged; line s lives in boot[s] or recent[] */
++static unsigned ul_cursor;             /* next line to send */
++static unsigned ul_dropped;            /* overwritten before being sent */
++static unsigned ul_sent;
++static uint64_t ul_t0, ul_last_send, ul_last_sum;
++static int ul_sum_pending = 1;
++static unsigned ul_ticks, ul_nsum;   /* heartbeat: usblog_tick calls, summaries sent */
++
++#if GIP_DEBUG
++static const unsigned ul_replay_s[] = { 8, 15, 25, 40, 60, 90, 180 };
++#define UL_NREPLAY (sizeof(ul_replay_s) / sizeof(ul_replay_s[0]))
++#else
++static const unsigned ul_replay_s[1] = { 0 };   /* production: no boot replay */
++#define UL_NREPLAY 0u
++#endif
++static unsigned ul_replay_no;
++
++/* short enumeration summary: "vid:pid>drv" of the last UL_ENUM_MAX devices */
++static char ul_enum[UL_ENUM_MAX][24];
++static unsigned ul_nenum;
++
++static uint64_t ul_rel(void)
++{
++    uint64_t t = usblog_now_ms();
++    if (!ul_t0) ul_t0 = t ? t : 1;
++    return t >= ul_t0 ? t - ul_t0 : 0;
++}
++
++static const char *ul_line(unsigned s)
++{
++    if (s < UL_BOOT) return s < ul_total ? ul_boot[s] : NULL;
++    if (s >= ul_total) return NULL;
++    if (ul_total - s > UL_RECENT) return NULL;     /* overwritten */
++    return ul_recent[(s - UL_BOOT) % UL_RECENT];
++}
++
++/* crash ring: the last UL_CRASH lines (100 chars) for the libxenon red
++ * screen (c_except.c calls usblog_crash_tail() through a weak hook) */
++#define UL_CRASH      10
++#define UL_CRASH_COLS 100
++static char ul_crash[UL_CRASH][UL_CRASH_COLS];
++static unsigned ul_ncrash;
++static int ul_force_console;
++
++static void ul_emit(int console, const char *fmt, va_list ap)
++{
++    char *dst;
++    char tmp[UL_COLS];
++    unsigned rel = (unsigned)ul_rel();
++    dst = ul_total < UL_BOOT ? ul_boot[ul_total] : ul_recent[(ul_total - UL_BOOT) % UL_RECENT];
++    int n = snprintf(tmp, sizeof(tmp), "[gip] t=%u.%03u ", rel / 1000, rel % 1000);
++    if (n < 0 || n >= (int)sizeof(tmp)) n = 0;
++    vsnprintf(tmp + n, sizeof(tmp) - n, fmt, ap);
++    tmp[UL_COLS - 1] = 0;
++    memcpy(dst, tmp, UL_COLS);
++    ul_total++;
++    memcpy(ul_crash[ul_ncrash % UL_CRASH], tmp + 6, UL_CRASH_COLS - 1);   /* drop "[gip] " */
++    ul_crash[ul_ncrash % UL_CRASH][UL_CRASH_COLS - 1] = 0;
++    ul_ncrash++;
++    if (console && (rel < UL_QUIET_MS || ul_force_console)) printf("%s\n", tmp);
++}
++
++/* breadcrumb: like usblog, but always on the console (first UL_BC_MAX) */
++#define UL_BC_MAX 64
++static unsigned ul_nbc;
++void usblog_bc(const char *fmt, ...)
++{
++    va_list ap;
++#if GIP_DEBUG
++    ul_force_console = ul_nbc++ < UL_BC_MAX;
++    va_start(ap, fmt); ul_emit(1, fmt, ap); va_end(ap);
++    ul_force_console = 0;
++#else
++    /* production: only into the crash-screen ring (no console, no UDP) */
++    char tmp[UL_CRASH_COLS];
++    unsigned rel = (unsigned)ul_rel();
++    int n = snprintf(tmp, sizeof(tmp), "t=%u.%03u ", rel / 1000, rel % 1000);
++    if (n < 0 || n >= (int)sizeof(tmp)) n = 0;
++    va_start(ap, fmt); vsnprintf(tmp + n, sizeof(tmp) - n, fmt, ap); va_end(ap);
++    memcpy(ul_crash[ul_ncrash % UL_CRASH], tmp, UL_CRASH_COLS);
++    ul_crash[ul_ncrash % UL_CRASH][UL_CRASH_COLS - 1] = 0;
++    ul_ncrash++;
++    (void)ul_nbc;
++#endif
++}
++
++/* Called from the crash handler (exception context): no locks, no malloc,
++ * only string copies into a static buffer. */
++const char *usblog_crash_tail(void)
++{
++    static char out[UL_CRASH * (UL_CRASH_COLS + 1) + 320];
++    unsigned i, first = ul_ncrash > UL_CRASH ? ul_ncrash - UL_CRASH : 0;
++    size_t n, k;
++    static const char h[] = "\n[gip] state:";
++    static const char h2[] = "\n[gip] last log lines (oldest first):\n";
++    memcpy(out, h, sizeof(h) - 1);
++    n = sizeof(h) - 1;
++    if (usbgip_summary) {                       /* pad state + OHCI TD low-water, one line */
++        int k2 = usbgip_summary(out + n, 160);
++        if (k2 > 0) n += (k2 < 159 ? (size_t)k2 : 159);
++    }
++    memcpy(out + n, h2, sizeof(h2) - 1);
++    n += sizeof(h2) - 1;
++    for (i = first; i < ul_ncrash; i++) {
++        const char *l = ul_crash[i % UL_CRASH];
++        for (k = 0; k < UL_CRASH_COLS - 1 && l[k]; k++) ;
++        if (n + k + 2 >= sizeof(out)) break;
++        memcpy(out + n, l, k);
++        n += k;
++        out[n++] = '\n';
++    }
++    out[n] = 0;
++    return out;
++}
++
++void usblog(const char *fmt, ...)
++{
++    va_list ap; va_start(ap, fmt); ul_emit(1, fmt, ap); va_end(ap);
++}
++
++void usblog_quiet(const char *fmt, ...)
++{
++    va_list ap; va_start(ap, fmt); ul_emit(0, fmt, ap); va_end(ap);
++}
++
++void usblog_note_enum(unsigned vid, unsigned pid, const char *drv)
++{
++    char *d = ul_enum[ul_nenum % UL_ENUM_MAX];
++    char s[8];
++    /* 3-4 letter driver tag */
++    if (!drv) snprintf(s, sizeof(s), "NONE");
++    else if (strstr(drv, "GIP")) snprintf(s, sizeof(s), "GIP");
++    else if (strstr(drv, "360")) snprintf(s, sizeof(s), "x360");
++    else if (strstr(drv, "ummy")) snprintf(s, sizeof(s), "dumm");
++    else if (strstr(drv, "ub") || strstr(drv, "UB")) snprintf(s, sizeof(s), "hub");
++    else snprintf(s, sizeof(s), "%.4s", drv);
++    snprintf(d, 24, "%04x:%04x>%s", vid & 0xffff, pid & 0xffff, s);
++    ul_nenum++;
++    ul_sum_pending = 1;
++}
++
++void usblog_hex(char *out, const uint8_t *b, int n, int max)
++{
++    static const char hx[] = "0123456789abcdef";
++    int i, k = 0;
++    if (n > max) n = max;
++    for (i = 0; i < n; i++) {
++        out[k++] = hx[b[i] >> 4];
++        out[k++] = hx[b[i] & 15];
++        if (i + 1 < n) out[k++] = ' ';
++    }
++    out[k] = 0;
++}
++
++static void ul_build_summary(char *out, int cap)
++{
++    unsigned i, first = ul_nenum > UL_ENUM_MAX ? ul_nenum - UL_ENUM_MAX : 0;
++    unsigned rel = (unsigned)ul_rel();
++    int n = snprintf(out, cap, "[gip] sum#%u t=%u hb%u log %u/%u skip %u enum%u:", ul_nsum, rel / 1000,
++                     ul_ticks, ul_sent, ul_total, ul_dropped, ul_nenum);
++    for (i = first; i < ul_nenum && n > 0 && n < cap - 1; i++)
++        n += snprintf(out + n, cap - n, " %s", ul_enum[i % UL_ENUM_MAX]);
++    if (n > 0 && n < cap - 1 && usbgip_summary) {
++        n += snprintf(out + n, cap - n, " |");
++        if (n < cap - 1) usbgip_summary(out + n, cap - n);
++    }
++    out[cap - 1] = 0;
++}
++
++void usblog_tick(void)
++{
++    char buf[212];             /* app pipe: 220 cols incl. "LOG " */
++    uint64_t rel = ul_rel();
++    ul_ticks++;
++    if (!np_log_line) return;
++
++#if GIP_DEBUG
++    /* replay points: rewind the cursor (cheap; the sending is paced below) */
++    if (ul_replay_no < UL_NREPLAY && rel >= (uint64_t)ul_replay_s[ul_replay_no] * 1000) {
++        ul_replay_no++;
++        ul_cursor = 0;
++        ul_sum_pending = 1;
++    }
++#else
++    (void)ul_replay_s; (void)ul_replay_no;
++#endif
++    if (rel - ul_last_send < UL_PACE_MS && ul_last_send) return;
++
++    uint64_t every = rel < UL_SUM_FAST_UNTIL_MS ? UL_SUM_MS : UL_SUM_SLOW_MS;
++    if (ul_sum_pending || rel - ul_last_sum >= every) {
++        ul_build_summary(buf, sizeof(buf));
++        ul_nsum++;
++        np_log_line(buf);
++        ul_sum_pending = 0;
++        ul_last_sum = rel;
++        ul_last_send = rel ? rel : 1;
++        return;
++    }
++    while (ul_cursor < ul_total) {           /* bounded: only skips lost lines */
++        const char *l = ul_line(ul_cursor);
++        if (l) break;
++        /* overwritten: jump to the oldest line still held */
++        unsigned oldest = ul_total > UL_BOOT + UL_RECENT ? ul_total - UL_RECENT : UL_BOOT;
++        if (oldest <= ul_cursor) oldest = ul_cursor + 1;
++        ul_dropped += oldest - ul_cursor;
++        ul_cursor = oldest;
++    }
++    if (ul_cursor < ul_total) {
++        np_log_line(ul_line(ul_cursor));
++        ul_cursor++;
++        ul_sent++;
++        ul_last_send = rel ? rel : 1;
++    }
++}
++
++/* 1 if one of the last n logged lines contains s (host test / debugging) */
++int usblog_find(const char *s, unsigned n)
++{
++    unsigned k;
++    for (k = 0; k < n && k < ul_total; k++) {
++        const char *l = ul_line(ul_total - 1 - k);
++        if (l && strstr(l, s)) return 1;
++    }
++    return 0;
++}
++
++unsigned usblog_total(void) { return ul_total; }
++unsigned usblog_dropped(void) { return ul_dropped; }
+diff -ruN
+--- a/drivers/usb/usblog.h	1969-12-31 21:00:00.000000000 -0300
++++ b/drivers/usb/usblog.h	2026-10-25 03:21:16.246924898 -0300
+@@ -0,0 +1,36 @@
++/*
++ * usblog.h - USB/GIP diagnostics that survive boot and can never block.
++ * See usblog.c for the rules (RAM-only after boot, one paced UDP line per
++ * usb_do_poll through the app's weak np_log_line, replays, summary line).
++ */
++#ifndef USBLOG_H
++#define USBLOG_H
++
++/* 0 = production (installed libxenon): key lines only, summary every 30 s,
++ * no boot replay, breadcrumbs only in the crash-screen ring, console only
++ * during the first 6 s.  1 = diagnostic build (dumps, variants, replay). */
++#ifndef GIP_DEBUG
++#define GIP_DEBUG 0
++#endif
++#include <stdint.h>
++
++void usblog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++/* same, never on the console */
++void usblog_quiet(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++/* called once per usb_do_poll(): sends at most one line */
++void usblog_tick(void);
++/* breadcrumb: always printed on the console (first 64), and in the crash ring */
++void usblog_bc(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++/* last lines, for the libxenon crash screen (c_except.c, weak hook) */
++const char *usblog_crash_tail(void);
++uint64_t usblog_now_ms(void);
++/* remember "vid:pid>driver" for the summary line */
++void usblog_note_enum(unsigned vid, unsigned pid, const char *drv);
++/* "aa bb cc ..." of up to max bytes into out (size >= 3*max+1) */
++void usblog_hex(char *out, const uint8_t *b, int n, int max);
++/* host test / debugging */
++int usblog_find(const char *s, unsigned n);
++unsigned usblog_total(void);
++unsigned usblog_dropped(void);
++
++#endif
+diff -ruN
+--- a/drivers/usb/usbmain.c	2026-09-07 14:57:42.192625954 -0300
++++ b/drivers/usb/usbmain.c	2026-10-25 03:21:16.248056025 -0300
+@@ -54,7 +54,9 @@
+ 
+ #include "usbmain.h"
+ #include "usbchap9.h"
+-#include "usbd.h"
++#include "usbd.h"
++#include "usblog.h"
++void usbgip_tick(void);
+ #include "pci/io.h"
+ #include <usb/tinyehci/tinyehci.h>
+ 
+@@ -305,5 +307,7 @@
+ 
+ 	usb_cfe_timer(0);
+ 
+-	USBStorage_Init();
++	USBStorage_Init();
++	usbgip_tick();
++	usblog_tick();
+ }
+diff -ruN
+--- a/ports/xenon/Makefile	2026-09-07 14:57:42.198574491 -0300
++++ b/ports/xenon/Makefile	2026-10-25 03:21:16.249930807 -0300
+@@ -56,6 +56,9 @@
+ 	../../drivers/usb/dummy.o \
+ 	../../drivers/usb/ohci.o \
+ 	../../drivers/usb/usbctrl.o \
++	../../drivers/usb/usbgip.o \
++	../../drivers/usb/gip_proto.o \
++	../../drivers/usb/usblog.o \
+ 	../../drivers/usb/usbd.o \
+ 	../../drivers/usb/usbdebug.o \
+ 	../../drivers/usb/usbdevs.o \

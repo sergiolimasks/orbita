@@ -21,6 +21,12 @@ extern "C" {
 
 int  input_udp_init(const char *server_ip, int server_port);
 void input_udp_send(const uint8_t *buf, size_t n);
+/* v0.14: 1 = input_udp_send só enfileira; quem envia é input_udp_flush(),
+ * chamado pela thread de rede (lwIP não é thread-safe). */
+void input_udp_set_deferred(int on);
+void input_udp_flush(void);
+/* v0.14.2: texto "STAT ..." de telemetria; o capture-rtp loga como [xbox]. */
+void input_udp_send_stat(const char *txt, size_t n);
 
 #ifdef __cplusplus
 }

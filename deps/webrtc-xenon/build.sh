@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# ============================================================================
+# XCloud360 stage 4 — WebRTC stack (libpeer + usrsctp + libsrtp + mbedTLS
+# DTLS) as static libraries, built from the SAME sources for three targets:
+#
+#   xenon  bare-metal Xbox 360 (xenon-gcc 9.2, newlib, NO AltiVec)
+#          -> ~/webrtc-xenon/xenon/{lib,include}
+#   host   x86-64 Linux (offline E2E test against a pion peer)
+#          -> ~/webrtc-xenon/host/...
+#   ppc    ppc32 BIG-endian Linux (same E2E under qemu-ppc: catches the
+#          byte-order bugs a little-endian host run cannot)
+#          -> ~/webrtc-xenon/ppc/...
+#
+# usage: deps/webrtc-xenon/build.sh [xenon|host|ppc|all]   (default: all)
+#   ECDSA=0     self-signed DTLS cert = RSA-1024 (libpeer default) instead of
+#               ECDSA P-256 (default here: ~100x cheaper keygen on Xenon)
+#   SRTP_CRYPTO=native   libsrtp's built-in AES-ICM/HMAC-SHA1 instead of its
+#               mbedTLS backend (default mbedtls: ~2x cheaper per packet on the
+#               host; the bench ELF prints both costs for Xenon)
+#
+# Inputs are READ-ONLY: ~/libpeer/src (green-nx + XCloud360 patched),
+# ~/libpeer/third_party/{usrsctp,libsrtp,mbedtls}. Sources are copied to
+# <out>/src and patched there (patches/patch_*.py), never in place.
+# Nothing is installed into ~/devkitxenon.
+# ============================================================================
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIBPEER="${LIBPEER_DIR:-$HOME/libpeer}"
+OUTROOT="${OUTROOT:-$HOME/webrtc-xenon}"
+DKX="${DEVKITXENON:-$HOME/devkitxenon}"
+ECDSA="${ECDSA:-1}"
+SRTP_CRYPTO="${SRTP_CRYPTO:-mbedtls}"
+JOBS="$(nproc)"
+
+MBEDTLS_SRC="$LIBPEER/third_party/mbedtls"
+grep -q '"3.4.0"' "$MBEDTLS_SRC/include/mbedtls/build_info.h" || { echo "want mbedTLS 3.4.0 in $MBEDTLS_SRC"; exit 1; }
+
+# compile_list <list> <cc> <flags...>   list lines: "<src> <obj>"  (parallel)
+compile_list() {
+  local list="$1"; shift
+  local cmds="$list.cmds" pre src obj
+  : > "$cmds"
+  pre="$(printf '%q ' "$@")"
+  while read -r src obj; do
+    printf '%s -c %q -o %q\n' "$pre" "$src" "$obj" >> "$cmds"
+  done < "$list"
+  if ! xargs -P "$JOBS" -d '\n' -I{} bash -c '{} || exit 255' < "$cmds"; then
+    echo "=== compile FAILED ($list)"; exit 1
+  fi
+}
+
+build_target() {
+  local T="$1"
+  local OUT="$OUTROOT/$T"
+  local SRC="$OUT/src"
+  local CC AR ARCH BE EXTRA_INC=()
+  case "$T" in
+    xenon)
+      CC="$DKX/bin/xenon-gcc"; AR="$DKX/bin/xenon-ar"
+      # Same MACHDEP as devkitxenon/rules + app (ABI identical to libxenon),
+      # but -mno-altivec: Xenon VMX lacks 22 AltiVec integer ops and nothing
+      # here benefits from SIMD. Verified with vmxaudit.py below.
+      ARCH="-O2 -g -DXENON -D__XENON__ -m32 -mno-altivec -fno-pic -mpowerpc64 -mhard-float
+            -ffunction-sections -fdata-sections -D_POSIX_THREADS=1 -D_POSIX_READER_WRITER_LOCKS=1
+            -I$HERE/shim/include -include xcw_shim.h"
+      BE=1 ;;
+    host)
+      CC=gcc; AR=ar
+      ARCH="-O2 -g -ffunction-sections -fdata-sections -D_GNU_SOURCE"
+      BE=0 ;;
+    ppc)
+      # shellcheck disable=SC1090
+      source "$HOME/scratch/wf/ppc-tools/env-ppc.sh"
+      CC="$PPC_CC"; AR="${PPC_CROSS_PREFIX}ar"
+      ARCH="-O2 -g -m32 -mcpu=7450 -mno-altivec -ffunction-sections -fdata-sections -D_GNU_SOURCE --sysroot=$PPC_SYSROOT"
+      BE=1 ;;
+    *) echo "unknown target $T"; exit 2 ;;
+  esac
+  [[ -x "$(command -v "$CC" || echo "$CC")" ]] || { echo "compiler missing: $CC"; exit 1; }
+  ARCH="$(echo $ARCH)"   # flatten newlines
+
+  echo "=== [$T] sources -> $SRC"
+  rm -rf "$SRC" "$OUT/obj" "$OUT/lib" "$OUT/include"
+  mkdir -p "$SRC" "$OUT"/obj/{mbedtls,srtp,usrsctp,peer} "$OUT/lib" "$OUT/include/srtp2" "$OUT/include/xcw"
+  cp -r "$LIBPEER/src" "$SRC/libpeer"
+  rm -f "$SRC"/libpeer/{socket.c,ports.c,mdns.c,peer_signaling.c,ssl_transport.c,CMakeLists.txt}
+  cp -r "$LIBPEER/third_party/usrsctp/usrsctplib" "$SRC/usrsctp"
+  mkdir -p "$SRC/libsrtp"
+  cp -r "$LIBPEER/third_party/libsrtp/"{include,crypto,srtp} "$SRC/libsrtp/"
+  python3 "$HERE/patches/patch_libpeer.py" "$SRC/libpeer"
+  python3 "$HERE/patches/patch_usrsctp.py" "$SRC/usrsctp"
+
+  # ---- mbedTLS (all modules; disabled ones compile to empty objects) -------
+  local MBED_FLAGS="$ARCH -I$HERE/mbedtls -I$MBEDTLS_SRC/include -I$MBEDTLS_SRC/library
+                    -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_webrtc_config.h\""
+  : > "$OUT/obj/mbedtls.list"
+  for f in "$MBEDTLS_SRC"/library/*.c; do
+    echo "$f $OUT/obj/mbedtls/$(basename "${f%.c}").o" >> "$OUT/obj/mbedtls.list"
+  done
+  echo "=== [$T] mbedTLS 3.4.0 (DTLS-SRTP superset config)"
+  compile_list "$OUT/obj/mbedtls.list" "$CC" $MBED_FLAGS
+  "$AR" rcs "$OUT/lib/libmbedtls-xcwebrtc.a" "$OUT"/obj/mbedtls/*.o
+
+  # ---- libsrtp 2.4.2, built-in crypto (no OpenSSL/mbedTLS backend) --------
+  local SRTP="$SRC/libsrtp"
+  {
+    echo '/* generated by deps/webrtc-xenon/build.sh */'
+    echo '#define PACKAGE_VERSION "2.4.2"'
+    echo '#define PACKAGE_STRING "libsrtp2 2.4.2"'
+    if [[ $BE == 1 ]]; then echo '#define WORDS_BIGENDIAN 1'; echo '#define CPU_RISC 1';
+    else echo '#define CPU_CISC 1'; fi
+    echo '#define HAVE_INTTYPES_H 1'
+    echo '#define HAVE_STDINT_H 1'
+    echo '#define HAVE_STDLIB_H 1'
+    echo '#define HAVE_SYS_TYPES_H 1'
+    echo '#define HAVE_UNISTD_H 1'
+    [[ $T != xenon ]] && { echo '#define HAVE_ARPA_INET_H 1'; echo '#define HAVE_NETINET_IN_H 1'; echo '#define HAVE_SYS_SOCKET_H 1'; }
+    [[ $T == xenon ]] && { echo '#define HAVE_ARPA_INET_H 1'; echo '#define HAVE_NETINET_IN_H 1'; }
+    echo '#define HAVE_UINT8_T 1'
+    echo '#define HAVE_UINT16_T 1'
+    echo '#define HAVE_UINT32_T 1'
+    echo '#define HAVE_UINT64_T 1'
+    echo '#define HAVE_INT32_T 1'
+    if [[ $T == host ]]; then echo '#define SIZEOF_UNSIGNED_LONG 8'; else echo '#define SIZEOF_UNSIGNED_LONG 4'; fi
+    echo '#define SIZEOF_UNSIGNED_LONG_LONG 8'
+    echo '#define HAVE_INLINE 1'
+    # libsrtp's mbedTLS backend is only coherent with GCM on (libpeer still
+    # offers AES_CM profiles only; GCM just gets compiled in)
+    [[ $SRTP_CRYPTO == mbedtls ]] && { echo '#define MBEDTLS 1'; echo '#define GCM 1'; }
+  } > "$SRTP/config.h"
+  : > "$OUT/obj/srtp.list"
+  local SRTP_BACKEND="crypto/cipher/aes.c crypto/cipher/aes_icm.c crypto/hash/hmac.c crypto/hash/sha1.c"
+  [[ $SRTP_CRYPTO == mbedtls ]] && SRTP_BACKEND="crypto/cipher/aes_icm_mbedtls.c crypto/cipher/aes_gcm_mbedtls.c crypto/hash/hmac_mbedtls.c"
+  for f in srtp/srtp.c crypto/cipher/cipher.c crypto/cipher/cipher_test_cases.c crypto/cipher/null_cipher.c \
+           crypto/hash/auth.c crypto/hash/auth_test_cases.c crypto/hash/null_auth.c crypto/kernel/alloc.c \
+           crypto/kernel/crypto_kernel.c crypto/kernel/err.c crypto/kernel/key.c crypto/math/datatypes.c \
+           crypto/replay/rdb.c crypto/replay/rdbx.c $SRTP_BACKEND; do
+    echo "$SRTP/$f $OUT/obj/srtp/$(basename "${f%.c}").o" >> "$OUT/obj/srtp.list"
+  done
+  echo "=== [$T] libsrtp 2.4.2 ($SRTP_CRYPTO crypto)"
+  compile_list "$OUT/obj/srtp.list" "$CC" $ARCH -DHAVE_CONFIG_H -I"$SRTP" -I"$SRTP/include" -I"$SRTP/crypto/include"       -I"$HERE/mbedtls" -I"$MBEDTLS_SRC/include" '-DMBEDTLS_CONFIG_FILE="xc360_mbedtls_webrtc_config.h"'
+  "$AR" rcs "$OUT/lib/libsrtp2-xc.a" "$OUT"/obj/srtp/*.o
+  cp "$SRTP/include/srtp.h" "$SRTP/crypto/include/"{auth.h,cipher.h,crypto_types.h} "$OUT/include/srtp2/"
+
+  # ---- usrsctp 0.9.5, AF_CONN only (no INET/INET6), no threads ------------
+  local U="$SRC/usrsctp"
+  local UFLAGS="$ARCH -D__Userspace__ -DSCTP_SIMPLE_ALLOCATOR -DSCTP_PROCESS_LEVEL_LOCKS
+                -Wno-address-of-packed-member -Wno-deprecated-declarations -I$U"
+  [[ $T != xenon ]] && UFLAGS="$UFLAGS -DHAVE_SYS_QUEUE_H -DHAVE_STDATOMIC_H -DHAVE_NETINET_IP_ICMP_H -DHAVE_NET_ROUTE_H"
+  : > "$OUT/obj/usrsctp.list"
+  for f in netinet/sctp_asconf.c netinet/sctp_auth.c netinet/sctp_bsd_addr.c netinet/sctp_callout.c \
+           netinet/sctp_cc_functions.c netinet/sctp_crc32.c netinet/sctp_indata.c netinet/sctp_input.c \
+           netinet/sctp_output.c netinet/sctp_pcb.c netinet/sctp_peeloff.c netinet/sctp_sha1.c \
+           netinet/sctp_ss_functions.c netinet/sctp_sysctl.c netinet/sctp_timer.c netinet/sctp_userspace.c \
+           netinet/sctp_usrreq.c netinet/sctputil.c netinet6/sctp6_usrreq.c user_environment.c user_mbuf.c \
+           user_recv_thread.c user_socket.c; do
+    echo "$U/$f $OUT/obj/usrsctp/$(basename "${f%.c}").o" >> "$OUT/obj/usrsctp.list"
+  done
+  echo "=== [$T] usrsctp (AF_CONN, nothreads)"
+  compile_list "$OUT/obj/usrsctp.list" "$CC" $UFLAGS
+  "$AR" rcs "$OUT/lib/libusrsctp-xc.a" "$OUT"/obj/usrsctp/*.o
+
+  # ---- libpeer core + xcw port layer --------------------------------------
+  local P="$SRC/libpeer"
+  local PFLAGS="$ARCH -DCONFIG_USE_LWIP=0 -DCONFIG_USE_USRSCTP=1 -DLOG_REDIRECT=1 -DLOG_LEVEL=${LOG_LEVEL:-2}
+                -DCONFIG_DTLS_USE_ECDSA=$ECDSA -DDISABLE_PEER_SIGNALING=1
+                -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_webrtc_config.h\"
+                -I$P -I$U -I$OUT/include -I$HERE/mbedtls -I$MBEDTLS_SRC/include -I$HERE/port"
+  : > "$OUT/obj/peer.list"
+  for f in address agent base64 dtls_srtp ice peer peer_connection rtcp rtp sctp sdp stun utils; do
+    echo "$P/$f.c $OUT/obj/peer/$f.o" >> "$OUT/obj/peer.list"
+  done
+  echo "$HERE/port/socket_xc.c $OUT/obj/peer/socket_xc.o" >> "$OUT/obj/peer.list"
+  echo "$HERE/port/ports_xc.c $OUT/obj/peer/ports_xc.o" >> "$OUT/obj/peer.list"
+  [[ $T == xenon ]] && echo "$HERE/shim/xcw_inet.c $OUT/obj/peer/xcw_inet.o" >> "$OUT/obj/peer.list"
+  [[ $T == xenon ]] && echo "$HERE/port/xcw_pthread_extra.c $OUT/obj/peer/xcw_pthread_extra.o" >> "$OUT/obj/peer.list"
+  echo "=== [$T] libpeer (patched copy) + xcw port"
+  compile_list "$OUT/obj/peer.list" "$CC" $PFLAGS
+  "$AR" rcs "$OUT/lib/libpeer-xc.a" "$OUT"/obj/peer/*.o
+
+  # ---- public headers -----------------------------------------------------
+  cp "$P/peer.h" "$P/peer_connection.h" "$P/peer_signaling.h" "$OUT/include/"
+  cp "$HERE/port/xcw_port.h" "$OUT/include/"
+  cp -r "$MBEDTLS_SRC/include/mbedtls" "$MBEDTLS_SRC/include/psa" "$OUT/include/"
+  cp "$HERE/mbedtls/xc360_mbedtls_webrtc_config.h" "$HERE/mbedtls/timing_alt.h" "$OUT/include/"
+  {
+    echo "target=$T ecdsa=$ECDSA srtp_crypto=$SRTP_CRYPTO built=$(date -u +%FT%TZ)"
+    echo "libpeer=$(git -C "$LIBPEER" rev-parse --short HEAD) (+ local green-nx/XCloud360 changes, + patches/patch_libpeer.py)"
+    echo "usrsctp=$(git -C "$LIBPEER/third_party/usrsctp" rev-parse --short HEAD) libsrtp=$(git -C "$LIBPEER/third_party/libsrtp" rev-parse --short HEAD) mbedtls=3.4.0"
+    echo "cc=$($CC --version | head -1)"
+    echo "flags=$ARCH"
+  } > "$OUT/BUILDINFO.txt"
+  ls -la "$OUT"/lib/*.a
+
+  if [[ $T == xenon ]]; then
+    echo "=== [$T] vmxaudit (Xenon-unsupported AltiVec ops)"
+    python3 "$HOME/ffmpeg-xenon-mt-altivec/xcloud360/vmxaudit.py" "$OUT"/lib/*.a | tail -6
+  fi
+}
+
+TGT="${1:-all}"
+if [[ $TGT == all ]]; then
+  for t in host ppc xenon; do build_target "$t"; done
+else
+  build_target "$TGT"
+fi

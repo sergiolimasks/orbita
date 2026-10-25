@@ -48,7 +48,8 @@ except Exception:
 PORT_DEFAULT = 9000
 FPS = 60
 GREENNX_BIN = os.path.expanduser("~/green-nx/build/pc/greennx")
-CAPTURE_RTP_BIN = "/mnt/storage/projetos/XCloud360/tools/xcloud-capture/rtp/capture-rtp"
+CAPTURE_RTP_BIN = str(pathlib.Path(__file__).resolve().parent.parent
+                      / "xcloud-capture" / "rtp" / "capture-rtp")
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 STARTCODE_4 = b"\x00\x00\x00\x01"
 STARTCODE_3 = b"\x00\x00\x01"
