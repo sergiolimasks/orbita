@@ -1,0 +1,37 @@
+{% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf, field, pw_field with context %}
+{% block title %}{{ _('signup.title') }}{% endblock %}
+{% block card_class %} wide{% endblock %}
+{% block content %}
+{% set ferr = ferr or {} %}
+<div class="stepper" aria-hidden="true"><span class="st done"><i>{{ icon('check', 12) }}</i>{{ _('ui.step_invite') }}</span><span class="bar"></span><span class="st on"><i>2</i>{{ _('ui.step_account') }}</span><span class="bar"></span><span class="st"><i>3</i>{{ _('ui.step_key') }}</span></div>
+<h1>{{ _('signup.title') }}</h1>
+<p class="a-lead">{{ _('signup.intro') }}</p>
+<div class="alert info mt-4">{{ icon('clock', 16) }}<div>{{ _('signup.expires', d=inv.expires_at|dt) }}</div></div>
+{{ errs(errors) }}
+<form method="post" novalidate>
+  {{ csrf() }}
+  <div class="form-grid">
+    <div class="span-2">{{ field('name', _('signup.name'), f.name, err=ferr.name, attrs='required maxlength="80" autocomplete="name"') }}</div>
+    <div class="span-2">{{ field('email', _('login.email'), f.email, 'email', err=ferr.email, help=_('ui.email_help'), attrs='required maxlength="254" autocomplete="email"') }}</div>
+    {{ field('phone', _('signup.phone'), f.phone, 'tel', err=ferr.phone, attrs='required maxlength="24" autocomplete="tel" placeholder="+55 11 91234-5678"') }}
+    {% call field('country', _('signup.country'), err=ferr.country) %}
+      <select id="f-country" name="country" required autocomplete="country"{% if ferr.country %} aria-invalid="true"{% endif %}>
+        <option value="">{{ _('signup.choose') }}</option>
+        {% for code, cname in countries %}<option value="{{ code }}" {{ 'selected' if f.country == code }}>{{ flag(code) }} {{ cname }}</option>{% endfor %}
+      </select>
+    {% endcall %}
+    {{ pw_field('password', _('login.password'), err=ferr.password, help=_('signup.pw_hint'), attrs='required minlength="10" maxlength="128" autocomplete="new-password"') }}
+    {{ pw_field('password2', _('signup.password2'), err=ferr.password2, attrs='required minlength="10" maxlength="128" autocomplete="new-password"') }}
+  </div>
+  <details class="disclosure">
+    <summary>{{ icon('alert', 15) }}{{ _('home.risk_title') }}{{ icon('chevron-down', 15) }}</summary>
+    <p>{{ _('home.risk') }}</p>
+  </details>
+  <div class="field{{ ' has-error' if ferr.accept }}">
+    <label class="check"><input type="checkbox" name="accept" value="1" required {{ 'checked' if f.accept }}{% if ferr.accept %} aria-invalid="true"{% endif %}> <span>{{ _('signup.accept') }}</span></label>
+    {% if ferr.accept %}<span class="err-msg">{{ icon('alert', 12) }}{{ ferr.accept }}</span>{% endif %}
+  </div>
+  <button class="btn primary lg block">{{ _('signup.submit') }}</button>
+</form>
+<p class="auth-foot">{{ _('ui.have_account') }} <a href="{{ url_for('auth.login') }}">{{ _('login.submit') }}</a></p>
+{% endblock %}

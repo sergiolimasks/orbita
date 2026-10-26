@@ -1,9 +1,8 @@
-/* XCloud360 v0.17 — ver net_pipe.h. Só compila com XBOX_LOGIN=1 (Makefile). */
+/* XCloud360 v0.17 — ver net_pipe.h. */
 #include "net_pipe.h"
 #include "xc_port.h"
 #include "dns_msg.h"
-#include "../tcp_stream.h"
-#include "../ctrl_conn.h"
+#include "xc_logup.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,21 +19,12 @@
 #include <lwip/err.h>
 #include <lwip/pbuf.h>
 
-#define NP_SLOTS          2
+#define NP_SLOTS          4   /* v0.20.2: worker das capas segura 2 conexões persistentes (gamepass + logs); com 2 slots o displaycatalog dava ENOSLOT */
 #define NP_RX_CAP         (256 * 1024)
 #define NP_TX_CAP         (32 * 1024)
 #define NP_SYN_TIMEOUT_MS 10000
 #define NP_SERIALIZE_MS   3000
 #define DNS_TRY_MS        1500
-#ifdef XCLOUD360_NATIVE
-/* stage 5: the 2 s STAT line (video + audio + WebRTC keys, ~450 chars) and
- * the burst of WebRTC setup lines (SDP/ICE/DTLS/datachannels) go here too. */
-#define LOG_LINES         128
-#define LOG_COLS          600
-#else
-#define LOG_LINES         64
-#define LOG_COLS          220
-#endif
 
 /* lwIP 1.4.1 dhcp.c: valores decodificados da última resposta DHCP aceita
  * (globais exportados, válidos até o próximo pacote DHCP pra este MAC). */
@@ -138,11 +128,9 @@ static err_t on_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
     return ERR_OK;
 }
 
+/* Um SYN por vez (bug da v0.8.2). v0.20.0: sem vídeo TCP :9000 nem
+ * controle :9002 (modo PC saiu): só os canos daqui. */
 static int syn_busy(void) {
-    int v = stream_connecting_ms();
-    if (v >= 0 && v < NP_SERIALIZE_MS) return 1;
-    v = ctrl_connecting_ms();
-    if (v >= 0 && v < NP_SERIALIZE_MS) return 1;
     return np_connecting_ms() >= 0;
 }
 
@@ -257,44 +245,14 @@ static void dns_step(void) {
 
 /* ------------------------------------------------------------------ log */
 
-static struct udp_pcb *g_log_pcb = NULL;
-static ip_addr_t       g_log_ip;
-static unsigned int    g_log_lock = 0;
-static char            g_log[LOG_LINES][LOG_COLS];
-static unsigned        g_log_w = 0, g_log_r = 0;
-
-void np_log_line(const char *text) {
-    if (!g_np_inited) return;
-    lock(&g_log_lock);
-    if (g_log_w - g_log_r < LOG_LINES) {
-        char *d = g_log[g_log_w % LOG_LINES];
-        snprintf(d, LOG_COLS, "LOG %s", text);
-        g_log_w++;
-    }
-    unlock(&g_log_lock);
-}
-
-static void log_step(void) {
-    for (int k = 0; k < 8; k++) {
-        char line[LOG_COLS];
-        lock(&g_log_lock);
-        if (g_log_r == g_log_w) { unlock(&g_log_lock); return; }
-        memcpy(line, g_log[g_log_r % LOG_LINES], LOG_COLS);
-        g_log_r++;
-        unlock(&g_log_lock);
-        line[LOG_COLS - 1] = 0;
-        size_t n = strlen(line);
-        struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)n, PBUF_RAM);
-        if (!p) return;
-        memcpy(p->payload, line, n);
-        udp_sendto(g_log_pcb, p, &g_log_ip, NP_LOG_PORT);
-        pbuf_free(p);
-    }
-}
+/* v0.20.1: o LOG "LOG <texto>" por UDP :9003 pro PC saiu. As linhas vão pro
+ * buffer do upload dos testadores beta (xc_logup.c), que só envia com
+ * XC360/BETAKEY.TXT no pendrive. */
+void np_log_line(const char *text) { xlu_line(text); }
 
 /* --------------------------------------------------------- init / step */
 
-int np_init(const char *log_ip) {
+int np_init(void) {
     if (g_np_inited) return 0;
     for (int i = 0; i < NP_SLOTS; i++) {
         memset(&g_slot[i], 0, sizeof(g_slot[i]));
@@ -302,10 +260,8 @@ int np_init(const char *log_ip) {
         g_slot[i].tx = (uint8_t *)malloc(NP_TX_CAP);
         if (!g_slot[i].rx || !g_slot[i].tx) return -1;
     }
-    if (!ipaddr_aton(log_ip, &g_log_ip)) return -1;
-    g_log_pcb = udp_new();
     g_dns_pcb = udp_new();
-    if (!g_log_pcb || !g_dns_pcb) return -1;
+    if (!g_dns_pcb) return -1;
     udp_recv(g_dns_pcb, dns_recv_cb, NULL);
 
     /* DNS do DHCP (opção 6), depois gateway e públicos. */
@@ -369,7 +325,6 @@ void np_step(void) {
         }
     }
     dns_step();
-    log_step();
 }
 
 /* ============ lado consumidor (thread do login): xc_port.h ============ */

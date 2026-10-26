@@ -68,6 +68,38 @@ banner "8 capture ignores SIGINT -> SIGKILL after stop-timeout; PLAY replaces ru
 echo "hang" > "$T/ctl/ZETAGAME.modes"
 X '>HELLO|1' '>PLAY|ZETAGAME' '?STREAMING:20' '>PLAY|NONAMEGAME' '?STARTING:5' '?STREAMING:30' '>STOP' '?IDLE:10'
 
+# v0.19.3: Back+Start no Xbox = PAUSE (o jogo fica aberto no menu)
+C() { if eval "$1"; then echo "check ok: $2"; else echo "CHECK FAILED: $2"; FAIL="$FAIL $CUR"; fi; }
+runs() { grep -c "title=$1 " "$T/ctl/runs.log"; }
+
+banner "9 PAUSE keeps the game; PLAY same title = resume (no new capture); PLAY other replaces it"
+X '>HELLO|1' '>PLAY|PAUSEGAME' '?STREAMING:20' '>PAUSE' '!IDLE:3' '>PLAY|PAUSEGAME' '?STREAMING:3' '!STARTING:2' \
+  '>PAUSE' '>PLAY|OTHERGAME' '?STARTING:5' '?STREAMING:30' '>STOP' '?IDLE:10'
+C '[ "$(runs PAUSEGAME)" = 1 ]' "PAUSEGAME ran once ($(runs PAUSEGAME)): resume did not restart capture-rtp"
+C 'grep -q "PLAY PAUSEGAME: resuming the paused game" "$T/launcher.out"' "launcher logged the resume"
+LSTOP=$(grep -n "stopping capture-rtp pid .* (PAUSEGAME)" "$T/launcher.out" | tail -1 | cut -d: -f1)
+LGONE=$(awk -v s="${LSTOP:-0}" 'NR > s && /capture-rtp gen [0-9]+ stopped/ { print NR; exit }' "$T/launcher.out")
+LNEW=$(grep -n "starting: .*fake_capture.py OTHERGAME " "$T/launcher.out" | head -1 | cut -d: -f1)
+C '[ -n "$LSTOP" ] && [ -n "$LGONE" ] && [ -n "$LNEW" ] && [ "$LGONE" -lt "$LNEW" ]' \
+  "paused PAUSEGAME stopped (line ${LSTOP:-?}, gone ${LGONE:-?}) before OTHERGAME started (line ${LNEW:-?})"
+
+banner "10 capture dies while paused -> IDLE, no restart; PLAY again = new session"
+echo "crash:7" > "$T/ctl/DIEGAME.modes"
+X '>HELLO|1' '>PLAY|DIEGAME' '?STREAMING:20' '>PAUSE' '?IDLE:20' '!RECONNECTING:4' '!STARTING:1'
+C '[ "$(runs DIEGAME)" = 1 ]' "no restart while paused ($(runs DIEGAME) run)"
+C 'grep -q "paused game DIEGAME ended" "$T/launcher.out"' "launcher ended the paused game"
+X '>HELLO|1' '?IDLE:3' '>PLAY|DIEGAME' '?STARTING:5' '?STREAMING:20' '>STOP' '?IDLE:10'
+C '[ "$(runs DIEGAME)" = 2 ]' "PLAY after the paused game died opened a new one ($(runs DIEGAME) runs)"
+
+banner "11 stall while paused -> IDLE (watchdog does not restart)"
+echo "stall:3" > "$T/ctl/STALLPAUSE.modes"
+X '>HELLO|1' '>PLAY|STALLPAUSE' '?STREAMING:20' '>PAUSE' '?IDLE:20' '!RECONNECTING:2'
+C '[ "$(runs STALLPAUSE)" = 1 ]' "stalled paused game not restarted ($(runs STALLPAUSE) run)"
+
+banner "12 PAUSE with nothing running is ignored; STOP still ends a paused game"
+X '>HELLO|1' '?IDLE:3' '>PAUSE' '!STARTING:1' '>PLAY|STOPPAUSED' '?STREAMING:20' '>PAUSE' '>STOP' '?IDLE:10'
+C 'grep -q "PAUSE with no game running -- ignored" "$T/launcher.out"' "idle PAUSE ignored"
+
 banner "launcher log"
 cat "$T/launcher.out"
 echo

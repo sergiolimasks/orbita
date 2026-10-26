@@ -1,0 +1,2 @@
+{% macro errors(list) %}{% if list %}<div class="errors" role="alert">{% for e in list %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}{% endmacro %}
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ csrf_token() }}">{% endmacro %}

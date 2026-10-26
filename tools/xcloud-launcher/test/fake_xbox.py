@@ -7,6 +7,7 @@ Steps:
   >CMD|arg        send a line ('|' becomes TAB), e.g. '>PLAY|ANNO1800'
   ?CODE[:secs]    wait for 'STATE<TAB>CODE...' (default 30 s), fail on timeout
   ?=WORD[:secs]   wait for any line whose first field is WORD (END, LOGIN, PONG)
+  !CODE:secs      read for secs, FAIL if 'STATE<TAB>CODE' arrives (v0.19.3)
   ~secs           just read/print for that long
 Every received line is printed with a timestamp (TAB shown as ' | ').
 Exit code 0 when all waits succeed, 1 otherwise.
@@ -56,6 +57,16 @@ for step in a.steps:
         line = step[1:].replace("|", "\t")
         out(">>", line)
         s.sendall((line + "\n").encode("utf-8"))
+    elif step.startswith("!"):
+        spec, _, secs = step[1:].partition(":")
+        for line in read_lines(time.time() + float(secs or 3)):
+            out("<<", line)
+            f = line.split("\t")
+            if f[0] == "STATE" and len(f) > 1 and f[1] == spec:
+                out("!!", "unexpected STATE %s" % spec)
+                ok = False
+        if not ok:
+            break
     elif step.startswith("~"):
         for line in read_lines(time.time() + float(step[1:])):
             out("<<", line)

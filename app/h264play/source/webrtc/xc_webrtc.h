@@ -124,6 +124,7 @@ typedef struct xcw_stats {
     /* stage 5: RTT from NACK -> arrival of that seq (0 samples = no loss) */
     uint32_t rtt_samples, rtt_last_us, rtt_avg_us;
     uint32_t rtp_expected, rtp_lost;   /* video, RFC 3550 cumulative (before NACK repair) */
+    uint32_t paused_dropped;      /* v0.19.3: AUs thrown away while paused */
 } xcw_stats_t;
 
 /* Once per process: libsrtp + usrsctp (no threads). 0 = ok. */
@@ -176,6 +177,14 @@ void xcw_request_keyframe(xcw_t *x, int force);
 void xcw_resync_video(xcw_t *x);
 /* [any thread] New REMB / b=AS target (kbps), takes effect on the next REMB. */
 void xcw_set_video_kbps(xcw_t *x, int kbps);
+/* v0.19.3 (WebRTC thread): 1 = jogo pausado no menu com a sessão aberta.
+ * Os AUs completos são jogados fora antes do on_video_au (o cache de
+ * SPS/PPS continua sendo atualizado) e NENHUM pedido de keyframe sai
+ * sozinho: nem o do jitter (perda sem reparo) nem o "starving" do IDR
+ * gate. Pedidos explícitos (xcw_request_keyframe) continuam valendo.
+ * 0 = volta: liga o IDR gate (só sai AU a partir do próximo IDR) e pede um
+ * keyframe já, sem o limite de 1/s. */
+void xcw_set_video_paused(xcw_t *x, int on);
 
 /* Send on a channel (WebRTC thread). text=1 -> WebRTC string PPID (JSON on
  * control/message), 0 -> binary. Returns 0, or -1 (channel not open / SCTP

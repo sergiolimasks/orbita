@@ -91,6 +91,32 @@ int  xn_stat_tail(char *dst, size_t n);
 /* main: one-shot summary for the menu after a session. */
 void xn_summary(char *dst, size_t n);
 
+/* ---- v0.19.3: Back+Start volta pro menu com a sessão ABERTA ----
+ * xn_pause (main, saindo do jogo): a sessão segue (keepalive na hw1, ICE,
+ * RTCP), os controles vão a neutro no xCloud e o PC passa a jogar fora o
+ * vídeo (antes do on_video_au: nada chega no decoder/ring) e o áudio, sem
+ * pedir keyframe nenhum. Uma falha da tentativa enquanto pausado vira
+ * ERROR (xsm_set_keep: sem sessão nova sozinha).
+ * xn_resume (main, o MESMO título escolhido de novo): volta na hora, sem
+ * fila nem /play: IDR gate ligado + keyframe forçado (PLI +
+ * videoKeyframeRequested); o 1o AU que chega no inject_au é um IDR.
+ * Outro título: xn_stop (DELETE) e xn_play quando xn_can_play() — a mesma
+ * regra de sempre.
+ * xn_session (main): o que há agora; com a sessão pausada e a máquina já
+ * terminada (o xCloud derrubou: keepalive 404, erro...) ela mesma faz o
+ * xn_stop (solta o WebRTC), então chamar no loop do menu deixa tudo limpo. */
+enum { XN_SESS_NONE = 0,  /* nada: xn_play aceita (ver xn_can_play) */
+       XN_SESS_STARTING,  /* xn_play feito, sessão subindo/re-sinalizando */
+       XN_SESS_PLAYING,   /* no jogo (STREAMING) */
+       XN_SESS_PAUSED,    /* aberta, no menu (xn_pause) */
+       XN_SESS_ENDING };  /* xn_stop feito, DELETE/teardown em curso */
+/* XN_OK, ou XN_EBUSY (nada vivo pra pausar: chame xn_stop). */
+int  xn_pause(void);
+/* XN_OK, ou XN_EBUSY (não está pausada, já acabou ou é outro título). */
+int  xn_resume(const char *title_id);
+/* XN_SESS_*; copia o título/nome do último xn_play (vazio com NONE). */
+int  xn_session(char *title_id, size_t tn, char *name, size_t nn);
+
 /* hw1 (network thread) */
 void xn_net_step(void);
 /* hw1: one 24-byte pad frame (main.c send_pad wire format, buf[0] = xCloud

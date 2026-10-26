@@ -1,0 +1,39 @@
+{#- Casca das telas de autenticação (login, 2FA, cadastro por convite, configuração do admin, mensagens). -#}
+{%- from "_ui.html" import toasts with context -%}
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ brand.name }}{% endblock %} — {{ brand.name }}</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1B1C1E">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_ico) }}" sizes="any">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_svg) }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename=brand.favicon_png) }}">
+<link rel="stylesheet" href="{{ url_for('public.brand_css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ asset_v }}">
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_v }}" defer></script>
+</head>
+<body data-t-copied="{{ _('common.copied') }}">
+<div class="auth">
+  <svg class="auth-orbit" viewBox="0 0 64 64" aria-hidden="true"><path d="M53.399 25.047 A22.5 22.5 0 1 1 38.953 10.601" fill="none" stroke="#38B6FF" stroke-width="1.2" stroke-linecap="round"/><circle cx="47.910" cy="16.090" r="1.6" fill="#FF6B3D"/></svg>
+  <header class="auth-top">
+    <a class="logo" href="{{ url_for('public.home') }}"><img src="{{ url_for('static', filename=brand.logo) }}" alt="{{ brand.logo_alt }}" width="98" height="26"></a>
+    <details class="dd">
+      <summary class="lang-btn" aria-label="{{ _('ui.language') }}">{{ icon('globe', 16) }}<span class="lbl">{{ LANG_LABEL[lang] }}</span>{{ icon('chevron-down', 14) }}</summary>
+      <div class="dd-menu" role="menu">
+        {% for l in LANGS %}<a class="dd-item" role="menuitem" href="?{{ query_with(lang=l) }}" hreflang="{{ l }}" aria-current="{{ 'true' if l == lang else 'false' }}">{{ LANG_NAME[l] }}</a>{% endfor %}
+      </div>
+    </details>
+  </header>
+  <main class="auth-card{% block card_class %}{% endblock %}" id="main">
+    {% block content %}{% endblock %}
+  </main>
+  {% block below %}{% endblock %}
+  <p class="auth-legal">{{ _('ui.unofficial_long') }}</p>
+</div>
+{{ toasts() }}
+<template id="tpl-toast-icon">{{ icon('check-circle', 18) }}</template>
+</body>
+</html>

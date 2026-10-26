@@ -1,0 +1,144 @@
+{#- Componentes do sistema de design (área logada). Importe com: {% from "_ui.html" import ... with context %} -#}
+
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ csrf_token() }}">{% endmacro %}
+
+{% macro toasts() -%}
+{%- with msgs = get_flashed_messages(with_categories=true) -%}
+<div class="toasts" role="status" aria-live="polite">
+  {%- for cat, m in msgs %}
+  <div class="toast {{ 'error' if cat == 'error' else 'success' }}">{{ icon('alert' if cat == 'error' else 'check-circle', 18) }}<div class="grow">{{ m }}</div>
+    <button type="button" class="btn ghost sm icon-only" data-toast-close aria-label="{{ _('ui.close') }}">{{ icon('x', 14) }}</button></div>
+  {%- endfor %}
+</div>
+{%- endwith -%}
+{%- endmacro %}
+
+{% macro errors(list, title=None) -%}
+{%- if list -%}
+<div class="alert error" role="alert">{{ icon('alert', 18) }}<div>
+  {%- if list|length == 1 and not title %}{{ list[0] }}{% else %}<b>{{ title or _('ui.fix_errors') }}</b><ul>{% for e in list %}<li>{{ e }}</li>{% endfor %}</ul>{% endif -%}
+</div></div>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro status(s) -%}<span class="badge st-{{ s }}"><span class="dot"></span>{{ _('status.' ~ s) }}</span>{%- endmacro %}
+{% macro inv_state(s) -%}<span class="badge inv-{{ s }}"><span class="dot"></span>{{ _('adm.st_' ~ s)|capitalize }}</span>{%- endmacro %}
+
+{% macro page_head(title, lead=None) -%}
+<div class="page-head">
+  <div><h1>{{ title }}</h1>{% if lead %}<p class="lead">{{ lead }}</p>{% endif %}</div>
+  {%- if caller %}<div class="actions">{{ caller() }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro crumb(label, href=None) -%}
+<span class="sep">/</span>{% if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span aria-current="page" class="truncate">{{ label }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro delta(d, bad=False) -%}
+{%- if d -%}
+<span class="delta {{ d.dir }}{{ ' bad' if bad }}">{{ icon('trending-up' if d.dir == 'up' else 'trending-down' if d.dir == 'down' else 'minus', 12) }}{% if d.pct is not none %}{{ d.pct }}%{% else %}{{ _('ui.new') }}{% endif %}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro spark(s, cls='', label='') -%}
+<svg class="spark {{ cls }}" viewBox="0 0 {{ s.w }} {{ s.h }}" width="{{ s.w }}" height="{{ s.h }}" role="img" aria-label="{{ label }}" preserveAspectRatio="none">
+  <polygon class="s-area" points="{{ s.area }}"/><polyline class="s-line" points="{{ s.line }}"/>
+  <circle class="s-dot" cx="{{ '%.1f'|format(s.last[0]) }}" cy="{{ '%.1f'|format(s.last[1]) }}" r="3"/>
+</svg>
+{%- endmacro %}
+
+{% macro metric(label, value, ico, href=None, tone='', d=None, bad=False, foot='', sp=None, sp_cls='') -%}
+<div class="card metric">
+  {% if href %}<a class="m-link" href="{{ href }}" aria-label="{{ label }}"></a>{% endif %}
+  <div class="m-top"><span class="m-ico {{ tone }}">{{ icon(ico, 16) }}</span>{{ label }}</div>
+  <div class="m-row"><span class="m-val">{{ value }}</span>{% if sp %}{{ spark(sp, sp_cls, label) }}{% endif %}</div>
+  <div class="m-foot">{{ delta(d, bad) }}<span>{{ foot }}</span></div>
+</div>
+{%- endmacro %}
+
+{% macro bars(ch, cls='', label='') -%}
+<div class="chart-wrap">
+<svg class="chart {{ cls }}" viewBox="0 0 {{ ch.w }} {{ ch.h }}" role="img" aria-label="{{ label }}">
+  {%- for gl in ch.grid %}
+  <line class="{{ 'base-line' if loop.first else 'grid-line' }}" x1="{{ ch.pad_l }}" x2="{{ ch.w }}" y1="{{ gl.y }}" y2="{{ gl.y }}"/>
+  {%- if loop.first or loop.last or loop.index == 3 %}<text class="ax" x="{{ ch.pad_l - 8 }}" y="{{ gl.y + 3.5 }}" text-anchor="end">{{ gl.v }}</text>{% endif %}
+  {%- endfor %}
+  {%- for b in ch.bars %}
+  <g class="col" tabindex="0" data-v="{{ b.v }}" data-l="{{ b.label }}" role="img" aria-label="{{ b.label }}: {{ b.v }}">
+    <rect class="hit" x="{{ b.hx }}" y="0" width="{{ b.hw }}" height="{{ ch.base }}"/>
+    {%- if b.h > 0 %}<path class="bar" d="M{{ b.x }},{{ ch.base }} V{{ b.y + b.r }} q0,-{{ b.r }} {{ b.r }},-{{ b.r }} H{{ b.x + b.w - b.r }} q{{ b.r }},0 {{ b.r }},{{ b.r }} V{{ ch.base }} Z"/>{% endif %}
+    <title>{{ b.label }}: {{ b.v }}</title>
+  </g>
+  {%- endfor %}
+  {%- for t in ch.ticks %}<text class="ax" x="{{ t.x + t.w / 2 }}" y="{{ ch.h - 4 }}" text-anchor="middle">{{ t.label }}</text>{% endfor %}
+</svg>
+<div class="chart-tip hide" aria-hidden="true"></div>
+</div>
+{%- endmacro %}
+
+{% macro hbar(label, value, mx, text=None) -%}
+<div class="hbar"><span class="lbl" title="{{ label }}">{{ label }}</span><span class="val">{{ text or value }}</span>
+<svg viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="6" rx="3"/><rect class="fill" x="0" y="0" width="{{ [(value * 100 / (mx or 1))|round(1), 3]|max }}" height="6" rx="3"/></svg></div>
+{%- endmacro %}
+
+{% macro empty(title, text='', kind='inbox') -%}
+<div class="empty">
+  <svg class="illo" viewBox="0 0 132 96" aria-hidden="true">
+    {%- if kind == 'search' %}
+    <rect class="i-bg" x="10" y="14" width="92" height="66" rx="10"/><path class="i-line" d="M26 34h44M26 50h60M26 64h30"/>
+    <circle class="i-ring" cx="96" cy="58" r="16"/><path class="i-line" d="M108 70l12 12"/>
+    {%- elif kind == 'logs' %}
+    <rect class="i-bg" x="12" y="12" width="108" height="72" rx="10"/><path class="i-line" d="M30 36l10 8-10 8M48 56h26"/>
+    <circle class="i-acc2" cx="104" cy="26" r="5"/>
+    {%- elif kind == 'mail' %}
+    <rect class="i-bg" x="18" y="22" width="96" height="62" rx="10"/><path class="i-line" d="M30 36l36 22 36-22"/>
+    <circle class="i-acc" cx="108" cy="24" r="9"/>
+    {%- else %}
+    <rect class="i-bg" x="16" y="18" width="100" height="64" rx="12"/><path class="i-line" d="M34 40h40M34 56h64"/>
+    <path class="i-ring" d="M98 22a14 14 0 1 1-10-4"/><circle class="i-acc2" cx="99" cy="13" r="4"/>
+    {%- endif %}
+  </svg>
+  <h3>{{ title }}</h3>{% if text %}<p>{{ text }}</p>{% endif %}
+  {%- if caller %}{{ caller() }}{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro pager(pg, endpoint) -%}
+{%- if pg.total -%}
+<div class="pager">
+  <span>{{ _('ui.showing', a=pg.first, b=pg.last, n=pg.total) }}</span>
+  {%- if pg.pages > 1 %}
+  <nav aria-label="{{ _('ui.pagination') }}">
+    {%- if pg.page > 1 %}<a href="{{ url_for(endpoint, **dict(request.args, page=pg.page - 1)) }}" aria-label="{{ _('ui.prev') }}">{{ icon('chevron-left', 14) }}</a>{% else %}<span class="pg disabled">{{ icon('chevron-left', 14) }}</span>{% endif %}
+    {%- for p in pg.window %}{% if p is none %}<span class="pg">…</span>{% elif p == pg.page %}<span class="pg" aria-current="page">{{ p }}</span>{% else %}<a href="{{ url_for(endpoint, **dict(request.args, page=p)) }}">{{ p }}</a>{% endif %}{% endfor %}
+    {%- if pg.page < pg.pages %}<a href="{{ url_for(endpoint, **dict(request.args, page=pg.page + 1)) }}" aria-label="{{ _('ui.next') }}">{{ icon('chevron-right', 14) }}</a>{% else %}<span class="pg disabled">{{ icon('chevron-right', 14) }}</span>{% endif %}
+  </nav>
+  {%- endif %}
+</div>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro field(name, label, value='', type='text', help=None, err=None, opt=False, attrs='') -%}
+<div class="field{{ ' has-error' if err }}">
+  <label for="f-{{ name }}">{{ label }}{% if opt %} <span class="opt">({{ _('ui.optional') }})</span>{% endif %}</label>
+  {%- if caller %}{{ caller() }}{% else %}
+  <input id="f-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value or '' }}" {{ attrs|safe }}{% if err %} aria-invalid="true" aria-describedby="e-{{ name }}"{% elif help %} aria-describedby="h-{{ name }}"{% endif %}>
+  {%- endif %}
+  {%- if err %}<span class="err-msg" id="e-{{ name }}">{{ icon('alert', 12) }}{{ err }}</span>{% elif help %}<span class="help" id="h-{{ name }}">{{ help }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro pw_field(name, label, err=None, help=None, attrs='') -%}
+<div class="field{{ ' has-error' if err }}">
+  <label for="f-{{ name }}">{{ label }}</label>
+  <div class="pw-wrap"><input id="f-{{ name }}" name="{{ name }}" type="password" {{ attrs|safe }}{% if err %} aria-invalid="true" aria-describedby="e-{{ name }}"{% elif help %} aria-describedby="h-{{ name }}"{% endif %}>
+    <button type="button" class="btn ghost sm icon-only pw-eye" data-pw-toggle aria-pressed="false" aria-label="{{ _('ui.show_pw') }}">{{ icon('eye', 16) }}</button></div>
+  {%- if err %}<span class="err-msg" id="e-{{ name }}">{{ icon('alert', 12) }}{{ err }}</span>{% elif help %}<span class="help" id="h-{{ name }}">{{ help }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro avatar(name, cls='') -%}
+{%- set v = ['', 'v1', 'v2', 'v3', 'v4'][(name|default('?')|length) % 5] -%}
+<span class="avatar {{ v }} {{ cls }}" aria-hidden="true">{{ initials(name) }}</span>
+{%- endmacro %}

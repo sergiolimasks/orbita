@@ -1,0 +1,25 @@
+{% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf with context %}
+{% block title %}{{ _('setup.totp_title') }}{% endblock %}
+{% block card_class %} wide{% endblock %}
+{% block content %}
+<div class="stepper" aria-hidden="true"><span class="st done"><i>{{ icon('check', 12) }}</i>{{ _('ui.step_account') }}</span><span class="bar"></span><span class="st on"><i>2</i>{{ _('ui.step_2fa') }}</span></div>
+<h1>{{ _('setup.totp_title') }}</h1>
+<p class="a-lead">{{ _('setup.totp_scan') }}</p>
+<div class="qr-box">
+  <div class="qr"><img src="{{ qr }}" alt="QR code" width="168" height="168"></div>
+  <div class="stack-sm grow">
+    <span class="label">{{ _('setup.totp_key') }}</span>
+    <div class="copy-line"><code id="totpkey">{{ secret }}</code><button type="button" class="btn sm" data-copy="#totpkey" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
+    <span class="help">{{ _('ui.totp_apps') }}</span>
+  </div>
+</div>
+{{ errs([error] if error else []) }}
+<form method="post" novalidate>
+  {{ csrf() }}
+  <div class="field{{ ' has-error' if error }}">
+    <label for="f-code">{{ _('login.totp_code') }}</label>
+    <input id="f-code" class="otp" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" autocomplete="one-time-code" required maxlength="7" placeholder="000000">
+  </div>
+  <button class="btn primary lg block">{{ _('setup.finish') }}</button>
+</form>
+{% endblock %}

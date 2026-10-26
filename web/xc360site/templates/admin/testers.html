@@ -1,0 +1,72 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, pager, empty, avatar with context %}
+{% block title %}{{ _('adm.testers') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.testers')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('adm.testers') }}</h1><p class="lead">{{ _('ui.testers_lead') }}</p></div>
+  <div class="actions"><a class="btn primary" href="{{ url_for('admin.invites', new=1) }}">{{ icon('plus', 16) }}{{ _('ui.invite_tester') }}</a></div>
+</div>
+
+{% if new_key %}
+<dialog class="modal" data-autoopen aria-labelledby="nk-title">
+  <div class="modal-head"><span class="m-ico ok">{{ icon('key', 20) }}</span>
+    <div><h2 id="nk-title">{{ _('ui.key_for', n=new_key_for) }}</h2><p>{{ _('area.key_once') }}</p></div></div>
+  <div class="modal-body"><div class="betakey-box fresh"><code class="betakey" id="betakey">{{ new_key }}</code>
+    <button type="button" class="btn primary" data-copy="#betakey" data-done="{{ _('common.copied') }}">{{ icon('copy', 16) }}<span class="lbl">{{ _('common.copy') }}</span></button></div></div>
+  <div class="modal-foot"><button type="button" class="btn secondary" data-close>{{ _('ui.done') }}</button></div>
+</dialog>
+<div class="alert ok mb-4">{{ icon('key', 16) }}<div>{{ _('ui.key_for', n=new_key_for) }}: <code>{{ new_key }}</code> — {{ _('area.key_once') }}</div></div>
+{% endif %}
+
+<div class="card">
+  <nav class="tabs" aria-label="{{ _('common.filter') }}">
+    {% for k, lbl, c in [('', _('common.all'), counts.all), ('active', _('ui.active_pl'), counts.active), ('nokey', _('ui.nokey_pl'), counts.nokey), ('blocked', _('key.blocked_pl'), counts.blocked), ('inactive', _('ui.inactive_pl'), counts.inactive)] %}
+    <a class="tab" href="{{ url_for('admin.testers', status=k, q=q) if k else url_for('admin.testers', q=q or None) }}"{% if st == k %} aria-current="page"{% endif %}>{{ lbl }} <span class="count">{{ c }}</span></a>
+    {% endfor %}
+  </nav>
+  <form class="toolbar" method="get" role="search">
+    {% if st %}<input type="hidden" name="status" value="{{ st }}">{% endif %}
+    <div class="input-icon">{{ icon('search', 16) }}<input type="search" name="q" value="{{ q }}" placeholder="{{ _('ui.search_testers') }}" aria-label="{{ _('ui.search') }}"></div>
+    <button class="btn secondary">{{ _('ui.search') }}</button>
+    {% if q %}<a class="btn ghost" href="{{ url_for('admin.testers', status=st or None) }}">{{ icon('x', 14) }}{{ _('ui.clear') }}</a>{% endif %}
+  </form>
+  {% if users %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('adm.tester') }}</th><th>{{ _('adm.country') }}</th><th>{{ _('rep.status') }}</th><th>{{ _('adm.key') }}</th><th class="r">{{ _('adm.reports') }}</th><th>{{ _('ui.last_activity') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr class="{{ '' if u.active else 'is-off' }}">
+      <td class="lead-cell"><div class="cell-user">{{ avatar(u.name) }}
+        <div class="truncate"><div class="nm"><a href="{{ url_for('admin.tester_detail', uid=u.id) }}">{{ u.name }}</a>{% if u.role == 'admin' %} <span class="badge outline">admin</span>{% endif %}</div>
+        <div class="em truncate" title="{{ u.phone }}">{{ u.email }}</div>
+        <div class="em mono">{{ u.handle }}</div></div></div></td>
+      <td data-label="{{ _('adm.country') }}" class="nowrap">{% if u.country %}<span class="flag" aria-hidden="true">{{ flag(u.country) }}</span>{{ country_name(u.country) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td data-label="{{ _('rep.status') }}">{% if u.active %}<span class="badge u-active"><span class="dot"></span>{{ _('adm.active') }}</span>{% else %}<span class="badge u-inactive"><span class="dot"></span>{{ _('ui.inactive') }}</span>{% endif %}</td>
+      <td data-label="{{ _('adm.key') }}">{% if u.key_mask %}<span class="mono" title="{{ _('ui.key_created', d=u.key_at|dt) }}">{{ u.key_mask }}</span>{% if u.key_dup_at %} <a class="badge red" href="{{ url_for('admin.tester_detail', uid=u.id) }}" title="{{ _('key.dup_when', d=u.key_dup_at|dt) }}"><span class="dot"></span>{{ _('key.st_blocked') }}</a>{% elif u.key_console %} <span class="badge gray" title="{{ u.key_console }}">{{ icon('monitor', 11) }}{{ u.key_console[:6] }}</span>{% endif %}{% else %}<span class="muted small">{{ _('adm.no_key') }}</span>{% endif %}</td>
+      <td data-label="{{ _('adm.reports') }}" class="r num nowrap">{% if u.nrep %}<a href="{{ url_for('admin.reports', tester=u.id) }}">{{ u.nrep }}</a>{% if u.nopen %} <span class="badge orange" title="{{ _('ui.open') }}">{{ u.nopen }}</span>{% endif %}{% else %}<span class="muted">0</span>{% endif %}</td>
+      <td data-label="{{ _('ui.last_activity') }}" class="nowrap"><span title="{{ u.last_seen|dt }}">{{ u.last_seen|ago }}</span></td>
+      <td class="actions"><div class="row-actions">
+        <a class="btn ghost sm icon-only" href="{{ url_for('admin.logs', tester=u.handle) }}" title="{{ _('adm.logs') }}" aria-label="{{ _('adm.logs') }} — {{ u.name }}">{{ icon('terminal', 15) }}</a>
+        {% if u.id != user.id %}
+        {% if u.active %}
+        <form method="post" action="{{ url_for('admin.tester_key', uid=u.id) }}" data-confirm="{{ _('ui.regen_confirm', n=u.name) }}" data-confirm-title="{{ _('adm.regen_key') }}?" data-confirm-ok="{{ _('adm.regen_key') }}">{{ csrf() }}<button class="btn secondary sm">{{ icon('key', 14) }}{{ _('adm.regen_key') }}</button></form>
+        {% if u.key_mask %}<form method="post" action="{{ url_for('admin.tester_key', uid=u.id) }}" data-confirm="{{ _('ui.revoke_key_confirm', n=u.name) }}" data-confirm-title="{{ _('adm.revoke_key') }}?" data-confirm-ok="{{ _('adm.revoke_key') }}" data-danger>{{ csrf() }}<input type="hidden" name="op" value="revoke"><button class="btn ghost sm icon-only" title="{{ _('adm.revoke_key') }}" aria-label="{{ _('adm.revoke_key') }} — {{ u.name }}">{{ icon('ban', 15) }}</button></form>{% endif %}
+        <form method="post" action="{{ url_for('admin.tester_active', uid=u.id) }}" data-confirm="{{ _('ui.deactivate_confirm', n=u.name) }}" data-confirm-title="{{ _('adm.deactivate') }} {{ u.name }}?" data-confirm-ok="{{ _('adm.deactivate') }}" data-danger>{{ csrf() }}<input type="hidden" name="on" value="0"><button class="btn danger-ghost sm icon-only" title="{{ _('adm.deactivate') }}" aria-label="{{ _('adm.deactivate') }} — {{ u.name }}">{{ icon('user-x', 15) }}</button></form>
+        {% else %}
+        <form method="post" action="{{ url_for('admin.tester_active', uid=u.id) }}">{{ csrf() }}<input type="hidden" name="on" value="1"><button class="btn secondary sm">{{ icon('user-check', 14) }}{{ _('adm.activate') }}</button></form>
+        {% endif %}
+        {% endif %}
+      </div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ pager(page, 'admin.testers') }}
+  {% else %}
+    {% if q %}{{ empty(_('ui.no_results'), _('ui.no_results_text', q=q), 'search') }}{% else %}
+    {% call empty(_('ui.no_testers'), _('ui.no_testers_text'), 'mail') %}<a class="btn primary" href="{{ url_for('admin.invites', new=1) }}">{{ icon('plus', 16) }}{{ _('ui.invite_tester') }}</a>{% endcall %}{% endif %}
+  {% endif %}
+</div>
+{% endblock %}

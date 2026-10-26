@@ -1,0 +1,49 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb with context %}
+{% block title %}{{ _('ui.log_batch') }} · {{ _('adm.logs') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.logs'), url_for('admin.logs')) }}{{ crumb(day, url_for('admin.logs', day=day)) }}{{ crumb(key.rsplit('/', 1)[-1]) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('ui.log_batch') }}</h1>
+    <p class="lead">{% if meta.tester %}{{ names.get(meta.tester, meta.tester) }} · {% endif %}{{ meta.game or '—' }} · {{ meta.app or '—' }}</p></div>
+  <div class="actions">
+    <a class="btn secondary" href="{{ url_for('admin.logs', console=meta.console) if meta.console else url_for('admin.logs') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a>
+    <a class="btn secondary" href="{{ url_for('admin.log_view', key=key, raw=1) }}">{{ icon('download', 16) }}{{ _('adm.raw') }}</a>
+  </div>
+</div>
+
+<div class="grid g-4 keep-2 mb-4">
+  <div class="card metric"><div class="m-top">{{ icon('file', 14) }}{{ _('adm.lines') }}</div><span class="m-val">{{ lines|length }}</span></div>
+  <div class="card metric"><div class="m-top"><span class="m-ico flare">{{ icon('alert', 14) }}</span>{{ _('ui.errors') }}</div><span class="m-val">{{ nerr }}</span></div>
+  <div class="card metric"><div class="m-top">{{ icon('alert', 14) }}{{ _('ui.warnings') }}</div><span class="m-val">{{ nwarn }}</span></div>
+  <div class="card metric"><div class="m-top">{{ icon('drive', 14) }}{{ _('area.size') }}</div><span class="m-val">{{ size|size }}</span></div>
+</div>
+
+<div class="grid g-side">
+  <aside class="stack">
+    <section class="card"><div class="card-head"><h3>{{ _('ui.details') }}</h3></div>
+      <div class="card-body"><dl class="kv small">
+        <dt>{{ _('ui.received') }}</dt><dd>{{ meta.rx|when if meta.rx else '—' }}</dd>
+        <dt>{{ _('adm.tester') }}</dt><dd>{% if meta.tester %}<a href="{{ url_for('admin.logs', tester=meta.tester) }}">{{ names.get(meta.tester, meta.tester) }}</a>{% else %}—{% endif %}</dd>
+        <dt>{{ _('adm.console') }}</dt><dd>{% if meta.console %}<a class="mono" href="{{ url_for('admin.logs', console=meta.console) }}">{{ meta.console }}</a>{% else %}—{% endif %}</dd>
+        <dt>App</dt><dd class="mono">{{ meta.app or '—' }}</dd>
+        <dt>{{ _('rep.game') }}</dt><dd>{{ meta.game or '—' }}</dd>
+        <dt>R2</dt><dd class="mono xs">{{ key }}</dd>
+      </dl></div></section>
+    {% if siblings|length > 1 %}
+    <section class="card"><div class="card-head"><h3>{{ _('ui.same_day_console') }}</h3></div>
+      <nav class="nav-list">{% for s in siblings %}<a href="{{ url_for('admin.log_view', key=s.r2_key) }}"{% if s.r2_key == key %} aria-current="true"{% endif %}><span class="truncate mono">{{ s.r2_key.rsplit('/', 1)[-1][:6] }}</span><span class="n">{{ s.nlines }} {{ _('adm.lines') }}</span></a>{% endfor %}</nav></section>
+    {% endif %}
+  </aside>
+
+  <section class="term" aria-label="{{ _('ui.log_batch') }}">
+    <div class="term-bar">
+      <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="t-title">{{ key }}</span>
+      <label class="toggle small"><input type="checkbox" data-log-errors> {{ _('ui.only_errors') }}</label>
+      <div class="input-icon">{{ icon('search', 14) }}<input type="search" data-log-search placeholder="{{ _('ui.search_log') }}" aria-label="{{ _('ui.search_log') }}"></div>
+    </div>
+    <pre class="term-body">{% for l, lv in lines %}<span class="ln{{ ' ' ~ lv if lv }}">{{ l }}</span>{% endfor %}</pre>
+    <div class="term-foot"><span>{{ lines|length }} {{ _('adm.lines') }}</span><span class="row"><span class="badge red">{{ nerr }}</span>{{ _('ui.errors') }}</span><span class="row"><span class="badge yellow">{{ nwarn }}</span>{{ _('ui.warnings') }}</span><span data-log-count></span><span class="spacer"></span><span class="subtle">Ctrl+F</span></div>
+  </section>
+</div>
+{% endblock %}

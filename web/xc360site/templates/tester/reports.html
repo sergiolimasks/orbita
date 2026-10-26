@@ -1,0 +1,38 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, status, empty with context %}
+{% block title %}{{ _('area.myreports') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('area.myreports')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('area.myreports') }}</h1><p class="lead">{{ _('ui.myreports_lead') }}</p></div>
+  <div class="actions"><a class="btn primary" href="{{ url_for('tester.report_form') }}">{{ icon('plus', 16) }}{{ _('ui.new_report') }}</a></div>
+</div>
+<div class="card">
+  <nav class="tabs" aria-label="{{ _('common.filter') }}">
+    {% for k, lbl in [('', _('common.all')), ('open', _('ui.open')), ('closed', _('ui.closed'))] %}
+    <a class="tab" href="{{ url_for('tester.reports', status=k) if k else url_for('tester.reports') }}"{% if st == k %} aria-current="page"{% endif %}>{{ lbl }} <span class="count">{{ counts['all' if not k else k] }}</span></a>
+    {% endfor %}
+  </nav>
+  {% if reports %}
+  <div class="rep-list">
+    {% for r in reports %}
+    <a class="rep-item" href="{{ url_for('tester.report_detail', rid=r.id) }}" data-report-row>
+      <div class="grow">
+        <div class="r-title">{{ r.description.split('\n')[0]|truncate(120) }}</div>
+        <div class="r-meta"><span>#{{ r.id }}</span><span>{{ icon('clock', 12) }}{{ r.created_at|dt }}</span>
+          {% if r.version %}<span>{{ icon('package', 12) }}v{{ r.version }}</span>{% endif %}
+          {% if r.game %}<span>{{ icon('gamepad', 12) }}{{ r.game }}</span>{% endif %}
+          {% if files.get(r.id) %}<span>{{ icon('image', 12) }}{{ files[r.id]|length }}</span>{% endif %}</div>
+      </div>
+      <div class="row">
+        {% if files.get(r.id) %}<span class="thumbs hide-sm">{% for fl in files[r.id][:3] %}<img class="lazy-thumb" src="{{ url_for('tester.media', fid=fl.id, t=1) }}" alt="" width="64" height="40" loading="lazy">{% endfor %}</span>{% endif %}
+        {{ status(r.status) }}
+      </div>
+      {% if r.admin_note %}<div class="r-note">{{ icon('message', 14) }}<span><b>{{ _('rep.note') }}:</b> {{ r.admin_note }}</span></div>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+    {% call empty(_('ui.no_reports_title'), _('ui.no_reports_text')) %}<a class="btn primary" href="{{ url_for('tester.report_form') }}">{{ icon('flag', 16) }}{{ _('ui.report_bug') }}</a>{% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

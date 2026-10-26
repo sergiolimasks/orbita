@@ -1,0 +1,18 @@
+{% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf, field, pw_field with context %}
+{% block title %}{{ _('setup.title') }}{% endblock %}
+{% block content %}
+{% set ferr = ferr or {} %}
+<div class="stepper" aria-hidden="true"><span class="st on"><i>1</i>{{ _('ui.step_account') }}</span><span class="bar"></span><span class="st"><i>2</i>{{ _('ui.step_2fa') }}</span></div>
+<div class="a-ico flare">{{ icon('shield', 24) }}</div>
+<h1>{{ _('setup.title') }}</h1>
+<p class="a-lead">{{ _('setup.intro') }}</p>
+{{ errs(errors) }}
+<form method="post" novalidate>
+  {{ csrf() }}
+  {{ field('name', _('signup.name'), f.name, err=ferr.name, attrs='required maxlength="80" autocomplete="name"') }}
+  {{ field('email', _('login.email'), f.email, 'email', err=ferr.email, attrs='required maxlength="254" autocomplete="username"') }}
+  {{ pw_field('password', _('login.password'), err=ferr.password, help=_('signup.pw_hint'), attrs='required minlength="10" maxlength="128" autocomplete="new-password"') }}
+  {{ pw_field('password2', _('signup.password2'), err=ferr.password2, attrs='required minlength="10" maxlength="128" autocomplete="new-password"') }}
+  <button class="btn primary lg block">{{ _('setup.next') }}</button>
+</form>
+{% endblock %}

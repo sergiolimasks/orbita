@@ -1,0 +1,67 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, pager, empty, avatar with context %}
+{% block title %}{{ _('adm.logs') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.logs')) }}{% endblock %}
+{% block content %}
+{% set filtered = q.day or q.console or q.tester or q.app %}
+<div class="page-head">
+  <div><h1>{{ _('adm.logs') }}</h1><p class="lead">{% if synced %}{{ _('adm.synced', t=synced|dt) }}{% else %}{{ _('ui.logs_lead') }}{% endif %}</p></div>
+  <div class="actions"><form method="post" action="{{ url_for('admin.logs_sync') }}">{{ csrf() }}<button class="btn secondary">{{ icon('refresh', 16) }}{{ _('adm.sync_now') }}</button></form></div>
+</div>
+
+<div class="grid g-side">
+  <aside class="stack" aria-label="{{ _('ui.browse') }}">
+    <section class="card"><div class="card-head"><h3>{{ icon('users', 16) }}{{ _('adm.testers') }}</h3></div>
+      <nav class="nav-list">
+        <a href="{{ url_for('admin.logs', day=q.day or None) }}"{% if not q.tester %} aria-current="true"{% endif %}>{{ _('common.all') }}</a>
+        {% for t in testers %}<a href="{{ url_for('admin.logs', tester=t.tester, day=q.day or None) }}"{% if q.tester == t.tester %} aria-current="true"{% endif %}>{{ avatar(names.get(t.tester, t.tester), 'sm') }}<span class="truncate">{{ names.get(t.tester, t.tester) }}</span><span class="n">{{ t.n }}</span></a>{% endfor %}
+      </nav></section>
+    <section class="card"><div class="card-head"><h3>{{ icon('monitor', 16) }}{{ _('ui.consoles_t') }}</h3></div>
+      <nav class="nav-list">
+        {% for c in consoles %}<a href="{{ url_for('admin.logs', console=c.console) }}"{% if q.console and c.console.startswith(q.console) %} aria-current="true"{% endif %} title="{{ c.console }}"><span class="truncate mono">{{ c.console[:14] }}…</span><span class="n">{{ c.n }}</span></a>{% else %}<p class="muted small card-body tight">{{ _('common.none') }}</p>{% endfor %}
+      </nav></section>
+  </aside>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-body tight">
+        <div class="chips" aria-label="{{ _('adm.day') }}">
+          <a class="chip" href="{{ url_for('admin.logs', tester=q.tester or None, console=q.console or None, app=q.app or None) }}"{% if not q.day %} aria-current="true"{% endif %}>{{ icon('calendar', 13) }}{{ _('ui.all_days') }}</a>
+          {% for d in days %}<a class="chip" href="{{ url_for('admin.logs', day=d.day, tester=q.tester or None, console=q.console or None, app=q.app or None) }}"{% if q.day == d.day|string %} aria-current="true"{% endif %}>{{ d.day|date(True) }} <span class="n">{{ d.n }}</span></a>{% endfor %}
+        </div>
+      </div>
+      <form class="toolbar" method="get">
+        <input type="date" name="day" value="{{ q.day }}" aria-label="{{ _('adm.day') }}" class="nowrap">
+        <div class="input-icon">{{ icon('monitor', 16) }}<input name="console" value="{{ q.console }}" maxlength="64" placeholder="{{ _('adm.console') }} (ID)" aria-label="{{ _('adm.console') }}" class="mono"></div>
+        <select name="tester" aria-label="{{ _('adm.tester') }}"><option value="">{{ _('ui.all_testers') }}</option>{% for t in testers %}<option value="{{ t.tester }}" {{ 'selected' if t.tester == q.tester }}>{{ names.get(t.tester, t.tester) }}</option>{% endfor %}</select>
+        <select name="app" aria-label="{{ _('rep.version') }}"><option value="">{{ _('ui.all_versions') }}</option>{% for a in apps %}<option {{ 'selected' if a == q.app }}>{{ a }}</option>{% endfor %}</select>
+        <button class="btn secondary">{{ icon('search', 14) }}{{ _('common.filter') }}</button>
+        {% if filtered %}<a class="btn ghost" href="{{ url_for('admin.logs') }}">{{ icon('x', 14) }}{{ _('ui.clear') }}</a>{% endif %}
+      </form>
+      {% if items %}
+      <div class="table-wrap">
+      <table class="table cards-sm">
+        <thead><tr><th>{{ _('ui.received') }}</th><th>{{ _('adm.tester') }}</th><th>{{ _('adm.console') }}</th><th>App</th><th>{{ _('rep.game') }}</th><th class="r">{{ _('adm.lines') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+        <tbody>
+        {% for it in items %}
+        <tr>
+          <td class="lead-cell nowrap"><a class="row-link" href="{{ url_for('admin.log_view', key=it.r2_key) }}">{{ it.rx|dt if it.rx else it.day|date }}</a><div class="xs muted mono">{{ it.r2_key.rsplit('/', 1)[-1] }}</div></td>
+          <td data-label="{{ _('adm.tester') }}">{% if it.tester %}<a href="{{ url_for('admin.logs', tester=it.tester) }}">{{ names.get(it.tester, it.tester) }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td data-label="{{ _('adm.console') }}"><a class="mono" href="{{ url_for('admin.logs', console=it.console) }}" title="{{ it.console }}">{{ it.console[:12] }}…</a></td>
+          <td data-label="App" class="mono">{{ it.app }}</td>
+          <td data-label="{{ _('rep.game') }}">{{ it.game or '—' }}</td>
+          <td data-label="{{ _('adm.lines') }}" class="r num">{{ it.nlines }}</td>
+          <td class="actions"><a class="btn ghost sm" href="{{ url_for('admin.log_view', key=it.r2_key) }}">{{ icon('terminal', 14) }}{{ _('adm.open') }}</a></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {{ pager(page, 'admin.logs') }}
+      {% else %}
+        {% if q.tester and not (q.day or q.console or q.app) %}{{ empty(_('ui.no_logs_tester', n=names.get(q.tester, q.tester)), _('ui.no_logs_tester_text'), 'logs') }}
+        {% else %}{{ empty(_('ui.no_logs'), _('ui.no_results_filters') if filtered else _('ui.no_logs_text'), 'logs') }}{% endif %}
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

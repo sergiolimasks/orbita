@@ -34,6 +34,11 @@ typedef struct {
     int  other_full, other_resumed;
     int  region_reqs, region_max_reqs_per_conn;
     int  region_ka_on_reused;   /* /keepalive answered on a conn that served >= 1 before */
+    /* v0.19.3: sessão aberta no menu */
+    int  ka_gone;           /* i+1: /keepalive da sessão i = 404 (o xCloud encerrou) */
+    int  nev;               /* ordem dos /play ('P') e DELETE ('D') */
+    char ev_kind[64];
+    int  ev_sess[64];
 } gssv_t;
 
 extern gssv_t g_gssv;

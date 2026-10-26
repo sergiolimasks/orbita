@@ -4,7 +4,7 @@
 The Xbox (app/h264play) opens a TCP control connection (default :9002) and
 speaks a line protocol (UTF-8, '\\n'-terminated, TAB-separated fields):
 
-  Xbox -> PC : HELLO<TAB>ver | LIST | PLAY<TAB>TITLEID | STOP | PING
+  Xbox -> PC : HELLO<TAB>ver | LIST | PLAY<TAB>TITLEID | STOP | PAUSE | PING
   PC -> Xbox : STATE<TAB>CODE<TAB>text | LOGIN<TAB>url<TAB>code
                GAME<TAB>TITLEID<TAB>name<TAB>recent(0|1) ... END | PONG
 
@@ -15,6 +15,14 @@ The launcher runs tools/xcloud-capture/rtp/capture-rtp for the chosen title
 to report queue/provisioning/streaming, restarts it when the xCloud session
 dies (process exit or video AU counter frozen) and drives `greennx login`
 when the saved Microsoft login is missing/expired.
+
+v0.19.3: PAUSE = the Xbox went back to its menu (Back+Start) WITHOUT ending
+the game: capture-rtp keeps running (keepalive, video to :9000 that the
+Xbox drops). PLAY of the same title resumes it (just STATE again; the new
+:9000 connection starts at an IDR), PLAY of another title replaces it as
+before, STOP ends it. While paused nothing is restarted: if the session
+dies the launcher goes to IDLE. Older Xboxes never send PAUSE (STOP as
+before); older launchers ignore it ("unknown command").
 
 Python stdlib only. See README.md.
 """
@@ -273,6 +281,7 @@ class Launcher:
         self.restart_at = None
         self.reconnecting = False
         self.restarts = collections.deque()
+        self.paused = False         # v0.19.3: Xbox in its menu, game kept open (PAUSE)
         self.disconnected_at = None
         self.shutting_down = False
 
@@ -404,6 +413,8 @@ class Launcher:
             self._cmd_play(f[1].strip() if len(f) > 1 else "")
         elif cmd == "STOP":
             self._cmd_stop("pedido do Xbox")
+        elif cmd == "PAUSE":
+            self._cmd_pause()
         elif cmd:
             log("[client #%d] unknown command %r" % (cid, cmd))
 
@@ -605,10 +616,16 @@ class Launcher:
             return
         title = title.upper()
         active = self.cap or self.start_pending or self.restart_at or self.killing
+        was_paused, self.paused = self.paused, False
         if self.title == title and active and self.state[0] != "ERROR":
-            log("PLAY %s: already running -- resending state" % title)
+            if was_paused:
+                log("PLAY %s: resuming the paused game (same session, no restart)" % title)
+            else:
+                log("PLAY %s: already running -- resending state" % title)
             self.client.send("STATE", *self.state)
             return
+        if was_paused and self.title:
+            log("PLAY %s: replaces the paused %s (stopped first)" % (title, self.title))
         self.recents = [title] + [t for t in self.recents if t != title]
         self.recents = self.recents[:10]
         st = read_json(self.a.state_file, {})
@@ -636,8 +653,29 @@ class Launcher:
         self.set_state("STARTING", "Iniciando %s..." % self.game_name(title))
         self._maybe_start()
 
+    def _cmd_pause(self):
+        """v0.19.3: Back+Start on the Xbox -- the game stays open."""
+        active = self.cap or self.start_pending or self.restart_at or self.killing
+        if not self.title or not active:
+            log("PAUSE with no game running -- ignored")
+            return
+        self.paused = True
+        log("PAUSE %s: Xbox in the menu, game kept open (no auto-restart while paused)" % self.title)
+
+    def _end_paused(self, reason):
+        """v0.19.3: the paused game died -- nobody is playing, no new session."""
+        log("paused game %s ended (%s) -- not restarting, the Xbox is in its menu" % (self.title, reason))
+        self._stop_capture()
+        self.title = None
+        self.paused = False
+        self.start_pending = False
+        self.restart_at = None
+        self.reconnecting = False
+        self.set_state("IDLE", "Sessao do xCloud encerrada: %s" % ascii_fold(reason, 45), force=True)
+
     def _cmd_stop(self, why):
         log("STOP (%s)" % why)
+        self.paused = False
         self.title = None
         self.start_pending = False
         self.restart_at = None
@@ -838,6 +876,9 @@ class Launcher:
         self.cap = None
         log("[cap:%s] capture-rtp exited unexpectedly rc=%s after %.0fs (AUs=%d)"
             % (run.title, rc, time.monotonic() - run.started, run.au))
+        if self.paused:
+            self._end_paused(run.last_error or "capture-rtp saiu (codigo %s)" % rc)
+            return
         if run.auth_fail:
             if self.play_after_login == run.title:
                 # we just signed in for this very PLAY and it still fails:
@@ -888,6 +929,9 @@ class Launcher:
 
     # ---------------- watchdog ----------------
     def _auto_restart(self, reason):
+        if self.paused and self.title:
+            self._end_paused(reason)
+            return
         now = time.monotonic()
         while self.restarts and now - self.restarts[0] > self.a.restart_window:
             self.restarts.popleft()
@@ -911,6 +955,7 @@ class Launcher:
 
     def _give_up(self, reason):
         self._stop_capture()
+        self.paused = False
         self.title = None
         self.start_pending = False
         self.restart_at = None
@@ -921,7 +966,10 @@ class Launcher:
         now = time.monotonic()
         if self.restart_at and now >= self.restart_at:
             self.restart_at = None
-            if self.title:
+            if self.title and self.paused:
+                # v0.19.3: died mid-game, then Back+Start: no new session in the menu
+                self._end_paused("a conexao tinha caido")
+            elif self.title:
                 log("watchdog: restarting %s" % self.title)
                 self.start_pending = True
                 self._maybe_start()

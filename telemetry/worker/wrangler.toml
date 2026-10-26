@@ -1,0 +1,14 @@
+name = "xcloud360-telemetry"
+main = "src/index.ts"
+compatibility_date = "2026-10-25"
+account_id = "<CLOUDFLARE_ACCOUNT_ID>"
+
+[[r2_buckets]]
+binding = "LOGS"
+bucket_name = "xcloud360-logs"
+
+[observability]
+enabled = true
+
+[placement]
+mode = "smart"

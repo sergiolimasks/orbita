@@ -170,17 +170,26 @@ static void test_json(void) {
     ow = find(t, n, "OWNEDGAME");
     fn = find(t, n, "FORTNITE");
     CHECK(fh && !strcmp(fh->name, "Forza Horizon 5 Standard Edition"));
-    CHECK(ow && !strcmp(ow->name, "Pokemon Cafe Edicao"));
+    /* v0.20.0: UTF-8 (acentos) até o desenho; TM/R somem, espaços colapsam */
+    CHECK(ow && !strcmp(ow->name, "Pok\xc3\xa9mon Caf\xc3\xa9 Edi\xc3\xa7\xc3\xa3o"));
     CHECK(fn && !strcmp(fn->name, "Fortnite"));
-    /* cache ida e volta */
+    /* cache ida e volta (com o cabeçalho da v0.20.0) */
     char *cache = xa_names_to_cache(t, n);
-    CHECK(cache && strstr(cache, "9NKX70BBCDRN\tForza Horizon 5 Standard Edition\n"));
+    CHECK(cache && !strncmp(cache, XA_NAMES_MAGIC "\n", strlen(XA_NAMES_MAGIC) + 1));
+    CHECK(cache && strstr(cache, "\n9NKX70BBCDRN\tForza Horizon 5 Standard Edition\n"));
     xa_title_t *t2 = NULL;
     int n2 = 0;
     xa_parse_titles(TITLES, &t2, &n2);
     CHECK(xa_names_from_cache(cache, t2, n2) == 3);
-    CHECK(!strcmp(find(t2, n2, "OWNEDGAME")->name, "Pokemon Cafe Edicao"));
+    CHECK(!strcmp(find(t2, n2, "OWNEDGAME")->name, "Pok\xc3\xa9mon Caf\xc3\xa9 Edi\xc3\xa7\xc3\xa3o"));
     free(cache);
+    free(t2);
+    /* NAMES.TXT antigo (ASCII, sem cabeçalho) = ignorado: busca de novo com acento */
+    xa_parse_titles(TITLES, &t2, &n2);
+    CHECK(xa_names_from_cache("9NKX70BBCDRN\tForza Horizon 5\n9AAAAAAAAAAA\tPokemon Cafe Edicao\n", t2, n2) == 0);
+    CHECK(xa_names_from_cache("XCNAMES 1\n9NKX70BBCDRN\tForza\n", t2, n2) == 0);
+    CHECK(xa_names_from_cache(XA_NAMES_MAGIC "\r\n9NKX70BBCDRN\tForza\r\n", t2, n2) == 1 &&
+          !strcmp(find(t2, n2, "FORZAHORIZON5")->name, "Forza"));
     free(t2);
     int k = xa_finalize(t, n);
     CHECK(k == 4);
@@ -204,6 +213,17 @@ static void test_text(void) {
     CHECK(!strcmp(b, "Acny!"));
     xa_ascii_fold(b, sizeof(b), "bad\xff\xc3utf8\xe2\x82");
     CHECK(!strcmp(b, "badutf8"));
+    /* v0.20.0: nome em UTF-8 */
+    xa_name_clean(b, sizeof(b), "  Assassin\xe2\x80\x99s  Creed\xc2\xae Shadows\xe2\x84\xa2 ");
+    CHECK(!strcmp(b, "Assassin\xe2\x80\x99s Creed Shadows"));
+    xa_name_clean(b, sizeof(b), "Ara: Hist\xc3\xb3ria N\xc3\xa3o Contada\xc2\xa0\x01");
+    CHECK(!strcmp(b, "Ara: Hist\xc3\xb3ria N\xc3\xa3o Contada"));
+    xa_name_clean(b, sizeof(b), "bad\xff\xc3utf8\xe2\x82 \xc0\xaf ok");   /* inválido / forma longa somem */
+    CHECK(!strcmp(b, "badutf8 ok"));
+    xa_name_clean(b, 11, "abcdefghijklmnop");
+    CHECK(!strcmp(b, "abcdefg..."));
+    xa_name_clean(b, 11, "abcdef\xc3\xa9\xc3\xa9\xc3\xa9");   /* não parte o é ao meio */
+    CHECK(!strcmp(b, "abcdef..."));
     char *u = xa_urlencode("xboxlive.signin openid M.C5_B!*$~");
     CHECK(u && !strcmp(u, "xboxlive.signin%20openid%20M.C5_B%21%2A%24~"));
     free(u);

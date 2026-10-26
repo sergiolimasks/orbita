@@ -352,6 +352,7 @@ static int handle(const char *method, const char *host, const char *path, const 
         if (g_gssv.nsess >= GSSV_MAX_SESS || !g_gssv.next_dir[0]) { *status = 503; return 0; }
         gssv_sess_t *s = &g_gssv.s[g_gssv.nsess++];
         memset(s, 0, sizeof(*s));
+        if (g_gssv.nev < 64) { g_gssv.ev_kind[g_gssv.nev] = 'P'; g_gssv.ev_sess[g_gssv.nev++] = g_gssv.nsess - 1; }
         snprintf(s->path, sizeof(s->path), "/v5/sessions/cloud/1A2B3C4D-5E6F-4A7B-8C9D-0000000000%02d", g_gssv.nsess);
         snprintf(s->dir, sizeof(s->dir), "%s", g_gssv.next_dir);
         cJSON *j = body ? cJSON_Parse(body) : NULL;
@@ -374,6 +375,7 @@ static int handle(const char *method, const char *host, const char *path, const 
     gssv_sess_t *s = &g_gssv.s[si];
     if (!strcmp(method, "DELETE") && !*suf) {
         s->n_delete++;
+        if (g_gssv.nev < 64) { g_gssv.ev_kind[g_gssv.nev] = 'D'; g_gssv.ev_sess[g_gssv.nev++] = si; }
         write_file(s->dir, "recv.done", "1\n");   /* pion: stop media, write pion.json */
         *status = 202;
         return 0;
@@ -437,6 +439,7 @@ static int handle(const char *method, const char *host, const char *path, const 
         return 0;
     }
     if (!strcmp(suf, "/keepalive")) {
+        if (g_gssv.ka_gone == si + 1) { *status = 404; return 0; }   /* v0.19.3 */
         if (g_gssv.revoke_next_ka) {   /* gsToken "expired" on the server */
             g_gssv.revoke_next_ka = 0;
             g_gssv.gs_valid = -1;

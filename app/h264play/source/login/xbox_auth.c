@@ -429,22 +429,36 @@ int xa_finalize(xa_title_t *t, int n) {
     return k;
 }
 
-int xa_fetch_titles(const xa_endpoint_t *ep, xa_title_t **out, int *n, xc_err_t *e) {
+/* GET autenticado no host da região que devolve {"results":[título...]}. */
+static int fetch_title_list(const xa_endpoint_t *ep, const char *step, const char *path,
+                            size_t max_body, xa_title_t **out, int *n, xc_err_t *e) {
     size_t hl = strlen(ep->token) + sizeof(DEVICE_INFO) + 256;
     char *hdr = (char *)malloc(hl);
     if (!hdr) { set_err(e, HTTPS_ETOOBIG, "sem memoria"); return XA_ERR; }
     snprintf(hdr, hl, "Accept: application/json\r\nContent-Type: application/json\r\n"
              "X-Gssv-Client: XboxComBrowser\r\n" DEVICE_INFO "Authorization: Bearer %s\r\n", ep->token);
     https_resp_t r;
-    int rc = https_request("titles", "GET", ep->host, "/v2/titles", hdr, NULL, 0, TITLES_BODY, &r, e);
+    int rc = https_request(step, "GET", ep->host, path, hdr, NULL, 0, max_body, &r, e);
     xa_secret_free(&hdr);
     if (rc != 0) return XA_ERR;
-    if (r.status < 200 || r.status > 299) { http_fail(e, "titles", &r); https_free(&r); return XA_ERR; }
+    if (r.status < 200 || r.status > 299) { http_fail(e, step, &r); https_free(&r); return XA_ERR; }
     rc = xa_parse_titles(r.body, out, n);
-    xc_log("[cat] /v2/titles %u bytes, %d titulos", (unsigned)r.len, rc == 0 ? *n : -1);
+    xc_log("[cat] %s %u bytes, %d titulos", path, (unsigned)r.len, rc == 0 ? *n : -1);
     https_free(&r);
-    if (rc != 0) { set_err(e, HTTPS_EPROTO, "JSON invalido em titles"); return XA_ERR; }
+    if (rc != 0) { set_err(e, HTTPS_EPROTO, "JSON invalido em %s", step); return XA_ERR; }
     return XA_OK;
+}
+
+int xa_fetch_titles(const xa_endpoint_t *ep, xa_title_t **out, int *n, xc_err_t *e) {
+    return fetch_title_list(ep, "titles", "/v2/titles", TITLES_BODY, out, n, e);
+}
+
+int xa_fetch_mru(const xa_endpoint_t *ep, int max, xa_title_t **out, int *n, xc_err_t *e) {
+    char path[48];
+    if (max < 1) max = 1;
+    if (max > 100) max = 100;
+    snprintf(path, sizeof(path), "/v2/titles/mru?mr=%d", max);
+    return fetch_title_list(ep, "mru", path, SMALL_BODY * 4, out, n, e);
 }
 
 int xa_parse_names(const char *json, xa_title_t *t, int n) {
@@ -460,7 +474,8 @@ int xa_parse_names(const char *json, xa_title_t *t, int n) {
         if (!pid || !title) continue;
         for (int i = 0; i < n; i++) {
             if (t[i].name[0] || strcasecmp(t[i].product, pid)) continue;
-            xa_ascii_fold(t[i].name, 61 < sizeof(t[i].name) ? 61 : sizeof(t[i].name), title);
+            /* v0.20.0: UTF-8 até o desenho (o menu novo tem acentos) */
+            xa_name_clean(t[i].name, 61 < sizeof(t[i].name) ? 61 : sizeof(t[i].name), title);
             got++;
         }
     }
@@ -471,36 +486,44 @@ int xa_parse_names(const char *json, xa_title_t *t, int n) {
 int xa_fetch_names(xa_title_t *t, int n, void (*progress)(int, int), xc_err_t *e) {
     int *idx = (int *)malloc(sizeof(int) * (size_t)(n + 1));
     if (!idx) return 0;
-    int m = 0;
-    for (int i = 0; i < n; i++) {
-        if (!xa_playable(&t[i]) || t[i].name[0] || !t[i].product[0]) continue;
-        int dup = 0;   /* vários títulos podem ter o mesmo produto */
-        for (int k = 0; k < m; k++) if (!strcmp(t[idx[k]].product, t[i].product)) { dup = 1; break; }
-        if (!dup) idx[m++] = i;
-    }
+    /* v0.20.0: nomes em pt-BR (o mesmo mercado das capas, com acento); o
+     * que o BR não tiver vai de novo em en-US. */
+    static const char *const k_mkt[2] = { "market=BR&languages=pt-BR", "market=US&languages=en-US" };
     int resolved = 0;
-    for (int s = 0; s < m; s += NAMES_BATCH) {
-        if (xcn_cancelled()) break;
-        char path[64 + NAMES_BATCH * 24];
-        int pl = snprintf(path, sizeof(path), "/v7.0/products?bigIds=");
-        for (int k = s; k < m && k < s + NAMES_BATCH; k++)
-            pl += snprintf(path + pl, sizeof(path) - (size_t)pl, "%s%s", k > s ? "," : "", t[idx[k]].product);
-        snprintf(path + pl, sizeof(path) - (size_t)pl, "&market=US&languages=en-US&fieldsTemplate=Browse");
-        https_resp_t r;
-        xc_err_t e2;
-        int rc = https_request("nomes", "GET", "displaycatalog.mp.microsoft.com", path,
-                               "Accept: application/json\r\n", NULL, 0, NAMES_BODY, &r, &e2);
-        if (rc == 0 && r.status == 200) {
-            int g = xa_parse_names(r.body, t, n);
-            if (g > 0) resolved += g;
-        } else if (rc != 0) {
-            xc_log("[cat] nomes: %s", e2.msg);
-            *e = e2;
-        } else {
-            xc_log("[cat] nomes: HTTP %d", r.status);
+    for (int pass = 0; pass < 2; pass++) {
+        int m = 0;
+        for (int i = 0; i < n; i++) {
+            if (!xa_playable(&t[i]) || t[i].name[0] || !t[i].product[0]) continue;
+            int dup = 0;   /* vários títulos podem ter o mesmo produto */
+            for (int k = 0; k < m; k++) if (!strcmp(t[idx[k]].product, t[i].product)) { dup = 1; break; }
+            if (!dup) idx[m++] = i;
         }
-        https_free(&r);
-        if (progress) progress(s + NAMES_BATCH < m ? s + NAMES_BATCH : m, m);
+        if (!m) break;
+        if (pass) xc_log("[cat] nomes: %d sem nome em pt-BR, tentando en-US", m);
+        for (int s = 0; s < m; s += NAMES_BATCH) {
+            if (xcn_cancelled()) break;
+            char path[96 + NAMES_BATCH * 24];
+            int pl = snprintf(path, sizeof(path), "/v7.0/products?bigIds=");
+            for (int k = s; k < m && k < s + NAMES_BATCH; k++)
+                pl += snprintf(path + pl, sizeof(path) - (size_t)pl, "%s%s", k > s ? "," : "", t[idx[k]].product);
+            snprintf(path + pl, sizeof(path) - (size_t)pl, "&%s&fieldsTemplate=Browse", k_mkt[pass]);
+            https_resp_t r;
+            xc_err_t e2;
+            int rc = https_request("nomes", "GET", "displaycatalog.mp.microsoft.com", path,
+                                   "Accept: application/json\r\n", NULL, 0, NAMES_BODY, &r, &e2);
+            if (rc == 0 && r.status == 200) {
+                int g = xa_parse_names(r.body, t, n);
+                if (g > 0) resolved += g;
+            } else if (rc != 0) {
+                xc_log("[cat] nomes: %s", e2.msg);
+                *e = e2;
+            } else {
+                xc_log("[cat] nomes: HTTP %d", r.status);
+            }
+            https_free(&r);
+            if (progress) progress(s + NAMES_BATCH < m ? s + NAMES_BATCH : m, m);
+        }
+        if (xcn_cancelled()) break;
     }
     free(idx);
     return resolved;
@@ -568,11 +591,74 @@ void xa_ascii_fold(char *dst, size_t cap, const char *src) {
     }
 }
 
+/* ----------------------------------------------------- nome UTF-8 */
+
+/* v0.20.0: nome de jogo pro menu novo. UTF-8 válido passa (acentos etc.);
+ * sequência inválida some; controle e espaços especiais viram espaço;
+ * (TM), (R) e (C) somem (como no ASCII de antes); espaços colapsados e
+ * aparados; corta em cap-1 bytes com "..." sem partir um caractere. */
+void xa_name_clean(char *dst, size_t cap, const char *src) {
+    char tmp[256];
+    size_t o = 0;
+    const unsigned char *s = (const unsigned char *)(src ? src : "");
+    while (*s && o + 5 < sizeof(tmp)) {
+        unsigned c = *s;
+        if (c < 0x80) {
+            tmp[o++] = (c < 32 || c == 127) ? ' ' : (char)c;
+            s++;
+            continue;
+        }
+        unsigned cp = 0, len = 0;
+        if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+        else { s++; continue; }
+        unsigned i;
+        for (i = 1; i < len; i++) {
+            if ((s[i] & 0xC0) != 0x80) break;
+            cp = (cp << 6) | (s[i] & 0x3F);
+        }
+        if (i < len) { s += i; continue; }
+        /* forma longa / surrogate / fora do Unicode = inválido */
+        if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) ||
+            (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) { s += len; continue; }
+        if (cp == 0xA0 || cp == 0x2002 || cp == 0x2003 || cp == 0x2009 || (cp >= 0x80 && cp < 0xA0)) tmp[o++] = ' ';
+        else if (cp != 0x2122 && cp != 0xAE && cp != 0xA9)
+            for (unsigned k = 0; k < len; k++) tmp[o++] = (char)s[k];
+        s += len;
+    }
+    tmp[o] = 0;
+    size_t w = 0;
+    for (size_t r = 0; tmp[r]; r++) {
+        if (tmp[r] == ' ' && (w == 0 || tmp[w - 1] == ' ')) continue;
+        tmp[w++] = tmp[r];
+    }
+    while (w > 0 && tmp[w - 1] == ' ') w--;
+    tmp[w] = 0;
+    if (cap == 0) return;
+    if (w + 1 > cap) {   /* corta com "..." (cap-1 bytes no total) */
+        size_t keep = cap > 4 ? cap - 4 : 0;
+        while (keep > 0 && ((unsigned char)tmp[keep] & 0xC0) == 0x80) keep--;   /* fronteira de caractere */
+        while (keep > 0 && tmp[keep - 1] == ' ') keep--;
+        memcpy(dst, tmp, keep);
+        if (cap > 4) { memcpy(dst + keep, "...", 3); keep += 3; }
+        dst[keep] = 0;
+    } else {
+        memcpy(dst, tmp, w + 1);
+    }
+}
+
 /* ---------------------------------------------------------- cache nomes */
 
 int xa_names_from_cache(const char *txt, xa_title_t *t, int n) {
     int got = 0;
-    const char *line = txt;
+    /* v0.20.0: o NAMES.TXT antigo (sem cabeçalho) tem os nomes em ASCII:
+     * ignora inteiro, os nomes são buscados de novo (com acento) e o
+     * arquivo é regravado no formato novo. */
+    size_t hl = strlen(XA_NAMES_MAGIC);
+    if (!txt || strncmp(txt, XA_NAMES_MAGIC, hl) || (txt[hl] != '\n' && txt[hl] != '\r')) return 0;
+    const char *line = strchr(txt, '\n');
+    line = line ? line + 1 : NULL;
     while (line && *line) {
         const char *nl = strchr(line, '\n');
         size_t len = nl ? (size_t)(nl - line) : strlen(line);
@@ -595,10 +681,10 @@ int xa_names_from_cache(const char *txt, xa_title_t *t, int n) {
 }
 
 char *xa_names_to_cache(const xa_title_t *t, int n) {
-    size_t cap = (size_t)n * (sizeof(t[0].product) + sizeof(t[0].name) + 2) + 1;
+    size_t cap = (size_t)n * (sizeof(t[0].product) + sizeof(t[0].name) + 2) + sizeof(XA_NAMES_MAGIC) + 2;
     char *o = (char *)malloc(cap);
     if (!o) return NULL;
-    size_t w = 0;
+    size_t w = (size_t)snprintf(o, cap, "%s\n", XA_NAMES_MAGIC);
     for (int i = 0; i < n; i++) {
         if (!t[i].name[0] || !t[i].product[0]) continue;
         int dup = 0;

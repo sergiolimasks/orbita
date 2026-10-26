@@ -80,6 +80,7 @@ struct xcw {
 
     /* AU gating / parameter-set cache (TcpOutServer::push_au) */
     int wait_idr;
+    int video_paused;   /* v0.19.3: xcw_set_video_paused */
     uint8_t sps[XCW_PARAM_CAP], pps[XCW_PARAM_CAP];
     size_t sps_n, pps_n;
     int log_sps_pending, log_pps_pending;
@@ -400,6 +401,10 @@ static void deliver_au(xcw_t *x, const uint8_t *au, size_t n, uint32_t ts) {
     x->s.au_bytes_last = (uint32_t)on;
     x->s.video_bytes += on;
     if (!x->s.t_first_au_ms) x->s.t_first_au_ms = since_answer(x, info.done_ms);
+    if (x->video_paused) {   /* v0.19.3: no menu ninguém decodifica */
+        x->s.paused_dropped++;
+        return;
+    }
     if (x->cfg.on_video_au) x->cfg.on_video_au(x->cfg.user, out, on, &info);
 }
 
@@ -440,7 +445,7 @@ static void on_video_track(uint8_t *data, size_t size, void *user) {
     if (x->s.nacks_sent) rtt_check(x, data, size);
     int want_kf = 0;
     xcj_receive(&x->jit, data, size, xcw_now_ms(), jit_emit, jit_nack, x, &want_kf);
-    if (want_kf) request_keyframe_throttled(x, 0);
+    if (want_kf && !x->video_paused) request_keyframe_throttled(x, 0);   /* v0.19.3: pausado não pede */
 }
 
 /* capture-rtp on_audio_track: strip the RTP header (CSRCs, extension,
@@ -764,6 +769,16 @@ void xcw_request_keyframe(xcw_t *x, int force) {
 
 void xcw_resync_video(xcw_t *x) { x->resync_req = 1; }
 
+void xcw_set_video_paused(xcw_t *x, int on) {
+    on = on ? 1 : 0;
+    if (!x || x->video_paused == on) return;
+    x->video_paused = on;
+    if (!on) {   /* volta do menu: decoder novo, só a partir de um IDR, pedido já */
+        x->wait_idr = 1;
+        x->kf_force = 1;
+    }
+}
+
 void xcw_set_video_kbps(xcw_t *x, int kbps) {
     if (kbps > 0) x->video_kbps = kbps;
 }
@@ -783,7 +798,7 @@ static void poll_timers(xcw_t *x, uint64_t now) {
     if (!x->handshake_done) return;
     int force = xchg0(&x->kf_force);
     int wanted = xchg0(&x->kf_wanted);
-    int starving = x->wait_idr;   /* consumer waiting for an IDR: keep asking */
+    int starving = x->wait_idr && !x->video_paused;   /* consumer waiting for an IDR: keep asking */
     if (wanted || force || starving) request_keyframe_throttled(x, force);
     if (now - x->last_rr_ms >= 1000) {
         x->last_rr_ms = now;

@@ -1,0 +1,71 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, status, avatar with context %}{% from "_report_parts.html" import gallery, timeline with context %}
+{% block title %}#{{ r.id }} · {{ _('adm.reports') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.reports'), back) }}{{ crumb('#' ~ r.id) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><div class="row mb-2">{{ status(r.status) }}<span class="muted small">#{{ r.id }} · {{ r.created_at|when }}</span></div>
+    <h1>{{ r.description.split('\n')[0]|truncate(90) }}</h1></div>
+  <div class="actions"><a class="btn secondary" href="{{ back }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a></div>
+</div>
+
+<div class="grid g-main">
+  <div class="stack">
+    <section class="card"><div class="card-head"><h2>{{ _('ui.description') }}</h2></div>
+      <div class="card-body"><p class="desc-block">{{ r.description }}</p></div></section>
+
+    <section class="card"><div class="card-head"><h2>{{ icon('image', 18) }}{{ _('adm.photos') }}</h2><span class="sub">{{ files|length }}</span></div>
+      <div class="card-body">{% if files %}{{ gallery(files, r.id) }}{% else %}<p class="muted">{{ _('ui.no_photos') }}</p>{% endif %}</div></section>
+
+    <section class="card"><div class="card-head"><h2>{{ icon('terminal', 18) }}{{ _('ui.related_logs') }}</h2>
+        <span class="sub">{{ _('ui.related_logs_hint') }}</span></div>
+      {% if logs %}
+      <div class="table-wrap"><table class="table cards-sm">
+        <thead><tr><th>{{ _('common.date') }}</th><th>{{ _('adm.console') }}</th><th>App</th><th>{{ _('rep.game') }}</th><th class="r">{{ _('adm.lines') }}</th><th></th></tr></thead>
+        <tbody>{% for it in logs %}
+        <tr><td class="lead-cell nowrap">{{ it.rx|when if it.rx else it.day|date }}</td>
+          <td data-label="{{ _('adm.console') }}" class="mono">{{ it.console[:12] }}…</td>
+          <td data-label="App" class="mono">{{ it.app }}</td><td data-label="{{ _('rep.game') }}">{{ it.game }}</td>
+          <td data-label="{{ _('adm.lines') }}" class="r num">{{ it.nlines }}</td>
+          <td class="actions"><a class="btn ghost sm" href="{{ url_for('admin.log_view', key=it.r2_key) }}">{{ icon('terminal', 14) }}{{ _('adm.open') }}</a></td></tr>
+        {% endfor %}</tbody></table></div>
+      {% else %}<div class="card-body"><p class="muted small">{{ _('ui.no_related_logs') }}</p></div>{% endif %}
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="card" aria-labelledby="upd-t">
+      <div class="card-head"><h2 id="upd-t">{{ icon('check-circle', 18) }}{{ _('ui.triage') }}</h2></div>
+      <form method="post" action="{{ url_for('admin.report_update', rid=r.id) }}" class="card-body stack">
+        {{ csrf() }}<input type="hidden" name="back" value="{{ url_for('admin.report_detail', rid=r.id, back=back) }}">
+        <div class="field"><label for="f-status">{{ _('rep.status') }}</label>
+          <select id="f-status" name="status">{% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == r.status }}>{{ _('status.' ~ s) }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="f-note">{{ _('rep.note') }}</label>
+          <textarea id="f-note" name="note" rows="4" maxlength="2000" placeholder="{{ _('ui.note_ph') }}">{{ r.admin_note }}</textarea>
+          <span class="help">{{ icon('info', 12) }} {{ _('rep.note_hint') }}</span></div>
+        <div class="form-actions"><button class="btn primary">{{ _('common.save') }}</button></div>
+      </form>
+    </section>
+
+    <section class="card"><div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
+      <div class="card-body"><dl class="kv">
+        <dt>{{ _('adm.tester') }}</dt><dd><span class="row">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.testers', q=r.email) }}">{{ r.uname }}</a></span></dd>
+        <dt>{{ _('adm.country') }}</dt><dd>{% if r.country %}{{ flag(r.country) }} {{ country_name(r.country) }}{% else %}—{% endif %}</dd>
+        <dt>{{ _('rep.version') }}</dt><dd>{% if r.version %}<a class="mono" href="{{ url_for('admin.reports', version=r.version) }}">{{ r.version }}</a>{% else %}—{% endif %}</dd>
+        <dt>{{ _('rep.game') }}</dt><dd>{{ r.game or '—' }}</dd>
+        <dt>{{ _('adm.console') }}</dt><dd>{% if r.console_id %}<a href="{{ url_for('admin.logs', console=r.console_id) }}"><code>{{ r.console_id }}</code></a>{% else %}—{% endif %}</dd>
+        <dt>{{ _('adm.logs') }}</dt><dd><a href="{{ url_for('admin.logs', tester=r.handle) }}">{{ r.handle }}</a></dd>
+      </dl></div></section>
+
+    <section class="card"><div class="card-head"><h2>{{ icon('activity', 18) }}{{ _('ui.timeline') }}</h2></div>
+      <div class="card-body">{{ timeline(r, events, True) }}</div></section>
+
+    {% if others %}
+    <section class="card"><div class="card-head"><h2>{{ _('ui.other_reports', n=r.uname.split(' ')[0]) }}</h2><a class="small" href="{{ url_for('admin.reports', tester=r.user_id) }}">{{ _('ui.see_all') }}</a></div>
+      <div class="rep-list">{% for o in others %}
+        <a class="rep-item" href="{{ url_for('admin.report_detail', rid=o.id) }}"><div class="grow"><div class="r-title small">{{ o.description.split('\n')[0]|truncate(60) }}</div>
+          <div class="r-meta"><span>#{{ o.id }}</span><span>{{ o.created_at|ago }}</span></div></div>{{ status(o.status) }}</a>
+      {% endfor %}</div></section>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

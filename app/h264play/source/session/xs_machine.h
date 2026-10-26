@@ -146,6 +146,7 @@ typedef struct {
     int          nremote, remote_taken;
     int          ev_ice_up, ev_media_up, ev_video, ev_dead, ev_dropped;
     int          stop_req;
+    int          keep;             /* v0.19.3: jogo pausado no menu (xsm_set_keep) */
     int          ask_answer;       /* -1 = sem resposta, 0 = cancelar, 1 = retomar */
     int          owner;            /* v0.19.2: XSM_OWN_* */
     char         code[16];
@@ -161,6 +162,12 @@ void xsm_free(xsm_t *m);
 
 /* Qualquer thread (lock). */
 void xsm_request_stop(xsm_t *m);
+/* v0.19.3: 1 = o jogo está pausado no menu (Back+Start) com a sessão
+ * aberta. Uma falha da tentativa (keepalive 404 = o xCloud encerrou a
+ * sessão por inatividade, vídeo morto...) vira ERROR em vez de abrir uma
+ * sessão NOVA sozinha: ninguém está jogando. Re-sinalizar a mesma sessão
+ * continua valendo. 0 = de volta ao jogo (regras de sempre). */
+void xsm_set_keep(xsm_t *m, int on);
 void xsm_answer_active(xsm_t *m, int resume);
 /* Copia CODE/texto; devolve seq (muda a cada atualização). */
 unsigned xsm_snapshot(xsm_t *m, char *code, size_t ccap, char *text, size_t tcap);

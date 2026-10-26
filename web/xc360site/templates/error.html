@@ -1,0 +1,19 @@
+{% extends "app/_layout.html" if user else "auth/_layout.html" %}{% from "_ui.html" import crumb with context %}
+{% block title %}{{ code }}{% endblock %}
+{% block crumbs %}{{ crumb(_('ui.error') ~ ' ' ~ code) }}{% endblock %}
+{% block content %}
+{% if user %}<div class="card"><div class="empty">{% endif %}
+<div class="a-ico flare">{{ icon('lock' if code == 403 else 'search' if code == 404 else 'alert', 24) }}</div>
+<p class="code-big">{{ code }}</p>
+<h1 class="mt-2">{{ _('ui.err_title_%d' % code) }}</h1>
+<p class="a-lead muted mt-2">{{ _('err.%d' % code) }}</p>
+<div class="row mt-6">
+  {% if user %}
+  <a class="btn primary" href="{{ url_for('admin.overview' if user.role == 'admin' else 'tester.area') }}">{{ icon('home', 16) }}{{ _('ui.go_home') }}</a>
+  {% else %}
+  <a class="btn primary" href="{{ url_for('public.home') }}">{{ _('ui.public_site') }}</a>
+  <a class="btn secondary" href="{{ url_for('auth.login') }}">{{ _('nav.login') }}</a>
+  {% endif %}
+</div>
+{% if user %}</div></div>{% endif %}
+{% endblock %}

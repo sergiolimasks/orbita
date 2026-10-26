@@ -1,0 +1,27 @@
+{% macro gallery(files, rid) -%}
+<div class="gallery">
+  {%- for fl in files %}
+  <a href="{{ url_for('tester.media', fid=fl.id) }}" data-lightbox="rep-{{ rid }}" data-caption="{{ fl.width }}×{{ fl.height }} · {{ fl.size|size }}" target="_blank" rel="noopener">
+    <img src="{{ url_for('tester.media', fid=fl.id, t=1) }}" alt="{{ _('ui.photo_n', n=loop.index) }}" loading="lazy" width="320" height="200">
+    <span class="g-meta">{{ fl.width }}×{{ fl.height }}</span>
+  </a>
+  {%- endfor %}
+</div>
+{%- endmacro %}
+
+{% macro timeline(r, events, admin=False) -%}
+<ol class="timeline">
+  <li><span class="t-dot st-new"></span>
+    <div class="t-head"><b>{{ _('ui.tl_created') }}</b>{% if admin %}<span class="who">{{ _('ui.by', n=r.uname) }}</span>{% endif %}<span class="muted">· {{ r.created_at|when }}</span></div></li>
+  {%- for e in events %}
+  <li><span class="t-dot st-{{ e.status }}"></span>
+    <div class="t-head">{{ _('ui.tl_status') }} <span class="badge st-{{ e.status }}"><span class="dot"></span>{{ _('status.' ~ e.status) }}</span>
+      {% if admin and e.uname %}<span class="who">{{ _('ui.by', n=e.uname) }}</span>{% endif %}<span class="muted">· {{ e.at|when }}</span></div>
+    {%- if e.note %}<div class="t-note">{{ e.note }}</div>{% endif %}</li>
+  {%- endfor %}
+  {%- if not events and r.admin_note %}
+  <li><span class="t-dot st-{{ r.status }}"></span>
+    <div class="t-head">{{ _('rep.note') }}<span class="muted">· {{ r.updated_at|when }}</span></div><div class="t-note">{{ r.admin_note }}</div></li>
+  {%- endif %}
+</ol>
+{%- endmacro %}

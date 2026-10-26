@@ -1,0 +1,53 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, errors as errs with context %}
+{% block title %}{{ _('ft.edit') if row else _('ft.new') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('ft.title'), url_for('admin.features')) }}{{ crumb(row.name_pt if row else _('ft.new')) }}{% endblock %}
+{% block content_class %} narrow{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ row.name_pt if row else _('ft.new') }}</h1><p class="lead">{{ _('ft.lead') }}</p></div>
+  <div class="actions"><a class="btn secondary" href="{{ url_for('admin.features') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a></div>
+</div>
+{{ errs(errors) }}
+<form method="post" class="stack mt-4" novalidate>
+  {{ csrf() }}
+  <section class="card">
+    <div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
+    <div class="card-body form-grid">
+      <div class="field{{ ' has-error' if ferr.grp }}"><label for="f-grp">{{ _('ft.group') }}</label>
+        <select id="f-grp" name="grp">{% for g_ in group_keys %}<option value="{{ g_ }}" {{ 'selected' if f.grp == g_ }}>{{ _('st.g_' ~ g_) }}</option>{% endfor %}</select></div>
+      <div class="field{{ ' has-error' if ferr.status }}"><label for="f-status">{{ _('ft.status') }}</label>
+        <select id="f-status" name="status">{% for s in statuses %}<option value="{{ s }}" {{ 'selected' if f.status == s }}>{{ _('st.s_' ~ s) }} — {{ _('st.d_' ~ s) }}</option>{% endfor %}</select></div>
+      <div class="field{{ ' has-error' if ferr.since_version }}"><label for="f-since">{{ _('ft.since') }} <span class="opt">({{ _('ui.optional') }})</span></label>
+        <input id="f-since" class="mono" name="since_version" value="{{ f.since_version or '' }}" maxlength="40" placeholder="0.22.0">
+        {% if ferr.since_version %}<span class="err-msg">{{ icon('alert', 12) }}{{ ferr.since_version }}</span>{% else %}<span class="help">{{ _('ft.since_help') }}</span>{% endif %}</div>
+      <div class="field"><label for="f-sort">{{ _('ft.sort') }}</label>
+        <input id="f-sort" type="number" name="sort" value="{{ f.sort or 100 }}" min="0" max="100000">
+        <span class="help">{{ _('ft.sort_help') }}</span></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>{{ icon('globe', 18) }}{{ _('ft.name') }} · {{ _('ft.desc') }}</h2><span class="sub">{{ _('ft.lang_help') }}</span></div>
+    <div class="card-body lang-grid">
+      {% for l, lbl in [('pt', 'PT'), ('en', 'EN'), ('es', 'ES')] %}
+      <div class="stack-sm">
+        <div class="field{{ ' has-error' if ferr['name_' ~ l] }}"><label for="f-name-{{ l }}"><span class="lang-tag">{{ lbl }}</span>{{ _('ft.name') }}{% if l != 'pt' %} <span class="opt">({{ _('ui.optional') }})</span>{% endif %}</label>
+          <input id="f-name-{{ l }}" name="name_{{ l }}" value="{{ f['name_' ~ l] or '' }}" maxlength="120"{% if l == 'pt' %} required{% endif %}{% if ferr['name_' ~ l] %} aria-invalid="true"{% endif %}>
+          {% if ferr['name_' ~ l] %}<span class="err-msg">{{ icon('alert', 12) }}{{ ferr['name_' ~ l] }}</span>{% endif %}</div>
+        <div class="field"><label for="f-desc-{{ l }}">{{ _('ft.desc') }}</label>
+          <textarea id="f-desc-{{ l }}" name="desc_{{ l }}" rows="3" maxlength="300">{{ f['desc_' ~ l] or '' }}</textarea></div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  <div class="row-between">
+    <span></span>
+    <div class="form-actions"><a class="btn ghost" href="{{ url_for('admin.features') }}">{{ _('common.cancel') }}</a><button class="btn primary">{{ _('common.save') }}</button></div>
+  </div>
+</form>
+{% if row %}
+<section class="card warn section"><div class="card-body row-between">
+  <div><h3>{{ _('ft.delete') }}</h3><p class="small muted">{{ _('ft.delete_confirm') }}</p></div>
+  <form method="post" action="{{ url_for('admin.feature_delete', fid=row.id) }}" data-confirm="{{ _('ft.delete_confirm') }}" data-confirm-title="{{ _('ft.delete') }}?" data-confirm-ok="{{ _('ft.delete') }}" data-danger>{{ csrf() }}<button class="btn danger-ghost">{{ icon('x', 16) }}{{ _('ft.delete') }}</button></form>
+</div></section>
+{% endif %}
+{% endblock %}

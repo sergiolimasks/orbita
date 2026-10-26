@@ -261,3 +261,67 @@ reconnects alone with an abbreviated handshake; without: one escalation and
 a full handshake on the thread). `hosttest/session` has the same paths on
 the virtual clock (`test_net_live`). Knob: `NATIVE_DEC_THREADS=3` = old
 decoder layout (the session still leaves hw3; it just stays free).
+
+## v0.19.3 — Back+Start keeps the session open in the menu
+
+Back+Start (2 s) no longer ends the xCloud session. The game stays open in
+the menu; picking it again is instant, picking another one ends it first.
+
+| In the menu | native (xc_native) | PC bridge (launcher.py) |
+|---|---|---|
+| Back+Start | `xn_pause()`: no DELETE; keepalive/ICE/RTCP go on on hw1; the receiver drops complete AUs before `on_video_au` (`xcw_set_video_paused`, stats `paused_dropped`) and the Opus packets; NO keyframe requests (jitter loss and IDR-gate "starving" are muted); pads neutral (`xn_pad_neutral` on pause, `xn_pad_frame` ignored) | `PAUSE` on :9002 instead of `STOP`; the launcher keeps capture-rtp; the Xbox drops what arrives on :9000 (as the menu always did) |
+| A on the same game | `xn_resume(id)`: no /play, no queue; IDR gate on + forced keyframe (PLI + videoKeyframeRequested); the first AU in the ring is an IDR | `PLAY` (launcher: same title = resume, just STATE); the new :9000 connection starts at an IDR |
+| A on another game | `xn_stop()` (DELETE), the new `xn_play()` goes out when `xn_can_play()` (main.c `g_next_play`, B cancels) | `PLAY other` (the launcher stops the old capture = DELETE, then starts) |
+| RT+A (via PC) with a native game open | `xn_stop()` then the PLAY to the PC | — |
+| Reiniciar / Desligar | unchanged: `mm_power_run` -> `xn_busy()` -> `xn_stop()` | unchanged: STATE STREAMING -> STOP |
+| xCloud ends it in the menu | `xsm_set_keep(1)`: an attempt failure (keepalive 404, dead video) becomes ERROR "Sessao xCloud encerrada pelo servidor" instead of a NEW session; `xn_session()` sees the finished machine and calls `xn_stop()` (WebRTC detached) -> `XN_SESS_NONE`; the menu shows the reason | the launcher does not restart a paused game: `STATE IDLE Sessao do xCloud encerrada: ...` -> the Xbox forgets it |
+
+Menu query (for the menu layout: mark the game in progress):
+`source/game_session.h`, `int xc_game_session(xc_game_session_t *out)`
+(main thread, cheap, call every frame): `XC_GS_OPEN` + `id`/`name`/`via_pc`
+= paused in the menu; also `XC_GS_STARTING/PLAYING/ENDING` for the native
+session, `XC_GS_NONE` otherwise. Native layer: `xn_session()` /
+`XN_SESS_*` in `native/xc_native.h`.
+
+Tests: standalone phase 5 (s5..s7): play -> Back+Start (6 s in the menu:
+keepalive +6, no DELETE, rtp flowing, ~30 AU/s dropped in the receiver,
+nothing in the ring, no audio, 0 PLI/KFRQ) -> same game (first AU an IDR
+~40 ms later, same session, PLI sent) -> Back+Start -> another game (DELETE
+of the old one before its /play, GSSV event order) -> Back+Start -> fake
+GSSV answers 404 to its keepalive -> ERROR, `XN_SESS_NONE`, no new session
+by itself -> PLAY again = new session. Launcher: run_tests.sh scenarios
+9-12 (resume without a new capture-rtp, replace, death/stall while paused
+-> IDLE without restart, PAUSE while idle ignored).
+
+Known limits: the offline test (X) with a game open lends hw3 to the
+decoder, so a re-login/full TLS handshake of the paused session waits for
+it to end; with the menu open the xCloud's own inactivity timeout still
+applies (no input reaches the game).
+
+## v0.20.0 — PC mode removed, new menu is the default
+
+The app only works natively now. Removed from the app (code, build knobs and
+PC-only host tests):
+
+- the PC launcher control connection (TCP :9002, `ctrl_conn.c`), PLAY via the PC
+  and RT+A, "B: usar o catálogo do PC" on the login screen and the launcher
+  catalog fallback;
+- video from the PC (TCP :9000 client in `tcp_stream.c`; the ring is now fed
+  only by the WebRTC inject, one head update per AU), game audio from the PC
+  (UDP :9004 in `audio_xenon.c`), pad frames and KFRQ to the PC (UDP :9001,
+  `input_udp.c`);
+- the text menu (`menu_ui.c`) and its model functions; build knobs `MENU`,
+  `XUI`, `XBOX_LOGIN`, `STANDALONE` (all always on now);
+- host tests `hosttest/ctrl_test.c` and the stale copies in `hosttest/login/`
+  (`ctrl_test.c`, `menu_test.c`, `sim.c`, `run.sh`) plus `hosttest/mock_net/`.
+
+v0.20.0 kept LOG/STAT over UDP :9003 to the PC listener. **v0.20.1 removed
+it too**: `np_log_line` now feeds the beta-tester HTTPS upload
+(`source/login/xc_logup.c`, see LOGS-UPLOAD.md; only with XC360/BETAKEY.TXT
+on the USB drive). The STAT line ends with `ver=<build version>`.
+
+`tools/xcloud-launcher` and `tools/xcloud-capture` stay in the repo (the app
+no longer talks to them). The table above still lists the PC-bridge column for
+history; it no longer applies to the app.
+
+`game_session.h`: the `via_pc` field is gone (native sessions only).

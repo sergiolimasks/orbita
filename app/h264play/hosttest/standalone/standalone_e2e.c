@@ -12,7 +12,13 @@
  *                  pion "xCloud" (hosttest/webrtc/peer_pion) per session.
  * Scenario: PLAY game 1 -> states -> media -> input -> Back+Start (DELETE,
  * teardown) -> PLAY game 2 cancelled with B while in the queue -> PLAY
- * game 3 -> media -> Back+Start. Each streamed session dir gets the files
+ * game 3 -> media -> Back+Start -> (v0.19.3) PLAY game 4 + "Reiniciar"
+ * from the Start menu in the queue (DELETE before the mocked SMC) ->
+ * (v0.19.3) Back+Start keeps the session open in the menu (keepalive, no
+ * DELETE, nothing decoded, no keyframe loop), the same game resumes with a
+ * PLI and no new session, another game DELETEs the old one before its
+ * /play, the server ends a paused session (keepalive 404) and the state
+ * comes back clean for a new PLAY. Each streamed session dir gets the files
  * hosttest/webrtc/check_e2e.py reads (recv.h264/.auidx/.opus/.json).
  * v0.19.2: HTTPS is real TLS to a local server (port_rt.c); keepalive every
  * 1 s; the "decoder" leases hw3 like main.c (4 threads, lends it to the
@@ -575,6 +581,308 @@ static void cancel_in_queue(const char *base, int k) {
     CHECK(saw_state("IDLE", "Sessao encerrada"), "STATE IDLE after cancel");
 }
 
+/* v0.19.3: PLAY, then "Reiniciar o Xbox" (v0.20.0: top button) while the session waits
+ * in the queue: mm_power_run (menu_model.c) with main.c's native platform
+ * (xn_busy / xn_stop, 3 s timeout) and the SMC mocked. The DELETE must be
+ * out BEFORE the reboot; Back+Start / B are not involved. */
+static int g_pw_reboots, g_pw_shutdowns, g_pw_sess, g_pw_del_at_smc = -1;
+static int pw_open(void *u) { (void)u; return xn_busy(); }
+static void pw_stop(void *u) { (void)u; xn_stop(); }
+static int pw_done(void *u) { (void)u; poll_state(); return !xn_busy(); }
+static unsigned long long pw_now(void *u) { (void)u; return (unsigned long long)xcw_now_ms() * 1000ULL; }
+static void pw_wait(void *u) { (void)u; poll_state(); usleep(10000); }
+static void pw_show(void *u, const char *l1, const char *l2) { (void)u; fprintf(stderr, "    [power] %s %s\n", l1, l2); }
+static void pw_smc_seen(void) {
+    pthread_mutex_lock(&g_gssv.mu);
+    g_pw_del_at_smc = g_gssv.s[g_pw_sess].n_delete;
+    pthread_mutex_unlock(&g_gssv.mu);
+}
+/* mocks do libxenon (xenon_smc.h): no Xbox não voltam */
+static void xenon_smc_power_reboot(void) { g_pw_reboots++; pw_smc_seen(); }
+static void xenon_smc_power_shutdown(void) { g_pw_shutdowns++; pw_smc_seen(); }
+static void pw_reboot(void *u) { (void)u; xenon_smc_power_reboot(); }
+static void pw_shutdown(void *u) { (void)u; xenon_smc_power_shutdown(); }
+
+static void power_in_queue(const char *base, int k) {
+    char dir[400];
+    snprintf(dir, sizeof(dir), "%s/s%d", base, k);
+    mkdir(dir, 0755);
+    fprintf(stderr, "=== phase %d: PLAY then Reiniciar (top button) in the queue\n", k);
+    phase_reset();
+    CHECK(wait_can_play(25000) == 0, "idle before the power phase");
+    pthread_mutex_lock(&g_gssv.mu);
+    snprintf(g_gssv.next_dir, sizeof(g_gssv.next_dir), "%s", dir);
+    g_gssv.extra_queue_polls = 20;
+    g_pw_sess = g_gssv.nsess;
+    pthread_mutex_unlock(&g_gssv.mu);
+    CHECK(xn_play("HALO5", "Halo 5", 1) == XN_OK, "xn_play HALO5");
+    uint64_t t0 = xcw_now_ms();
+    while (xcw_now_ms() - t0 < 30000 && g_mm.state != MM_ST_QUEUE) { poll_state(); usleep(5000); }
+    CHECK(g_mm.state == MM_ST_QUEUE, "reached QUEUE (%s)", g_mm.state_text);
+    /* v0.20.0: botões do topo do menu novo (subir além da 1ª fileira ->
+     * Reiniciar, A abre a confirmação em Cancelar, direita + A confirma) */
+    static menu_model_t pm;
+    mm_init(&pm);
+    { char g[] = "GAME\tHALO5\tHalo 5\t0", e[] = "END"; mm_handle_line(&pm, g); mm_handle_line(&pm, e); }
+    mm_nav(&pm, 0, -1);
+    int a1 = mm_press_a(&pm);
+    mm_nav(&pm, 1, 0);
+    int a2 = mm_press_a(&pm);
+    CHECK(a1 == MM_A_CONFIRM && a2 == MM_A_REBOOT, "up, A, right, A = Reiniciar (%d %d)", a1, a2);
+    int it = a2 == MM_A_REBOOT ? MM_PWR_REBOOT : MM_PWR_BACK;
+    const mm_power_ops_t ops = { NULL, pw_open, pw_stop, pw_done, pw_now, pw_wait, pw_show, pw_reboot, pw_shutdown };
+    uint64_t ts = xcw_now_ms();
+    int r = mm_power_run(&ops, it, MM_PWR_TIMEOUT_MS);
+    uint64_t el = xcw_now_ms() - ts;
+    fprintf(stderr, "    power: r=%d in %.2f s, DELETEs at SMC %d\n", r, el / 1000.0, g_pw_del_at_smc);
+    CHECK(r == MM_PWR_CLEAN, "session closed before the reboot (r=%d, %.2f s)", r, el / 1000.0);
+    CHECK(el <= MM_PWR_TIMEOUT_MS + 200, "within the timeout (%llu ms)", (unsigned long long)el);
+    CHECK(g_pw_reboots == 1 && g_pw_shutdowns == 0, "SMC reboot once (%d/%d)", g_pw_reboots, g_pw_shutdowns);
+    CHECK(g_pw_del_at_smc == 1, "DELETE already sent when the SMC was called (%d)", g_pw_del_at_smc);
+    CHECK(xn_can_play() && xn_pc() == NULL, "nothing left running");
+    CHECK(saw_state("IDLE", "Sessao encerrada"), "STATE IDLE Sessao encerrada");
+}
+
+/* ---- v0.19.3: Back+Start = menu com a sessão aberta ---- */
+static int g_ka_idr_first;
+/* = pull_next_au + decode: drain the ring; returns AUs */
+static int ka_drain(void) {
+    int n = 0;
+    while (r_used() >= 6) {
+        uint8_t h[6];
+        uint32_t t = g_rt;
+        for (int i = 0; i < 6; i++) h[i] = g_ring[(t + i) & (RING - 1)];
+        uint32_t len = (uint32_t)h[0] << 24 | (uint32_t)h[1] << 16 | (uint32_t)h[2] << 8 | h[3];
+        if (r_used() < 6 + len) break;
+        g_rt = (t + 6 + len) & (RING - 1);
+        n++;
+    }
+    return n;
+}
+static void ka_stats(xcw_stats_t *s) {
+    usleep(150000);   /* hw1 refreshes g_last every 100 ms */
+    pthread_mutex_lock(&g_stmu);
+    *s = g_last;
+    pthread_mutex_unlock(&g_stmu);
+}
+static gssv_sess_t ka_sess(int i, int *nsess, int *nplay) {
+    pthread_mutex_lock(&g_gssv.mu);
+    gssv_sess_t s = g_gssv.s[i];
+    if (nsess) *nsess = g_gssv.nsess;
+    if (nplay) *nplay = g_gssv.n_play;
+    pthread_mutex_unlock(&g_gssv.mu);
+    return s;
+}
+/* PLAY (or resume) -> first AU in the ring. Returns ms + 1 (0 = none). */
+static uint64_t ka_wait_video(int ms) {
+    uint64_t t0 = xcw_now_ms();
+    g_ka_idr_first = -1;
+    while (xcw_now_ms() - t0 < (uint64_t)ms) {
+        poll_state();
+        if (g_mm.state == MM_ST_ERROR) break;
+        if (r_used() >= 6) {
+            uint8_t h[6];
+            for (int i = 0; i < 6; i++) h[i] = g_ring[(g_rt + i) & (RING - 1)];
+            g_ka_idr_first = h[4];
+            return xcw_now_ms() - t0 + 1;
+        }
+        usleep(2000);
+    }
+    return 0;
+}
+static int ka_game(int ms) {   /* in game: decoder (hw3 lease) drains, pads forwarded */
+    uint64_t t_wait = xcw_now_ms();
+    while (xn_session_thread_busy() && xcw_now_ms() - t_wait < 2000) usleep(2000);
+    dec_open();
+    g_fwd_t0 = xcw_now_ms();
+    g_forward = 1;
+    int aus = 0;
+    uint64_t t0 = xcw_now_ms(), t_dec = 0;
+    while (xcw_now_ms() - t0 < (uint64_t)ms) {
+        poll_state();
+        if (xcw_now_ms() - t_dec >= 10) { t_dec = xcw_now_ms(); dec_tick(); }
+        aus += ka_drain();
+        usleep(2000);
+    }
+    return aus;
+}
+/* Back+Start as main.c v0.19.3 does it: pads off, xn_pause (neutral pads on
+ * hw1), decoder closed, ring thrown away (menu_loop stream_discard). */
+static void ka_back_start(void) {
+    g_forward = 0;
+    CHECK(xn_pause() == XN_OK, "Back+Start: xn_pause");
+    usleep(30000);
+    dec_close();
+    g_rt = g_rh;
+}
+
+static void keep_session(const char *base, int k, const char *pion, const char *h264) {
+    char dir[400], dir2[400], dir3[400];
+    snprintf(dir, sizeof(dir), "%s/s%d", base, k);
+    snprintf(dir2, sizeof(dir2), "%s/s%d", base, k + 1);
+    snprintf(dir3, sizeof(dir3), "%s/s%d", base, k + 2);
+    mkdir(dir, 0755);
+    mkdir(dir2, 0755);
+    mkdir(dir3, 0755);
+    fprintf(stderr, "=== phase %d: Back+Start keeps the session, same game resumes, other game replaces it\n", k);
+    phase_reset();
+    CHECK(wait_can_play(25000) == 0, "idle before the keep phase");
+    CHECK(xn_session(NULL, 0, NULL, 0) == XN_SESS_NONE, "xn_session NONE when idle");
+    int nsess0, nplay0;
+    pthread_mutex_lock(&g_gssv.mu);
+    snprintf(g_gssv.next_dir, sizeof(g_gssv.next_dir), "%s", dir);
+    g_gssv.extra_queue_polls = 0;
+    int ia = g_gssv.nsess;
+    pthread_mutex_unlock(&g_gssv.mu);
+    pid_t pa = spawn_pion(pion, dir, h264, 150);
+    CHECK(xn_play("SEAOFTHIEVES", "Sea of Thieves", 0) == XN_OK, "xn_play SEAOFTHIEVES");
+    CHECK(xn_session(NULL, 0, NULL, 0) == XN_SESS_STARTING, "xn_session STARTING after PLAY");
+    CHECK(ka_wait_video(60000) > 0, "video of game A (%s)", g_mm.state_text);
+    int aus = ka_game(4000);
+    CHECK(aus > 60, "game A streamed (%d AUs)", aus);
+    char tid[48], tname[64];
+    CHECK(xn_session(tid, sizeof(tid), tname, sizeof(tname)) == XN_SESS_PLAYING && !strcmp(tid, "SEAOFTHIEVES") &&
+              !strcmp(tname, "Sea of Thieves"),
+          "xn_session PLAYING SEAOFTHIEVES (%s / %s)", tid, tname);
+
+    /* -- Back+Start: menu, session open -- */
+    xcw_stats_t s0, s1;
+    ka_back_start();
+    ka_stats(&s0);
+    gssv_sess_t ga0 = ka_sess(ia, NULL, NULL);
+    int apk0 = g_audio_pkts;
+    CHECK(xn_session(tid, sizeof(tid), NULL, 0) == XN_SESS_PAUSED && !strcmp(tid, "SEAOFTHIEVES"),
+          "xn_session PAUSED SEAOFTHIEVES in the menu");
+    CHECK(xn_resume("GEARS5") == XN_EBUSY, "resume of another title refused");
+    CHECK(xn_play("GEARS5", "Gears 5", 0) == XN_EBUSY, "PLAY of another title refused while one is open");
+    g_forward = 1;   /* a late pad frame from hw1 must be ignored (pads neutral) */
+    int ring_in = 0, not_paused = 0;
+    uint64_t t0 = xcw_now_ms();
+    while (xcw_now_ms() - t0 < 6000) {
+        poll_state();
+        if (xn_session(NULL, 0, NULL, 0) != XN_SESS_PAUSED) not_paused++;
+        if (r_used()) { ring_in += r_used(); g_rt = g_rh; }
+        usleep(10000);
+    }
+    g_forward = 0;
+    ka_stats(&s1);
+    gssv_sess_t ga1 = ka_sess(ia, &nsess0, &nplay0);
+    fprintf(stderr, "    menu 6 s: keepalives +%d, rtp +%u, paused_dropped +%u, kfrq +%u, pli +%u, ring %d B, audio +%d\n",
+            ga1.n_ka - ga0.n_ka, s1.rtp_packets - s0.rtp_packets, s1.paused_dropped - s0.paused_dropped,
+            s1.keyframe_requests - s0.keyframe_requests, s1.pli_sent - s0.pli_sent, ring_in, g_audio_pkts - apk0);
+    CHECK(not_paused == 0, "PAUSED the whole time in the menu (%d)", not_paused);
+    CHECK(ga1.n_ka - ga0.n_ka >= 4, "keepalive goes on in the menu (+%d in 6 s)", ga1.n_ka - ga0.n_ka);
+    CHECK(ga1.n_delete == 0, "no DELETE in the menu (%d)", ga1.n_delete);
+    CHECK(s1.rtp_packets > s0.rtp_packets + 100, "media still flowing (rtp +%u)", s1.rtp_packets - s0.rtp_packets);
+    CHECK(s1.paused_dropped - s0.paused_dropped > 60, "AUs dropped in the receiver (+%u)",
+          s1.paused_dropped - s0.paused_dropped);
+    CHECK(ring_in == 0, "nothing reached the decoder ring (%d B)", ring_in);
+    CHECK(g_audio_pkts == apk0, "no audio delivered in the menu (+%d)", g_audio_pkts - apk0);
+    CHECK(s1.keyframe_requests == s0.keyframe_requests && s1.pli_sent == s0.pli_sent,
+          "no keyframe request in the menu (kfrq +%u, pli +%u)", s1.keyframe_requests - s0.keyframe_requests,
+          s1.pli_sent - s0.pli_sent);
+    CHECK(xn_pc() != NULL, "PeerConnection kept");
+
+    /* -- same game again: back at once, same session, PLI -- */
+    CHECK(xn_resume("SEAOFTHIEVES") == XN_OK, "xn_resume SEAOFTHIEVES");
+    uint64_t back = ka_wait_video(3000);
+    fprintf(stderr, "    resume: first AU %llu ms after A, idr=%d\n", (unsigned long long)back, g_ka_idr_first);
+    CHECK(back > 0 && back < 2000, "video back in %llu ms", (unsigned long long)back);
+    CHECK(g_ka_idr_first == 1, "the first AU after the resume is an IDR (%d)", g_ka_idr_first);
+    aus = ka_game(3000);
+    xcw_stats_t s2;
+    ka_stats(&s2);
+    int nsess1, nplay1;
+    gssv_sess_t ga2 = ka_sess(ia, &nsess1, &nplay1);
+    CHECK(aus > 45, "game A again (%d AUs)", aus);
+    CHECK(nsess1 == nsess0 && nplay1 == nplay0 && ga2.n_delete == 0, "same xCloud session (no /play, no DELETE)");
+    CHECK(s2.pli_sent > s1.pli_sent && s2.keyframe_requests > s1.keyframe_requests, "PLI on resume (+%u)",
+          s2.pli_sent - s1.pli_sent);
+    CHECK(xn_session(NULL, 0, NULL, 0) == XN_SESS_PLAYING, "PLAYING again");
+
+    /* -- Back+Start, then ANOTHER game: DELETE of A before /play of B -- */
+    ka_back_start();
+    uint64_t ts = xcw_now_ms();
+    xn_stop();   /* main.c: A on another title = encerra a aberta, PLAY quando xn_can_play */
+    CHECK(xn_session(NULL, 0, NULL, 0) == XN_SESS_ENDING, "ENDING after xn_stop");
+    CHECK(wait_can_play(25000) == 0, "A closed in %.1f s", (xcw_now_ms() - ts) / 1000.0);
+    CHECK(wait_pid(pa, 15000) == 0, "pion A finished after DELETE");
+    pthread_mutex_lock(&g_gssv.mu);
+    snprintf(g_gssv.next_dir, sizeof(g_gssv.next_dir), "%s", dir2);
+    int ib = g_gssv.nsess;
+    pthread_mutex_unlock(&g_gssv.mu);
+    pid_t pb = spawn_pion(pion, dir2, h264, 150);
+    CHECK(xn_play("GEARS5", "Gears 5", 0) == XN_OK, "xn_play GEARS5");
+    CHECK(ka_wait_video(60000) > 0, "video of game B (%s)", g_mm.state_text);
+    {
+        int pd = -1, pp = -1;
+        pthread_mutex_lock(&g_gssv.mu);
+        for (int i = 0; i < g_gssv.nev; i++) {
+            if (g_gssv.ev_kind[i] == 'D' && g_gssv.ev_sess[i] == ia && pd < 0) pd = i;
+            if (g_gssv.ev_kind[i] == 'P' && g_gssv.ev_sess[i] == ib && pp < 0) pp = i;
+        }
+        pthread_mutex_unlock(&g_gssv.mu);
+        CHECK(pd >= 0 && pp > pd, "DELETE of A (ev %d) before the /play of B (ev %d)", pd, pp);
+    }
+    gssv_sess_t ga3 = ka_sess(ia, NULL, NULL);
+    CHECK(ga3.n_delete == 1, "A deleted once (%d)", ga3.n_delete);
+    aus = ka_game(3000);
+    CHECK(aus > 45, "game B streamed (%d AUs)", aus);
+
+    /* -- Back+Start, then the xCloud ends B while it sits in the menu -- */
+    ka_back_start();
+    int nsess2, nplay2;
+    ka_sess(ib, &nsess2, &nplay2);
+    pthread_mutex_lock(&g_gssv.mu);
+    g_gssv.ka_gone = ib + 1;
+    pthread_mutex_unlock(&g_gssv.mu);
+    fprintf(stderr, "    >>> server ends the paused session (keepalive 404)\n");
+    ts = xcw_now_ms();
+    int st = -1;
+    while (xcw_now_ms() - ts < 25000) {
+        poll_state();
+        st = xn_session(NULL, 0, NULL, 0);   /* main.c calls it every menu loop: reaps */
+        if (st == XN_SESS_NONE) break;
+        usleep(10000);
+    }
+    poll_state();
+    fprintf(stderr, "    paused session gone after %.1f s: %s\n", (xcw_now_ms() - ts) / 1000.0, g_mm.state_text);
+    CHECK(st == XN_SESS_NONE, "state back to no session (%d)", st);
+    CHECK(xn_can_play() && xn_pc() == NULL, "nothing left running");
+    CHECK(g_mm.state == MM_ST_ERROR && strstr(g_mm.state_text, "encerrada pelo servidor"),
+          "menu says the xCloud ended it (%s: %s)", g_mm.state_code, g_mm.state_text);
+    int nsess3, nplay3;
+    ka_sess(ib, &nsess3, &nplay3);
+    CHECK(nsess3 == nsess2 && nplay3 == nplay2, "no new session opened by itself (%d/%d)", nsess3 - nsess2,
+          nplay3 - nplay2);
+    pthread_mutex_lock(&g_gssv.mu);
+    g_gssv.ka_gone = 0;
+    pthread_mutex_unlock(&g_gssv.mu);
+    CHECK(wait_pid(pb, 15000) == 0, "pion B finished");
+
+    /* -- B again: a new session, normally -- */
+    pthread_mutex_lock(&g_gssv.mu);
+    snprintf(g_gssv.next_dir, sizeof(g_gssv.next_dir), "%s", dir3);
+    int ic = g_gssv.nsess;
+    pthread_mutex_unlock(&g_gssv.mu);
+    pid_t pc = spawn_pion(pion, dir3, h264, 120);
+    CHECK(xn_resume("GEARS5") == XN_EBUSY, "nothing to resume");
+    CHECK(xn_play("GEARS5", "Gears 5", 0) == XN_OK, "xn_play GEARS5 again");
+    CHECK(ka_wait_video(60000) > 0, "video of the new B session (%s)", g_mm.state_text);
+    aus = ka_game(2000);
+    CHECK(aus > 30, "new B session streamed (%d AUs)", aus);
+    g_forward = 0;
+    g_neutral_req = 1;
+    usleep(20000);
+    xn_stop();
+    usleep(30000);
+    dec_close();
+    CHECK(wait_can_play(25000) == 0, "final teardown");
+    gssv_sess_t gc = ka_sess(ic, NULL, NULL);
+    CHECK(ic == ib + 1 && gc.n_delete == 1, "one new session for the new PLAY, deleted at the end");
+    CHECK(wait_pid(pc, 15000) == 0, "pion C finished");
+}
+
 int main(int argc, char **argv) {
     const char *base = NULL, *pion = NULL, *h264 = NULL, *cert = NULL, *key = NULL;
     int secs = 12;
@@ -609,6 +917,8 @@ int main(int argc, char **argv) {
     play_game(base, 1, pion, h264, secs, "FORZAHORIZON5", "Forza Horizon 5", SC_401);
     cancel_in_queue(base, 2);
     play_game(base, 3, pion, h264, secs, "STARFIELD", "Starfield", SC_CLOSES);
+    power_in_queue(base, 4);   /* v0.19.3 */
+    keep_session(base, 5, pion, h264);   /* v0.19.3: s5..s7 */
 
     g_run = 0;
     pthread_join(th, NULL);
@@ -619,13 +929,13 @@ int main(int argc, char **argv) {
     for (const char *p = log; !leak && (p = strstr(p, "GS-")) != NULL; p += 3)
         if (p[3] >= '0' && p[3] <= '9') leak = 1;
     CHECK(!leak, "no token in any log line");
-    CHECK(!strncmp(rt_token(), "FAKE-REFRESH-", 13) && atoi(rt_token() + 13) == 4,
+    CHECK(!strncmp(rt_token(), "FAKE-REFRESH-", 13) && atoi(rt_token() + 13) == 8,
           "refresh token rotated and saved once per session + once for the forced 401 (%s)", "TOKEN.TXT");
     {
         int full = log_count("(cpu ");
         fprintf(stderr, "    [tls] handshake lines in the app log: %d\n", full);
     }
-    CHECK(g_gssv.n_play == 3, "3 /play total (%d)", g_gssv.n_play);
+    CHECK(g_gssv.n_play == 7, "7 /play total (%d)", g_gssv.n_play);   /* keep phase: A, B, B again (resume = none) */
     fprintf(stderr, "### standalone E2E: %d checks, %d failed\n", g_checks, g_fail);
     printf("STANDALONE E2E %s (%d checks, %d failed)\n", g_fail ? "FAILED" : "PASSED", g_checks, g_fail);
     return g_fail ? 1 : 0;

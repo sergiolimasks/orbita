@@ -1,0 +1,136 @@
+{#- Casca do app (admin + área do testador): sidebar fixa, topbar com breadcrumb, idioma e usuário. -#}
+{%- from "_ui.html" import toasts with context -%}
+{%- set is_admin = user and user.role == 'admin' -%}
+{%- set ep = request.endpoint or '' -%}
+{%- set nc = nav_counts() if user else {} -%}
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ brand.name }}{% endblock %} — {{ brand.name }}</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#161719">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_ico) }}" sizes="any">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_svg) }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename=brand.favicon_png) }}">
+<link rel="stylesheet" href="{{ url_for('public.brand_css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ asset_v }}">
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_v }}" defer></script>
+</head>
+<body data-t-copied="{{ _('common.copied') }}" data-t-confirm="{{ _('common.confirm') }}" data-t-confirm-ok="{{ _('ui.confirm_ok') }}"
+      data-t-remove="{{ _('ui.remove') }}" data-t-err-type="{{ _('rep.err_type') }}" data-t-err-size="{{ _('rep.err_size', mb=8) }}"
+      data-t-err-count="{{ _('rep.err_count', n=4) }}" data-t-matches="{{ _('ui.matches') }}">
+<a class="skip" href="#main">{{ _('ui.skip') }}</a>
+<div class="app">
+  <aside class="sidebar" id="sidebar" aria-label="{{ _('ui.nav') }}">
+    <div class="sb-head">
+      <a class="logo" href="{{ url_for('admin.overview' if is_admin else 'tester.area') }}"><img src="{{ url_for('static', filename=brand.logo) }}" alt="{{ brand.logo_alt }}" width="98" height="26"></a>
+      <span class="env">{{ _('ui.env_beta') }}</span>
+      <button type="button" class="btn ghost icon-only sb-close" data-nav-close aria-label="{{ _('ui.close_menu') }}">{{ icon('x', 18) }}</button>
+    </div>
+    <nav class="sb-nav">
+      {%- macro sb_link(endpoint, ico, label, active, count=None, hot=False, href=None) -%}
+      <a class="sb-link" href="{{ href or url_for(endpoint) }}"{% if active %} aria-current="page"{% endif %}>{{ icon(ico, 18) }}<span>{{ label }}</span>{% if count %}<span class="count{{ ' hot' if hot }}">{{ count }}</span>{% endif %}</a>
+      {%- endmacro -%}
+      {% if is_admin %}
+        <div class="sb-section">{{ _('ui.sec_admin') }}</div>
+        {{ sb_link('admin.overview', 'dashboard', _('adm.overview'), ep == 'admin.overview') }}
+        {{ sb_link('admin.testers', 'users', _('adm.testers'), ep.startswith('admin.tester'), nc.blocked_keys, True, href=url_for('admin.testers', status='blocked') if nc.blocked_keys else None) }}
+        {{ sb_link('admin.invites', 'mail', _('adm.invites'), ep.startswith('admin.invite'), nc.invites) }}
+        {{ sb_link('admin.reports', 'bug', _('adm.reports'), ep.startswith('admin.report'), nc.new_reports, True) }}
+        {{ sb_link('admin.logs', 'terminal', _('adm.logs'), ep in ('admin.logs', 'admin.log_view')) }}
+        {{ sb_link('admin.versions', 'package', _('adm.versions'), ep in ('admin.versions',), nc.promotions, True) }}
+        <div class="sb-section">{{ _('ui.sec_public') }}</div>
+        {{ sb_link('admin.features', 'layers', _('ft.nav'), ep.startswith('admin.feature')) }}
+        {{ sb_link('admin.notes', 'file', _('rn.nav'), ep.startswith('admin.note')) }}
+        <div class="sb-section">{{ _('ui.sec_tester') }}</div>
+        {{ sb_link('tester.area', 'home', _('ui.tester_home'), ep == 'tester.area') }}
+      {% else %}
+        <div class="sb-section">{{ _('ui.sec_beta') }}</div>
+        {{ sb_link('tester.area', 'home', _('ui.home'), ep in ('tester.area', 'tester.key_regen', 'auth.signup')) }}
+        {{ sb_link('tester.report_form', 'flag', _('ui.report_bug'), ep in ('tester.report_form', 'tester.report_new')) }}
+        {{ sb_link('tester.reports', 'inbox', _('area.myreports'), ep in ('tester.reports', 'tester.report_detail'), nc.my_open) }}
+      {% endif %}
+      <div class="sb-section">{{ _('ui.sec_more') }}</div>
+      {{ sb_link('public.status', 'activity', _('st.nav'), False) }}
+      {{ sb_link('public.home', 'globe', _('ui.public_site'), False) }}
+    </nav>
+    <div class="sb-foot">
+      {% if nc.beta %}
+      <div class="sb-card">
+        <span class="muted xs">{{ _('ui.latest_beta') }}</span>
+        <b class="mono">{{ nc.beta }}</b>
+      </div>
+      {% endif %}
+    </div>
+  </aside>
+  <div class="scrim" data-nav-close></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button type="button" class="btn ghost icon-only menu-btn" data-nav-open aria-controls="sidebar" aria-expanded="false" aria-label="{{ _('ui.open_menu') }}">{{ icon('menu', 20) }}</button>
+      <nav class="crumbs" aria-label="{{ _('ui.breadcrumb') }}">
+        <span class="c-parent">{{ _('ui.sec_admin') if is_admin and ep.startswith('admin.') else _('ui.sec_beta') }}</span>
+        {% block crumbs %}{% endblock %}
+      </nav>
+      <div class="top-actions">
+        <details class="dd">
+          <summary class="lang-btn" aria-label="{{ _('ui.language') }}">{{ icon('globe', 16) }}<span class="lbl">{{ LANG_LABEL[lang] }}</span>{{ icon('chevron-down', 14) }}</summary>
+          <div class="dd-menu" role="menu">
+            {% for l in LANGS %}<a class="dd-item" role="menuitem" href="?{{ query_with(lang=l) }}" hreflang="{{ l }}" aria-current="{{ 'true' if l == lang else 'false' }}">{{ LANG_NAME[l] }}</a>{% endfor %}
+          </div>
+        </details>
+        {% if user %}
+        <details class="dd">
+          <summary class="user-btn" aria-label="{{ _('ui.account') }}">
+            <span class="avatar {{ 'v1' if is_admin }}" aria-hidden="true">{{ initials(user.name) }}</span>
+            <span class="who"><b>{{ user.name }}</b><span>{{ _('ui.role_admin') if is_admin else _('ui.role_tester') }}</span></span>
+            {{ icon('chevron-down', 14) }}
+          </summary>
+          <div class="dd-menu" role="menu">
+            <div class="dd-head"><b>{{ user.name }}</b><span class="muted xs">{{ user.email }}</span></div>
+            {% if is_admin %}<a class="dd-item" role="menuitem" href="{{ url_for('admin.overview') }}">{{ icon('dashboard') }}{{ _('nav.admin') }}</a>{% endif %}
+            <a class="dd-item" role="menuitem" href="{{ url_for('tester.area') }}">{{ icon('home') }}{{ _('ui.tester_home') }}</a>
+            <a class="dd-item" role="menuitem" href="{{ url_for('public.home') }}">{{ icon('external') }}{{ _('ui.public_site') }}</a>
+            <div class="dd-sep"></div>
+            <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="dd-item danger" role="menuitem">{{ icon('logout') }}{{ _('nav.logout') }}</button></form>
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </header>
+    <main id="main" class="content{% block content_class %}{% endblock %}" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="app-foot"><img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="18" height="18"><span>{{ brand.name }} · {{ _('ui.unofficial') }}</span></footer>
+  </div>
+</div>
+
+{{ toasts() }}
+
+<dialog class="modal" id="confirm-dialog" aria-labelledby="cd-title">
+  <div class="modal-head">
+    <span class="m-ico">{{ icon('alert', 20) }}</span>
+    <div><h2 id="cd-title" data-cd-title>{{ _('common.confirm') }}</h2><p data-cd-text></p></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn secondary" data-close>{{ _('common.cancel') }}</button>
+    <button type="button" class="btn primary" data-cd-ok>{{ _('ui.confirm_ok') }}</button>
+  </div>
+</dialog>
+
+<dialog class="lightbox" id="lightbox" aria-label="{{ _('adm.photos') }}">
+  <div class="lb">
+    <div class="lb-top"><span data-lb-cap></span>
+      <span class="row"><a class="btn ghost sm" data-lb-raw href="#" target="_blank" rel="noopener">{{ icon('external', 14) }}<span>{{ _('ui.open_original') }}</span></a>
+      <button type="button" class="btn ghost icon-only" data-close aria-label="{{ _('ui.close') }}">{{ icon('x', 20) }}</button></span></div>
+    <div class="lb-stage"><img data-lb-img alt=""></div>
+    <button type="button" class="btn secondary icon-only lb-nav lb-prev" data-lb-prev aria-label="{{ _('ui.prev') }}">{{ icon('chevron-left', 20) }}</button>
+    <button type="button" class="btn secondary icon-only lb-nav lb-next" data-lb-next aria-label="{{ _('ui.next') }}">{{ icon('chevron-right', 20) }}</button>
+    <div class="lb-strip" data-lb-strip></div>
+  </div>
+</dialog>
+<template id="tpl-toast-icon">{{ icon('check-circle', 18) }}</template>
+</body>
+</html>

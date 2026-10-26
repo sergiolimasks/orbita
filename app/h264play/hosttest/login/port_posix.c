@@ -32,7 +32,9 @@ uint64_t xcn_now_ms(void) {
 }
 
 void xcn_sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
-int  xcn_cancelled(void) { return 0; }
+static int (*g_cancel_hook)(void) = 0;
+void xcn_set_cancel_hook(int (*fn)(void)) { g_cancel_hook = fn; }
+int  xcn_cancelled(void) { return g_cancel_hook ? g_cancel_hook() : 0; }
 
 void xc_log(const char *fmt, ...) {
     va_list ap;
@@ -87,6 +89,10 @@ int xc_store_save(const char *name, const void *buf, size_t n) {
     char p[512];
     mkdir(store_dir(), 0700);
     snprintf(p, sizeof(p), "%s/%s", store_dir(), name);
+    {   /* "COVERS/X.JPG": cria a subpasta, como o xc_port_xenon.c */
+        char *sl = strrchr(p, '/');
+        if (sl && strchr(name, '/')) { *sl = 0; mkdir(p, 0700); *sl = '/'; }
+    }
     FILE *f = fopen(p, "wb");
     if (!f) return -1;
     size_t w = fwrite(buf, 1, n, f);

@@ -1,0 +1,17 @@
+{
+  "name": "xcloud360-telemetry",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker ingesting XCloud360 beta telemetry into R2",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail",
+    "secrets:set": "wrangler secret put API_KEY_V0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.3.0",
+    "wrangler": "^3.80.0"
+  }
+}

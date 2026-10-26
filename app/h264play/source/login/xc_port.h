@@ -52,8 +52,13 @@ int      xcn_try_recv(int h, uint8_t *b, size_t n);
 void     xcn_close_nb(int h);
 /* 1 se o usuário cancelou (o login aborta no próximo ponto de espera). */
 int      xcn_cancelled(void);
+/* Gancho extra pro xcn_cancelled (NULL = nenhum): xc_catalog o usa pra
+ * interromper o pedido em voo quando o main manda parar a thread das capas.
+ * Xbox: login_task.c; host: port_posix.c. */
+void     xcn_set_cancel_hook(int (*fn)(void));
 
-/* Log de diagnóstico: tela + UDP "LOG ..." pro PC. NUNCA passar tokens. */
+/* Log de diagnóstico: UART + buffer do upload beta (xc_logup.h; v0.20.1,
+ * antes UDP :9003 pro PC). NUNCA passar tokens (o filtro é só a 2a linha). */
 void     xc_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /* Hora Unix atual, ou -1 se ainda não sabemos. */

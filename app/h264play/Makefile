@@ -20,7 +20,8 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.19.2
+VERSION := 0.20.5
+APP_VERSION := $(VERSION)
 # v0.15: nome da variante no VERSION (ex.: make VARIANT=full -> 0.15.0-full).
 # Vazio = sufixos automaticos pelos knobs (-gpu/-cpu, -altivec/-c, -st, -trace).
 VARIANT ?=
@@ -43,63 +44,48 @@ RSTICK_EXPO ?= 1.5
 # v0.14.2: 1 = decoder pula o filtro de deblocking (mais rápido, mais blocado).
 SKIP_DEBLOCK ?= 0
 
-# v0.16: 1 = boota no menu de jogos (source/ctrl_conn.c, menu_model.c,
-# menu_ui.c): conexão de controle TCP :9002 com o launcher do PC, escolhe o
-# jogo, Back+Start 2s no jogo volta pro menu. 0 = fluxo da v0.15 (direto pro
-# stream :9000 + fallback embutido). Trocar MENU exige `make clean`.
-MENU ?= 1
-ifeq ($(MENU),1)
-MENU_CFLAGS := -DXCLOUD360_MENU=1
-endif
+# v0.20.0: o app só funciona nativo. Os knobs MENU / XUI / XBOX_LOGIN /
+# STANDALONE saíram (eram o caminho pelo PC: launcher :9002, vídeo TCP :9000,
+# áudio UDP :9004, controle UDP :9001; e o menu de texto). Sempre:
+#   - menu novo (source/ui, MENU-UI.md) + catálogo/capas (source/catalog,
+#     CATALOG-COVERS.md);
+#   - login Microsoft/Xbox no Xbox (source/login: DNS + TLS 1.2 mbedTLS +
+#     OAuth device code + XSTS + /v2/titles), token no pendrive;
+#   - sessão xCloud (source/session) + WebRTC na thread de rede
+#     (source/webrtc, source/native, ~/webrtc-xenon: deps/webrtc-xenon/build.sh xenon).
+# v0.20.1: o LOG/STAT por UDP :9003 pro PC também saiu: log dos testadores
+# beta por HTTPS (source/login/xc_logup.c, LOGS-UPLOAD.md), chave só no
+# pendrive (XC360/BETAKEY.TXT) — nada de chave na build.
+SOURCES  += source/ui source/catalog source/login source/login/fatfs source/login/cjson \
+            source/session source/webrtc source/native
+# v0.20.1: atualização pelo próprio Xbox (UPDATE.md)
+SOURCES  += source/update
+# v0.20.3: chave beta presa ao console (source/beta, BETA-GATE.md).
+# BETA=1 (padrão): chave OBRIGATÓRIA no boot (teclado na tela, /v1/beta/check
+# com X-Console). BETA=0 = versão estável pública: sem chave, sem tela.
+# Trocar BETA exige `make clean`.
+BETA ?= 1
+SOURCES  += source/beta
+# fonte Inter rasterizada + ícones (tools/gen_xui_assets.py, python3 + Pillow)
+XUI_ASSETS := $(APP_ROOT)/source/ui/xui_assets.h
 
-# v0.17: 1 = o Xbox faz o login Microsoft/Xbox e baixa o catalogo xCloud
-# sozinho por HTTPS (source/login/: DNS proprio + TLS 1.2 mbedTLS + OAuth device
-# code + XSTS + /v2/titles + displaycatalog), token no pendrive (XC360/TOKEN.TXT).
-# O PLAY continua indo pro launcher do PC. 0 = comportamento exato da v0.16.
-# So vale com MENU=1. Precisa de ~/mbedtls-xenon (deps/build-mbedtls-xenon.sh).
-# Trocar XBOX_LOGIN exige `make clean`.
-XBOX_LOGIN ?= 1
-ifeq ($(MENU),1)
-ifeq ($(XBOX_LOGIN),1)
-MBEDTLS_DIR  ?= $(HOME)/mbedtls-xenon
-LOGIN_CFLAGS := -DXCLOUD360_LOGIN=1 -I$(MBEDTLS_DIR)/include \
-                -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_config.h\" \
-                -DXC_BUILD_EPOCH=$(shell date +%s)LL
-LOGIN_LIBS   := -L$(MBEDTLS_DIR) -lmbedtls-xc360
-SOURCES      += source/login source/login/fatfs source/login/cjson
-endif
-endif
-
-# v0.19 (stage 5): 1 = o Xbox joga SEM PC. PLAY (A) abre a sessão xCloud
-# pelo próprio Xbox (source/session: /play, fila, /sdp, /ice, keepalive,
-# DELETE — HTTPS na hw SESSION_HW) e roda o WebRTC na thread de rede hw 1
-# (source/webrtc + ~/webrtc-xenon: ICE/DTLS-SRTP/SCTP, jitter+NACK, canais),
-# alimentando o mesmo decoder/GPU, o áudio Opus e o controle. RT+A no menu =
-# caminho antigo pelo PC (capture-rtp/launcher). Só vale com MENU=1 e
-# XBOX_LOGIN=1 (o token vem do login do Xbox). 0 = exatamente a v0.18.2 (com
-# o número de versão novo). Precisa de deps/webrtc-xenon/build.sh xenon.
-# Trocar STANDALONE ou qualquer knob abaixo exige `make clean`.
-STANDALONE ?= 1
 # Thread de hardware da sessão (HTTPS) ANTES do jogo (login, /play, fila,
 # SDP/ICE). v0.19.2: no jogo as fases ao vivo (keepalive, ICE, eventos) rodam
 # na thread de rede (hw1, não-bloqueante, conexão keep-alive) e esta hw volta
-# pro decoder: NATIVE_DEC_THREADS = 4 (hw 4,2,5,3). Re-login/handshake
-# completo/re-sinalização no meio do jogo emprestam a hw de novo (decoder
-# reabre com 3 e volta pra 4). Ver STANDALONE-STAGE5.md.
+# pro decoder: NATIVE_DEC_THREADS = 4 (hw 4,2,5,3). Ver STANDALONE-STAGE5.md.
 SESSION_HW ?= 3
 NATIVE_DEC_THREADS ?= 4
-# Teto de vídeo no offer (b=AS/b=TIAS) + REMB + maxBitrate: o do launcher.
+# Teto de vídeo no offer (b=AS/b=TIAS) + REMB + maxBitrate.
 NATIVE_KBPS ?= 1500
-# /keepalive (capture-rtp 5000; o green-nx usa 15000). v0.19.2: na conexão keep-alive (sem handshake).
+# /keepalive (o green-nx usa 15000). v0.19.2: na conexão keep-alive.
 SESSION_KEEPALIVE_MS ?= 5000
-# Checagens de consentimento ICE nossas (0 = capture-rtp; 2500 se o xCloud
+# Checagens de consentimento ICE nossas (0 = desligado; 2500 se o xCloud
 # derrubar a chamada em ~10 s, ver WEBRTC-STAGE4.md "Consent").
 NATIVE_CONSENT_MS ?= 0
-ifeq ($(MENU),1)
-ifeq ($(XBOX_LOGIN),1)
-ifeq ($(STANDALONE),1)
 WEBRTC_DIR   ?= $(HOME)/webrtc-xenon/xenon
 # Um mbedTLS só no ELF: o do WebRTC (superconjunto da config do login).
+# XCLOUD360_LOGIN/SESSION/WEBRTC/NATIVE continuam definidos porque o código
+# compartilhado com os hosttests ainda testa essas macros.
 LOGIN_CFLAGS := -DXCLOUD360_LOGIN=1 -I$(WEBRTC_DIR)/include \
                 -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_webrtc_config.h\" \
                 -DXC_BUILD_EPOCH=$(shell date +%s)LL \
@@ -107,20 +93,17 @@ LOGIN_CFLAGS := -DXCLOUD360_LOGIN=1 -I$(WEBRTC_DIR)/include \
                 -DXST_HW_THREAD=$(SESSION_HW) -DXCLOUD360_NATIVE_DEC_THREADS=$(NATIVE_DEC_THREADS) \
                 -DXCLOUD360_NATIVE_KBPS=$(NATIVE_KBPS) -DXCLOUD360_SESSION_KEEPALIVE_MS=$(SESSION_KEEPALIVE_MS) \
                 -DXCLOUD360_NATIVE_CONSENT_MS=$(NATIVE_CONSENT_MS) \
-                -I$(APP_ROOT)/source/session -I$(APP_ROOT)/source/webrtc
+                -DXCLOUD360_APP_VERSION=\"v$(APP_VERSION)\" \
+                -I$(APP_ROOT)/source -I$(APP_ROOT)/source/session -I$(APP_ROOT)/source/webrtc
 LOGIN_LIBS   := -L$(WEBRTC_DIR)/lib -Wl,--start-group -lpeer-xc -lusrsctp-xc -lsrtp2-xc -lmbedtls-xcwebrtc \
                 -lxenon -lm -lc -Wl,--end-group
-SOURCES      += source/session source/webrtc source/native
 # usrsctp precisa de pthread mutex/cond mesmo com DECODE_THREADS=1
 NATIVE_PTHREAD := 1
-endif
-endif
-endif
 
-# v0.18: 1 = áudio do jogo. O capture-rtp manda cada pacote Opus do xCloud
-# por UDP pra :9004 do Xbox; a thread de rede (hw 1) põe num ring lock-free,
-# e o hook dela faz jitter buffer + PLC + drift + decode libopus + xenon_sound
-# (source/audio/, hosttest/audio/). X no menu = teste com tom embutido, sem PC.
+# v0.18: 1 = áudio do jogo. O WebRTC (hw 1) entrega cada pacote Opus num
+# ring lock-free, e o hook da rede faz jitter buffer + PLC + drift + decode
+# libopus + xenon_sound (source/audio/, hosttest/audio/). X no menu = teste
+# com tom embutido. v0.20.0: o caminho UDP :9004 (áudio do PC) saiu.
 # 0 = comportamento exato da v0.17.1. Precisa de ~/opus-xenon
 # (deps/build-opus-xenon.sh). Trocar AUDIO/OPUS_FIXED exige `make clean`.
 AUDIO ?= 1
@@ -218,7 +201,7 @@ CFLAGS   := -g -O2 -Wall $(MACHDEP) $(INCLUDE) -I$(FFMPEG_DIR) \
             -DRSTICK_GAIN=$(RSTICK_GAIN)f -DRSTICK_EXPO=$(RSTICK_EXPO)f \
             -DXCLOUD360_SKIP_DEBLOCK=$(SKIP_DEBLOCK) \
             -DXCLOUD360_DECODE_THREADS=$(DECODE_THREADS) $(MT_CFLAGS) \
-            $(GPU_CFLAGS) $(MENU_CFLAGS) $(LOGIN_CFLAGS) $(AUDIO_CFLAGS)
+            $(GPU_CFLAGS) $(LOGIN_CFLAGS) $(AUDIO_CFLAGS) -DXCLOUD360_BETA=$(BETA)
 CXXFLAGS := $(CFLAGS)
 LDFLAGS  := -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map \
             -L$(FFMPEG_DIR)/libavcodec -L$(FFMPEG_DIR)/libavutil $(GPU_LDFLAGS)
@@ -262,9 +245,17 @@ export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
 .PHONY: $(BUILD) clean embedded all
 all: $(BUILD)
 
-$(BUILD):
+$(BUILD): $(XUI_ASSETS)
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+# v0.20: fonte Inter rasterizada + ícones do menu novo.
+$(APP_ROOT)/source/ui/xui_assets.h: $(APP_ROOT)/tools/gen_xui_assets.py $(APP_ROOT)/../../brand/png/orbita-horizontal-256h.png
+	python3 -I $< $@
+
+.PHONY: ui-assets
+ui-assets:
+	python3 -I $(APP_ROOT)/tools/gen_xui_assets.py $(APP_ROOT)/source/ui/xui_assets.h
 
 # Regenerate the embedded H.264 stream (gitignored). Run once after clone.
 embedded:

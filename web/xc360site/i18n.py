@@ -1,0 +1,341 @@
+"""Traduções pt-BR / en / es. Cada chave: (pt-BR, en, es). {name} = nome da marca."""
+from flask import g, request
+
+LANGS = ("pt-BR", "en", "es")
+LANG_LABEL = {"pt-BR": "PT", "en": "EN", "es": "ES"}
+LANG_NAME = {"pt-BR": "Português (Brasil)", "en": "English", "es": "Español"}
+DEFAULT = "en"
+
+M = {
+    # ---- navegação / comum
+    "nav.login": ("Entrar", "Log in", "Entrar"),
+    "nav.logout": ("Sair", "Log out", "Salir"),
+    "nav.area": ("Minha área", "My area", "Mi área"),
+    "nav.admin": ("Painel", "Dashboard", "Panel"),
+    "nav.home": ("Início", "Home", "Inicio"),
+    "common.save": ("Salvar", "Save", "Guardar"),
+    "common.cancel": ("Cancelar", "Cancel", "Cancelar"),
+    "common.back": ("Voltar", "Back", "Volver"),
+    "common.copy": ("Copiar", "Copy", "Copiar"),
+    "common.copied": ("Copiado!", "Copied!", "¡Copiado!"),
+    "common.none": ("Nada por aqui ainda.", "Nothing here yet.", "Nada por aquí todavía."),
+    "common.filter": ("Filtrar", "Filter", "Filtrar"),
+    "common.all": ("Todos", "All", "Todos"),
+    "common.yes": ("Sim", "Yes", "Sí"),
+    "common.no": ("Não", "No", "No"),
+    "common.date": ("Data", "Date", "Fecha"),
+    "common.actions": ("Ações", "Actions", "Acciones"),
+    "common.beta": ("Beta fechada", "Closed beta", "Beta cerrada"),
+    "common.confirm": ("Tem certeza?", "Are you sure?", "¿Seguro?"),
+    "footer.text": ("{name} é um projeto independente e não oficial, sem vínculo com a Microsoft. "
+                    "Xbox, Xbox 360, Xbox Cloud Gaming e Game Pass são marcas da Microsoft, citadas só para descrever compatibilidade.",
+                    "{name} is an independent, unofficial project with no affiliation with Microsoft. "
+                    "Xbox, Xbox 360, Xbox Cloud Gaming and Game Pass are Microsoft trademarks, mentioned only to describe compatibility.",
+                    "{name} es un proyecto independiente y no oficial, sin vínculo con Microsoft. "
+                    "Xbox, Xbox 360, Xbox Cloud Gaming y Game Pass son marcas de Microsoft, citadas solo para describir compatibilidad."),
+
+    # ---- home
+    "home.title": ("Jogos na nuvem no seu Xbox 360", "Cloud gaming on your Xbox 360", "Juegos en la nube en tu Xbox 360"),
+    "home.lead": ("{name} é um cliente nativo e não oficial de cloud gaming que roda direto no Xbox 360 desbloqueado (RGH). "
+                  "Entre com a sua conta, escolha um jogo do catálogo da nuvem e jogue com o controle do 360.",
+                  "{name} is a native, unofficial cloud gaming client that runs directly on a modded (RGH) Xbox 360. "
+                  "Sign in with your account, pick a game from the cloud catalog and play with your 360 controller.",
+                  "{name} es un cliente nativo y no oficial de juegos en la nube que corre directo en la Xbox 360 desbloqueada (RGH). "
+                  "Inicia sesión con tu cuenta, elige un juego del catálogo en la nube y juega con el control de la 360."),
+    "home.download": ("Baixar versão estável", "Download stable version", "Descargar versión estable"),
+    "home.soon": ("Versão estável em breve", "Stable version coming soon", "Versión estable muy pronto"),
+    "home.version": ("Versão {v}", "Version {v}", "Versión {v}"),
+    "home.tester": ("Sou testador", "I'm a tester", "Soy tester"),
+    "home.screens": ("Como é", "What it looks like", "Cómo se ve"),
+    "home.screens_note": ("Telas do menu do app rodando no console.", "Screens of the app menu running on the console.",
+                          "Pantallas del menú de la app en la consola."),
+    "home.req_title": ("Requisitos", "Requirements", "Requisitos"),
+    "home.req": (["Xbox 360 com RGH/JTAG que inicie o XeLL", "Cabo de rede (Ethernet) ligado ao roteador — Wi-Fi não é suportado",
+                  "Conta Microsoft com assinatura Xbox Game Pass Ultimate ativa", "Pendrive formatado em FAT32",
+                  "Internet estável (10 Mb/s ou mais recomendado)"],
+                 ["Xbox 360 with RGH/JTAG that boots XeLL", "Network cable (Ethernet) to your router — Wi-Fi is not supported",
+                  "Microsoft account with an active Xbox Game Pass Ultimate subscription", "USB stick formatted as FAT32",
+                  "Stable internet (10 Mb/s or more recommended)"],
+                 ["Xbox 360 con RGH/JTAG que inicie XeLL", "Cable de red (Ethernet) conectado al router — no se admite Wi-Fi",
+                  "Cuenta Microsoft con suscripción Xbox Game Pass Ultimate activa", "Memoria USB en FAT32",
+                  "Internet estable (10 Mb/s o más recomendado)"]),
+    "home.install_title": ("Instalação", "Installation", "Instalación"),
+    "home.install": (["Baixe o arquivo xenon.elf da versão estável (botão no topo da página).",
+                      "Copie o xenon.elf para a raiz de um pendrive FAT32.",
+                      "Ligue o cabo de rede no Xbox e plugue o pendrive.",
+                      "Abra o XeLL: no Aurora, abra o app XeLL Launcher (um XEX, que costuma vir junto do DashLaunch) — ele reinicia o Xbox direto no XeLL. Em alguns RGH também dá pra ligar o console pelo botão de ejetar. Requisito: XeLL Reloaded v0.993 ou mais novo — o XeLL Launcher carrega o arquivo xell.bin que fica na mesma pasta dele, então dá pra atualizar trocando esse arquivo, sem gravar nada no chip do console. O XeLL encontra o xenon.elf no pendrive e abre o app.",
+                      "Na primeira vez o app mostra um endereço e um código: abra o endereço no celular, digite o código e entre com a conta que tem Game Pass Ultimate.",
+                      "Escolha um jogo no menu e aperte A para jogar."],
+                     ["Download the xenon.elf file of the stable version (button at the top of this page).",
+                      "Copy xenon.elf to the root of a FAT32 USB stick.",
+                      "Plug the network cable into the Xbox and insert the USB stick.",
+                      "Open XeLL: in Aurora, launch the XeLL Launcher app (a XEX that usually comes with DashLaunch) — it reboots the Xbox straight into XeLL. On some RGH setups you can also power on with the eject button. Requirement: XeLL Reloaded v0.993 or newer — XeLL Launcher loads the xell.bin file in its own folder, so you can update it by replacing that file, without flashing the console. XeLL finds xenon.elf on the stick and opens the app.",
+                      "The first time, the app shows an address and a code: open the address on your phone, type the code and sign in with the account that has Game Pass Ultimate.",
+                      "Pick a game in the menu and press A to play."],
+                     ["Descarga el archivo xenon.elf de la versión estable (botón al inicio de la página).",
+                      "Copia xenon.elf a la raíz de una memoria USB en FAT32.",
+                      "Conecta el cable de red a la Xbox e inserta la memoria USB.",
+                      "Abre XeLL: en Aurora, abre la app XeLL Launcher (un XEX que suele venir con DashLaunch) — reinicia la Xbox directo en XeLL. En algunos RGH también puedes encenderla con el botón de expulsar. Requisito: XeLL Reloaded v0.993 o más nuevo — XeLL Launcher carga el archivo xell.bin que está en su misma carpeta, así que puedes actualizarlo cambiando ese archivo, sin grabar nada en el chip de la consola. XeLL encuentra xenon.elf en la memoria y abre la app.",
+                      "La primera vez la app muestra una dirección y un código: abre la dirección en el móvil, escribe el código e inicia sesión con la cuenta que tiene Game Pass Ultimate.",
+                      "Elige un juego en el menú y pulsa A para jugar."]),
+    "home.video_title": ("Vídeo", "Video", "Video"),
+    "home.video_soon": ("O vídeo de demonstração chega em breve.", "The demo video is coming soon.", "El video de demostración llega pronto."),
+    "home.faq_title": ("Perguntas frequentes", "FAQ", "Preguntas frecuentes"),
+    "home.faq": ([("A tela ficou vermelha no XeLL. E agora?", "É o XeLL travado, não o app. Desligue o Xbox, tire da tomada por uns 30 segundos, ligue de novo e tente outra vez."),
+                  ("Funciona em Xbox 360 sem desbloqueio?", "Não. É preciso um console com RGH/JTAG que inicie o XeLL."),
+                  ("Preciso pagar alguma coisa?", "{name} é gratuito. Os jogos vêm do Xbox Cloud Gaming, que exige assinatura Game Pass Ultimate ativa na sua conta."),
+                  ("Funciona no Wi-Fi?", "Não. Use cabo de rede: o app não tem suporte ao Wi-Fi do 360 e o streaming precisa de conexão estável."),
+                  ("Quais controles funcionam?", "Controles do Xbox 360 (até 4). Outros controles estão em teste durante a beta."),
+                  ("Como entro na beta?", "A beta é só por convite. Quem recebe um convite cria a conta pelo link e ganha uma chave beta para digitar no Xbox."),
+                  ("Minha conta pode ter problemas?", "Não há garantia. É um cliente não oficial: use por sua conta e risco (veja o aviso abaixo)."),
+                  ("Onde reporto problemas?", "Testadores reportam pela área do testador, com foto da tela sempre que possível.")],
+                 [("The screen turned red in XeLL. What now?", "That's XeLL hanging, not the app. Turn the Xbox off, unplug it from the wall for about 30 seconds, plug it back in and try again."),
+                  ("Does it work on a stock Xbox 360?", "No. You need an RGH/JTAG console that boots XeLL."),
+                  ("Do I have to pay anything?", "{name} is free. The games come from Xbox Cloud Gaming, which requires an active Game Pass Ultimate subscription on your account."),
+                  ("Does it work over Wi-Fi?", "No. Use a network cable: the app does not support the 360's Wi-Fi and streaming needs a stable connection."),
+                  ("Which controllers work?", "Xbox 360 controllers (up to 4). Other controllers are being tested during the beta."),
+                  ("How do I join the beta?", "The beta is invite-only. Invitees create an account from the link and get a beta key to type on the Xbox."),
+                  ("Can my account get in trouble?", "There are no guarantees. It's an unofficial client: use it at your own risk (see the notice below)."),
+                  ("Where do I report problems?", "Testers report from the tester area, with a photo of the screen whenever possible.")],
+                 [("La pantalla se puso roja en XeLL. ¿Y ahora?", "Es XeLL que se colgó, no la app. Apaga la Xbox, desenchúfala unos 30 segundos, vuelve a enchufarla e inténtalo de nuevo."),
+                  ("¿Funciona en una Xbox 360 sin desbloquear?", "No. Necesitas una consola con RGH/JTAG que inicie XeLL."),
+                  ("¿Tengo que pagar algo?", "{name} es gratis. Los juegos vienen de Xbox Cloud Gaming, que requiere una suscripción Game Pass Ultimate activa en tu cuenta."),
+                  ("¿Funciona por Wi-Fi?", "No. Usa cable de red: la app no admite el Wi-Fi de la 360 y el streaming necesita una conexión estable."),
+                  ("¿Qué controles funcionan?", "Controles de Xbox 360 (hasta 4). Otros controles se están probando durante la beta."),
+                  ("¿Cómo entro en la beta?", "La beta es solo por invitación. Quien recibe una invitación crea la cuenta con el enlace y obtiene una clave beta para escribir en la Xbox."),
+                  ("¿Mi cuenta puede tener problemas?", "No hay garantías. Es un cliente no oficial: úsalo bajo tu propio riesgo (lee el aviso abajo)."),
+                  ("¿Dónde reporto problemas?", "Los testers reportan desde el área de tester, con foto de la pantalla siempre que puedan.")]),
+    "home.risk_title": ("Aviso de risco", "Risk notice", "Aviso de riesgo"),
+    "home.risk": ("{name} é um cliente não oficial, feito de forma independente, sem qualquer vínculo, patrocínio ou aprovação da Microsoft ou do Xbox. "
+                  "Usar consoles modificados e clientes não oficiais pode violar termos de serviço. Você usa por sua conta e risco, inclusive quanto à sua conta e ao seu console. "
+                  "O software é fornecido \"como está\", sem garantia de qualquer tipo.",
+                  "{name} is an unofficial client, built independently, with no affiliation, sponsorship or approval from Microsoft or Xbox. "
+                  "Using modified consoles and unofficial clients may violate terms of service. You use it at your own risk, including regarding your account and your console. "
+                  "The software is provided \"as is\", without warranty of any kind.",
+                  "{name} es un cliente no oficial, hecho de forma independiente, sin ningún vínculo, patrocinio ni aprobación de Microsoft o Xbox. "
+                  "Usar consolas modificadas y clientes no oficiales puede violar términos de servicio. Lo usas bajo tu propio riesgo, incluso respecto a tu cuenta y tu consola. "
+                  "El software se ofrece \"tal cual\", sin garantía de ningún tipo."),
+
+    # ---- login
+    "login.title": ("Entrar", "Log in", "Entrar"),
+    "login.email": ("E-mail", "Email", "Correo electrónico"),
+    "login.password": ("Senha", "Password", "Contraseña"),
+    "login.submit": ("Entrar", "Log in", "Entrar"),
+    "login.invite_only": ("O acesso é só por convite.", "Access is invite-only.", "El acceso es solo por invitación."),
+    "login.error": ("E-mail ou senha inválidos.", "Invalid email or password.", "Correo o contraseña no válidos."),
+    "login.locked": ("Muitas tentativas. Tente de novo em alguns minutos.", "Too many attempts. Try again in a few minutes.",
+                     "Demasiados intentos. Inténtalo de nuevo en unos minutos."),
+    "login.totp_title": ("Verificação em duas etapas", "Two-step verification", "Verificación en dos pasos"),
+    "login.totp_help": ("Digite o código de 6 dígitos do seu app autenticador.", "Enter the 6-digit code from your authenticator app.",
+                        "Escribe el código de 6 dígitos de tu app autenticadora."),
+    "login.totp_code": ("Código", "Code", "Código"),
+    "login.totp_error": ("Código inválido.", "Invalid code.", "Código no válido."),
+    "login.totp_expired": ("A verificação expirou. Entre de novo.", "Verification expired. Log in again.", "La verificación expiró. Entra de nuevo."),
+
+    # ---- cadastro por convite
+    "signup.title": ("Criar sua conta de testador", "Create your tester account", "Crea tu cuenta de tester"),
+    "signup.intro": ("Você foi convidado para a beta do {name}. Preencha seus dados para entrar.",
+                     "You've been invited to the {name} beta. Fill in your details to join.",
+                     "Te invitaron a la beta de {name}. Completa tus datos para entrar."),
+    "signup.name": ("Nome", "Name", "Nombre"),
+    "signup.phone": ("Telefone (com código do país)", "Phone (with country code)", "Teléfono (con código de país)"),
+    "signup.country": ("País onde você mora", "Country where you live", "País donde vives"),
+    "signup.choose": ("Escolha…", "Choose…", "Elige…"),
+    "signup.password2": ("Repita a senha", "Repeat password", "Repite la contraseña"),
+    "signup.pw_hint": ("Mínimo de 10 caracteres.", "At least 10 characters.", "Mínimo 10 caracteres."),
+    "signup.accept": ("Li e aceito o aviso de risco: é um cliente não oficial, sem vínculo com a Microsoft, e uso por minha conta e risco.",
+                      "I have read and accept the risk notice: this is an unofficial client, not affiliated with Microsoft, and I use it at my own risk.",
+                      "Leí y acepto el aviso de riesgo: es un cliente no oficial, sin vínculo con Microsoft, y lo uso bajo mi propio riesgo."),
+    "signup.submit": ("Criar conta", "Create account", "Crear cuenta"),
+    "signup.expires": ("Convite válido até {d}.", "Invite valid until {d}.", "Invitación válida hasta {d}."),
+    "signup.invalid_title": ("Convite inválido", "Invalid invite", "Invitación no válida"),
+    "signup.invalid": ("Este convite expirou, já foi usado ou foi cancelado. Peça um novo a quem te convidou.",
+                       "This invite has expired, was already used or was cancelled. Ask whoever invited you for a new one.",
+                       "Esta invitación expiró, ya se usó o fue cancelada. Pide una nueva a quien te invitó."),
+    "err.name": ("Informe seu nome.", "Enter your name.", "Escribe tu nombre."),
+    "err.email": ("E-mail inválido.", "Invalid email.", "Correo no válido."),
+    "err.email_taken": ("Já existe uma conta com este e-mail.", "An account with this email already exists.", "Ya existe una cuenta con este correo."),
+    "err.phone": ("Telefone inválido.", "Invalid phone.", "Teléfono no válido."),
+    "err.country": ("Escolha o país.", "Choose a country.", "Elige un país."),
+    "err.pw": ("A senha precisa ter de 10 a 128 caracteres.", "Password must be 10 to 128 characters.", "La contraseña debe tener de 10 a 128 caracteres."),
+    "err.pw2": ("As senhas não conferem.", "Passwords don't match.", "Las contraseñas no coinciden."),
+    "err.accept": ("É preciso aceitar o aviso de risco.", "You must accept the risk notice.", "Debes aceptar el aviso de riesgo."),
+
+    # ---- configuração do admin
+    "setup.title": ("Configurar administrador", "Set up administrator", "Configurar administrador"),
+    "setup.intro": ("Link de uso único. Defina e-mail e senha; no passo seguinte você ativa a verificação em duas etapas (obrigatória).",
+                    "Single-use link. Set your email and password; in the next step you enable two-step verification (required).",
+                    "Enlace de un solo uso. Define correo y contraseña; en el siguiente paso activas la verificación en dos pasos (obligatoria)."),
+    "setup.next": ("Continuar", "Continue", "Continuar"),
+    "setup.totp_title": ("Ative a verificação em duas etapas", "Enable two-step verification", "Activa la verificación en dos pasos"),
+    "setup.totp_scan": ("Escaneie o QR code com um app autenticador (Google Authenticator, Aegis, 1Password…) ou digite a chave abaixo. Depois digite o código gerado.",
+                        "Scan the QR code with an authenticator app (Google Authenticator, Aegis, 1Password…) or type the key below. Then enter the generated code.",
+                        "Escanea el código QR con una app autenticadora (Google Authenticator, Aegis, 1Password…) o escribe la clave de abajo. Luego escribe el código generado."),
+    "setup.totp_key": ("Chave", "Key", "Clave"),
+    "setup.finish": ("Ativar e entrar", "Enable and log in", "Activar y entrar"),
+    "setup.invalid": ("Este link de configuração expirou ou já foi usado.", "This setup link has expired or was already used.",
+                      "Este enlace de configuración expiró o ya se usó."),
+
+    # ---- área do testador
+    "area.title": ("Área do testador", "Tester area", "Área de tester"),
+    "area.hello": ("Olá, {n}!", "Hi, {n}!", "¡Hola, {n}!"),
+    "area.key_title": ("Sua chave beta", "Your beta key", "Tu clave beta"),
+    "area.key_help": ("Digite esta chave no Xbox quando o app pedir. Ela é pessoal: não compartilhe.",
+                      "Type this key on the Xbox when the app asks for it. It's personal: don't share it.",
+                      "Escribe esta clave en la Xbox cuando la app la pida. Es personal: no la compartas."),
+    "area.key_none": ("Você não tem chave ativa. Fale com o administrador.", "You don't have an active key. Contact the administrator.",
+                      "No tienes clave activa. Habla con el administrador."),
+    "area.key_once": ("Anote agora: por segurança esta chave aparece só uma vez. Se perder, gere outra (a antiga para de valer).",
+                      "Write it down now: for security this key is shown only once. If you lose it, generate another (the old one stops working).",
+                      "Anótala ahora: por seguridad esta clave se muestra solo una vez. Si la pierdes, genera otra (la anterior deja de valer)."),
+    "area.key_active": ("Chave ativa terminando em …{h}, criada em {d}.", "Active key ending in …{h}, created {d}.",
+                        "Clave activa que termina en …{h}, creada el {d}."),
+    "area.key_regen": ("Gerar nova chave", "Generate new key", "Generar nueva clave"),
+    "area.key_regen_help": ("A chave atual deixa de funcionar no Xbox na hora.", "The current key stops working on the Xbox right away.",
+                            "La clave actual deja de funcionar en la Xbox al instante."),
+    "area.beta_title": ("Versão beta mais recente", "Latest beta version", "Versión beta más reciente"),
+    "area.beta_download": ("Baixar beta {v}", "Download beta {v}", "Descargar beta {v}"),
+    "area.beta_none": ("Nenhuma beta publicada ainda.", "No beta published yet.", "Aún no hay beta publicada."),
+    "area.notes": ("Notas da versão", "Release notes", "Notas de la versión"),
+    "area.size": ("Tamanho", "Size", "Tamaño"),
+    "area.report_title": ("Reportar um problema", "Report a problem", "Reportar un problema"),
+    "area.report_lead": ("Conte o que aconteceu e, se puder, mande uma foto da tela (ex.: tela vermelha).",
+                         "Tell us what happened and, if you can, attach a photo of the screen (e.g. red screen).",
+                         "Cuéntanos qué pasó y, si puedes, adjunta una foto de la pantalla (ej.: pantalla roja)."),
+    "area.myreports": ("Meus relatos", "My reports", "Mis reportes"),
+    "rep.desc": ("O que aconteceu?", "What happened?", "¿Qué pasó?"),
+    "rep.version": ("Versão do app", "App version", "Versión de la app"),
+    "rep.console": ("ID do console (aparece no app)", "Console ID (shown in the app)", "ID de la consola (aparece en la app)"),
+    "rep.game": ("Jogo", "Game", "Juego"),
+    "rep.photos": ("Fotos ou prints (até {n}, JPG/PNG/WebP, até {mb} MB cada)", "Photos or screenshots (up to {n}, JPG/PNG/WebP, up to {mb} MB each)",
+                   "Fotos o capturas (hasta {n}, JPG/PNG/WebP, hasta {mb} MB cada una)"),
+    "rep.submit": ("Enviar relato", "Send report", "Enviar reporte"),
+    "rep.ok": ("Relato enviado. Obrigado!", "Report sent. Thank you!", "Reporte enviado. ¡Gracias!"),
+    "rep.status": ("Status", "Status", "Estado"),
+    "rep.note": ("Nota da equipe", "Team note", "Nota del equipo"),
+    "rep.note_hint": ("Visível para o testador.", "Visible to the tester.", "Visible para el tester."),
+    "rep.err_desc": ("Descreva o problema (10 a 5000 caracteres).", "Describe the problem (10 to 5000 characters).", "Describe el problema (10 a 5000 caracteres)."),
+    "rep.err_field": ("Versão, ID do console ou jogo com formato inválido.", "Version, console ID or game has an invalid format.",
+                      "Versión, ID de consola o juego con formato no válido."),
+    "rep.err_count": ("Mande no máximo {n} imagens.", "Send at most {n} images.", "Envía como máximo {n} imágenes."),
+    "rep.err_size": ("Imagem grande demais (máx. {mb} MB).", "Image too large (max {mb} MB).", "Imagen demasiado grande (máx. {mb} MB)."),
+    "rep.err_type": ("Só imagens JPG, PNG ou WebP.", "Only JPG, PNG or WebP images.", "Solo imágenes JPG, PNG o WebP."),
+    "rep.err_store": ("Não deu para salvar as imagens agora. Tente de novo.", "Couldn't store the images right now. Try again.",
+                      "No se pudieron guardar las imágenes ahora. Inténtalo de nuevo."),
+    "status.new": ("Novo", "New", "Nuevo"),
+    "status.needs_info": ("Precisa de info", "Needs info", "Falta info"),
+    "status.confirmed": ("Confirmado", "Confirmed", "Confirmado"),
+    "status.in_progress": ("Em andamento", "In progress", "En curso"),
+    "status.fixed": ("Corrigido", "Fixed", "Corregido"),
+    "status.wontfix": ("Não será corrigido", "Won't fix", "No se corregirá"),
+    "status.duplicate": ("Duplicado", "Duplicate", "Duplicado"),
+
+    # ---- admin
+    "adm.overview": ("Visão geral", "Overview", "Resumen"),
+    "adm.testers": ("Testadores", "Testers", "Testers"),
+    "adm.invites": ("Convites", "Invites", "Invitaciones"),
+    "adm.reports": ("Relatos", "Reports", "Reportes"),
+    "adm.logs": ("Logs", "Logs", "Logs"),
+    "adm.versions": ("Versões", "Versions", "Versiones"),
+    "adm.active_testers": ("Testadores ativos", "Active testers", "Testers activos"),
+    "adm.pending_invites": ("Convites pendentes", "Pending invites", "Invitaciones pendientes"),
+    "adm.open_reports": ("Relatos abertos", "Open reports", "Reportes abiertos"),
+    "adm.total_reports": ("Relatos no total", "Total reports", "Reportes en total"),
+    "adm.consoles_7d": ("Consoles nos últimos 7 dias", "Consoles in the last 7 days", "Consolas en los últimos 7 días"),
+    "adm.versions_use": ("Versões em uso (7 dias, consoles)", "Versions in use (7 days, consoles)", "Versiones en uso (7 días, consolas)"),
+    "adm.top_games": ("Jogos mais testados (30 dias)", "Most tested games (30 days)", "Juegos más probados (30 días)"),
+    "adm.batches": ("lotes", "batches", "lotes"),
+    "adm.consoles": ("consoles", "consoles", "consolas"),
+    "adm.synced": ("Índice de logs atualizado em {t}", "Log index updated at {t}", "Índice de logs actualizado el {t}"),
+    "adm.sync_now": ("Sincronizar logs agora", "Sync logs now", "Sincronizar logs ahora"),
+    "adm.synced_n": ("{n} lotes novos indexados.", "{n} new batches indexed.", "{n} lotes nuevos indexados."),
+    "adm.name": ("Nome", "Name", "Nombre"),
+    "adm.handle": ("ID (logs)", "ID (logs)", "ID (logs)"),
+    "adm.country": ("País", "Country", "País"),
+    "adm.key": ("Chave", "Key", "Clave"),
+    "adm.active": ("Ativo", "Active", "Activo"),
+    "adm.last_login": ("Último login", "Last login", "Último acceso"),
+    "adm.deactivate": ("Desativar", "Deactivate", "Desactivar"),
+    "adm.activate": ("Reativar", "Reactivate", "Reactivar"),
+    "adm.regen_key": ("Nova chave", "New key", "Nueva clave"),
+    "adm.revoke_key": ("Revogar chave", "Revoke key", "Revocar clave"),
+    "adm.key_new": ("Nova chave de {n}: {k}", "New key for {n}: {k}", "Nueva clave de {n}: {k}"),
+    "adm.key_revoked": ("Chave revogada.", "Key revoked.", "Clave revocada."),
+    "adm.no_key": ("sem chave", "no key", "sin clave"),
+    "adm.invite_new": ("Novo convite", "New invite", "Nueva invitación"),
+    "adm.invite_note": ("Para quem (anotação interna)", "For whom (internal note)", "Para quién (nota interna)"),
+    "adm.invite_valid": ("Validade", "Valid for", "Validez"),
+    "adm.hours": ("horas", "hours", "horas"),
+    "adm.days": ("dias", "days", "días"),
+    "adm.invite_max": ("Máximo de 15 dias. Uso único.", "Maximum 15 days. Single use.", "Máximo 15 días. Un solo uso."),
+    "adm.invite_create": ("Gerar convite", "Create invite", "Generar invitación"),
+    "adm.invite_link": ("Link do convite (só aparece agora — copie e mande para a pessoa):",
+                        "Invite link (shown only now — copy it and send it to the person):",
+                        "Enlace de invitación (solo se muestra ahora — cópialo y envíalo a la persona):"),
+    "adm.invite_bad": ("Validade inválida (de 1 hora a 15 dias).", "Invalid validity (1 hour to 15 days).", "Validez no válida (de 1 hora a 15 días)."),
+    "adm.expires": ("Expira", "Expires", "Expira"),
+    "adm.state": ("Situação", "State", "Estado"),
+    "adm.st_pending": ("pendente", "pending", "pendiente"),
+    "adm.st_used": ("usado", "used", "usada"),
+    "adm.st_expired": ("expirado", "expired", "expirada"),
+    "adm.st_revoked": ("revogado", "revoked", "revocada"),
+    "adm.revoke": ("Revogar", "Revoke", "Revocar"),
+    "adm.tester": ("Testador", "Tester", "Tester"),
+    "adm.photos": ("Fotos", "Photos", "Fotos"),
+    "adm.console": ("Console", "Console", "Consola"),
+    "adm.day": ("Dia", "Day", "Día"),
+    "adm.lines": ("linhas", "lines", "líneas"),
+    "adm.open": ("Abrir", "Open", "Abrir"),
+    "adm.raw": ("Baixar .json.gz", "Download .json.gz", "Descargar .json.gz"),
+    "adm.channel": ("Canal", "Channel", "Canal"),
+    "adm.promote": ("Promover para estável", "Promote to stable", "Promover a estable"),
+    "adm.promote_req": ("Pedido registrado. Para assinar e publicar, rode no devbox:",
+                        "Request recorded. To sign and publish, run on the devbox:",
+                        "Pedido registrado. Para firmar y publicar, ejecuta en el devbox:"),
+    "adm.promote_pending": ("Promoções pendentes", "Pending promotions", "Promociones pendientes"),
+    "adm.public": ("pública", "public", "pública"),
+    "adm.no_versions": ("Nenhuma versão publicada no R2 ainda.", "No version published to R2 yet.", "Aún no hay versiones publicadas en R2."),
+    "adm.r2_error": ("Não foi possível ler o R2 agora.", "Couldn't read R2 right now.", "No se pudo leer R2 ahora."),
+
+    # ---- erros
+    "err.400": ("Requisição inválida (o formulário pode ter expirado — recarregue a página).",
+                "Bad request (the form may have expired — reload the page).",
+                "Solicitud no válida (el formulario puede haber expirado — recarga la página)."),
+    "err.403": ("Você não tem acesso a esta página.", "You don't have access to this page.", "No tienes acceso a esta página."),
+    "err.404": ("Página não encontrada.", "Page not found.", "Página no encontrada."),
+    "err.413": ("Arquivo grande demais.", "File too large.", "Archivo demasiado grande."),
+    "err.429": ("Muitas tentativas. Espere alguns minutos.", "Too many attempts. Wait a few minutes.", "Demasiados intentos. Espera unos minutos."),
+    "err.500": ("Algo deu errado do nosso lado.", "Something went wrong on our side.", "Algo salió mal de nuestro lado."),
+}
+
+from .i18n_ui import M as _M_UI  # noqa: E402  (textos da área logada redesenhada e do /status)
+M.update(_M_UI)
+
+STATUSES = ("new", "needs_info", "confirmed", "in_progress", "fixed", "wontfix", "duplicate")
+OPEN_STATUSES = ("new", "needs_info", "confirmed", "in_progress")
+
+
+def pick_lang():
+    q = request.args.get("lang")
+    if q in LANGS:
+        return q, True
+    c = request.cookies.get("lang")
+    if c in LANGS:
+        return c, False
+    best = request.accept_languages.best_match(["pt-BR", "pt", "en", "es"], default=DEFAULT)
+    return ("pt-BR" if best in ("pt-BR", "pt") else best), False
+
+
+def gettext(key, **kw):
+    from flask import current_app
+    lang = getattr(g, "lang", DEFAULT)
+    v = M.get(key)
+    if v is None:
+        return key
+    val = v[LANGS.index(lang)]
+    kw.setdefault("name", current_app.config["BRAND"]["name"])
+    if isinstance(val, str):
+        return val.format(**kw) if kw else val
+    if isinstance(val, list):
+        return [tuple(s.format(**kw) for s in x) if isinstance(x, tuple) else x.format(**kw) for x in val]
+    return val

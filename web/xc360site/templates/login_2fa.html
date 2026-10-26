@@ -1,0 +1,18 @@
+{% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf with context %}
+{% block title %}{{ _('login.totp_title') }}{% endblock %}
+{% block content %}
+<div class="a-ico">{{ icon('shield', 24) }}</div>
+<h1>{{ _('login.totp_title') }}</h1>
+<p class="a-lead">{{ _('login.totp_help') }}</p>
+{{ errs([error] if error else []) }}
+<form method="post" novalidate>
+  {{ csrf() }}
+  <div class="field{{ ' has-error' if error }}">
+    <label for="f-code">{{ _('login.totp_code') }}</label>
+    <input id="f-code" class="otp" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" autocomplete="one-time-code" required maxlength="7" autofocus placeholder="000000"{% if error %} aria-invalid="true"{% endif %}>
+    <span class="help">{{ _('ui.totp_hint') }}</span>
+  </div>
+  <button class="btn primary lg block">{{ _('ui.verify') }}</button>
+</form>
+<p class="auth-foot"><a href="{{ url_for('auth.login') }}">{{ _('ui.back_login') }}</a></p>
+{% endblock %}

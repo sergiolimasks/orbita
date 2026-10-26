@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ _('st.title') }} — {{ brand.name }}{% endblock %}
+{% block main %}
+<section class="wrap pg-head">
+  <span class="eyebrow">{{ icon('activity', 14) }}{{ _('st.nav') }}</span>
+  <h1>{{ _('st.title') }}</h1>
+  <p class="lead">{{ _('st.lead') }}</p>
+</section>
+
+<section class="wrap" aria-labelledby="feat-t">
+  <h2 id="feat-t" class="sr-only">{{ _('st.features') }}</h2>
+  <nav class="st-counts" aria-label="{{ _('ft.status') }}">
+    <a class="st-count" href="{{ url_for('public.status', group=grp or None) }}#feat-t"{% if not st %} aria-current="true"{% endif %}><small>{{ _('st.all') }}</small><b>{{ total }}</b></a>
+    {% for s in ('working', 'beta', 'tested', 'soon') %}
+    <a class="st-count" href="{{ url_for('public.status', status=s, group=grp or None) }}#feat-t"{% if st == s %} aria-current="true"{% endif %}><span class="fpill fs-{{ s }}">{{ _('st.s_' ~ s) }}</span><b>{{ counts[s] }}</b></a>
+    {% endfor %}
+  </nav>
+  <div class="st-filters" aria-label="{{ _('ft.group') }}">
+    <a class="st-chip" href="{{ url_for('public.status', status=st or None) }}#feat-t"{% if not grp %} aria-current="true"{% endif %}>{{ _('st.all') }}</a>
+    {% for g_ in group_keys %}<a class="st-chip" href="{{ url_for('public.status', group=g_, status=st or None) }}#feat-t"{% if grp == g_ %} aria-current="true"{% endif %}>{{ icon(GROUP_ICON[g_], 14) }}{{ _('st.g_' ~ g_) }}</a>{% endfor %}
+    {% if counts.unsupported %}<a class="st-chip" href="{{ url_for('public.status', status='unsupported') }}#feat-t"{% if st == 'unsupported' %} aria-current="true"{% endif %}>{{ _('st.s_unsupported') }} · {{ counts.unsupported }}</a>{% endif %}
+  </div>
+
+  {% if groups %}
+  <div class="st-groups">
+    {% for g_, feats in groups %}
+    <section class="st-group" aria-labelledby="g-{{ g_ }}">
+      <header><span class="g-ico">{{ icon(GROUP_ICON[g_], 17) }}</span><h2 id="g-{{ g_ }}">{{ _('st.g_' ~ g_) }}</h2><span class="n">{{ feats|length }}</span></header>
+      {% for f in feats %}
+      <div class="st-feat">
+        <b>{{ loc(f, 'name') }}</b>
+        <div class="side"><span class="fpill fs-{{ f.status }}">{{ _('st.s_' ~ f.status) }}</span>
+          {% if f.since_version %}<span class="ver">{{ _('st.in_beta', v=f.since_version) if f.status == 'beta' else _('st.since', v=f.since_version) }}</span>{% endif %}</div>
+        {% if loc(f, 'desc') %}<p>{{ loc(f, 'desc') }}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">{{ _('st.empty') }}</p>
+  {% endif %}
+
+  <div class="legend" aria-label="{{ _('st.legend') }}">
+    {% for s in statuses %}<div><span class="fpill fs-{{ s }}">{{ _('st.s_' ~ s) }}</span>{{ _('st.d_' ~ s) }}</div>{% endfor %}
+  </div>
+</section>
+
+<section class="wrap" aria-labelledby="rn-t">
+  <h2 id="rn-t">{{ _('st.notes') }}</h2>
+  {% if notes %}
+  <div class="rn-list">
+    {% for n in notes %}
+    <article class="rn-card">
+      <header><h3><a href="{{ url_for('public.release_note', version=n.version) }}">{{ n.version }}</a></h3>
+        <span class="fpill {{ 'fs-working' if n.channel == 'stable' else 'fs-beta' }}">{{ _('ui.ch_' ~ n.channel) }}</span>
+        <span class="date">{{ n.released_on|date if n.released_on else _('st.unreleased') }}</span></header>
+      {% if loc(n, 'summary') %}<p class="sum">{{ loc(n, 'summary') }}</p>{% endif %}
+      {% set its = items.get(n.id, []) %}
+      {% if its %}<ul class="rn-items">{% for it in its[:5] %}<li><span><span class="fpill k-{{ it.kind }}">{{ _('st.k_' ~ it.kind) }}</span></span><span>{{ loc(it, 'text') }}</span></li>{% endfor %}</ul>{% endif %}
+      <p class="small"><a href="{{ url_for('public.release_note', version=n.version) }}">{{ _('st.read_more') }} →</a></p>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card"><p class="muted">{{ _('st.no_notes') }}</p></div>
+  {% endif %}
+</section>
+{% endblock %}

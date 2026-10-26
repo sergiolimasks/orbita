@@ -18,9 +18,6 @@
 
 #include <ppc/timebase.h>
 #include <xenon_sound/sound.h>
-#include <lwip/udp.h>
-#include <lwip/pbuf.h>
-#include <lwip/ip_addr.h>
 
 #ifndef XCLOUD360_AUDIO_TARGET_MS
 #define XCLOUD360_AUDIO_TARGET_MS 60
@@ -63,7 +60,6 @@ static void dev_submit(void *u, const int16_t *pcm, int frames) {
 /* ------------------------------------------------------------- state */
 static aud_ring_t    g_ring __attribute__((aligned(128)));
 static aud_engine_t *volatile g_eng = NULL;   /* main publishes once (hw_up) */
-static struct udp_pcb *g_pcb = NULL;
 
 /* main -> consumer: requested source, bumped sequence. */
 static volatile int      g_req_src = AUDIO_SRC_NONE;
@@ -88,8 +84,8 @@ static uint32_t g_prev_dec_fr = 0;
  * came up. Since then NOTHING audio touches hardware, lwIP or libopus at
  * boot: audio_init() is plain memory work; the sound chip and the Opus
  * engine come up on the first PLAY / X (hw_up, main thread, breadcrumbs on
- * screen), and the :9004 pcb is created by the network thread itself (it
- * owns lwIP). Anything fails -> that session is silent, the game goes on. */
+ * screen). v0.20.0: the :9004 pcb (Opus from the PC) is gone; packets only
+ * come from the on-Xbox WebRTC (audio_rx_packet). Anything fails -> that session is silent, the game goes on. */
 static volatile int g_hw_state = 0;    /* 0 = not tried, 1 = up, -1 = failed */
 
 int audio_init(void) {
@@ -133,37 +129,6 @@ static int hw_up(void) {
     return 1;
 }
 
-/* lwIP, network thread. */
-static void udp_rx(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t port) {
-    (void)arg; (void)pcb; (void)addr; (void)port;
-    if (g_active != AUDIO_SRC_NET) { g_rx_drop_idle++; pbuf_free(p); return; }
-    uint8_t b[6 + AUD_MAX_PAYLOAD];
-    int n = p->tot_len;
-    if (n < 7 || n > (int)sizeof(b)) { g_rx_bad++; pbuf_free(p); return; }
-    pbuf_copy_partial(p, b, (u16_t)n, 0);
-    pbuf_free(p);
-    uint16_t seq = (uint16_t)(b[0] << 8 | b[1]);
-    uint32_t ts = (uint32_t)b[2] << 24 | (uint32_t)b[3] << 16 | (uint32_t)b[4] << 8 | b[5];
-    aud_ring_push(&g_ring, seq, ts, b + 6, n - 6);
-}
-
-/* Consumer thread = the lwIP owner (network thread, or main without one). */
-static void net_up(void) {
-    static int tried = 0;
-    if (g_pcb || tried) return;
-    tried = 1;
-    struct udp_pcb *pcb = udp_new();
-    if (!pcb) { printf("[audio] udp_new falhou - sem som do PC\n"); return; }
-    if (udp_bind(pcb, IP_ADDR_ANY, AUDIO_UDP_PORT) != ERR_OK) {
-        udp_remove(pcb);
-        printf("[audio] bind :%d falhou - sem som do PC\n", AUDIO_UDP_PORT);
-        return;
-    }
-    udp_recv(pcb, udp_rx, NULL);
-    g_pcb = pcb;
-    printf("[audio] UDP :%d (Opus do PC)\n", AUDIO_UDP_PORT);
-}
-
 /* ---------------------------------------------------------- control */
 void audio_session_begin(int src) {
     if (src != AUDIO_SRC_NONE && !hw_up()) return;   /* silent session */
@@ -175,8 +140,8 @@ void audio_session_begin(int src) {
 void audio_session_end(void) { audio_session_begin(AUDIO_SRC_NONE); }
 
 int audio_rx_packet(uint16_t seq, uint32_t ts, const uint8_t *p, int len) {
-    /* stage 5: only while a WebRTC session is the active source (same rule
-     * as udp_rx for :9004); otherwise counted like idle UDP. */
+    /* stage 5: only while a WebRTC session is the active source;
+     * otherwise counted as idle. */
     if (g_active != AUDIO_SRC_RTC) { g_rx_drop_idle++; return -1; }
     if (len < 1 || len > AUD_MAX_PAYLOAD) { g_rx_bad++; return -1; }
     return aud_ring_push(&g_ring, seq, ts, p, len);
@@ -204,7 +169,6 @@ int audio_service(void) {
         lwsync();
         int src = g_req_src;
         g_ack_seq = rs;
-        if (src == AUDIO_SRC_NET) net_up();
         if (src != AUDIO_SRC_NONE) {
             aud_reset(g_eng, &g_ring);
             g_tone_i = 0;

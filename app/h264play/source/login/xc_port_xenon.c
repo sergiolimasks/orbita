@@ -167,6 +167,14 @@ int xc_store_save(const char *name, const void *buf, size_t n) {
         path_of(p, sizeof(p), name);
         tmp_of(t, sizeof(t), name);
         f_mkdir(STORE_DIR);   /* FR_EXIST é ok */
+        {   /* "COVERS/1A2B3C4D.JPG" (xc_catalog): cria a subpasta (8.3) */
+            const char *sl = strchr(name, '/');
+            if (sl && (size_t)(sl - name) <= 8) {
+                char d[24];
+                snprintf(d, sizeof(d), STORE_DIR "/%.*s", (int)(sl - name), name);
+                f_mkdir(d);
+            }
+        }
         /* grava no .NEW e troca: queda de energia no meio não corrompe o atual */
         if (f_open(&f, t, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
             UINT w = 0;

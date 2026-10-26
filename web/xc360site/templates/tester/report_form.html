@@ -1,0 +1,61 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, errors as errs with context %}
+{% block title %}{{ _('area.report_title') }}{% endblock %}
+{% block content_class %} narrow{% endblock %}
+{% block crumbs %}{{ crumb(_('ui.report_bug')) }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ _('area.report_title') }}</h1><p class="lead">{{ _('area.report_lead') }}</p></div></div>
+{{ errs(errors) }}
+<form method="post" action="{{ url_for('tester.report_new') }}" enctype="multipart/form-data" class="card mt-4" novalidate>
+  {{ csrf() }}
+  <div class="card-body steps-form">
+    <div class="fstep">
+      <span class="n">1</span>
+      <div class="field">
+        <h3><label for="f-description">{{ _('rep.desc') }}</label></h3>
+        <p class="help">{{ _('ui.desc_help') }}</p>
+        <textarea id="f-description" name="description" rows="6" required minlength="10" maxlength="5000" data-counter="#desc-count" placeholder="{{ _('ui.desc_ph') }}">{{ f.description or '' }}</textarea>
+        <div class="row-between"><span class="help">{{ _('ui.desc_tip') }}</span><span class="help num" id="desc-count"></span></div>
+      </div>
+    </div>
+    <div class="fstep">
+      <span class="n">2</span>
+      <div>
+        <h3>{{ _('ui.where_title') }}</h3>
+        <p class="help">{{ _('ui.where_help') }}</p>
+        <div class="form-grid form-3">
+          <div class="field"><label for="f-version">{{ _('rep.version') }}</label>
+            <input id="f-version" name="version" list="vers" value="{{ f.version or (beta.version if beta else '') }}" maxlength="32" autocomplete="off">
+            <datalist id="vers">{% for v in versions %}<option value="{{ v }}">{% endfor %}</datalist></div>
+          <div class="field"><label for="f-game">{{ _('rep.game') }} <span class="opt">({{ _('ui.optional') }})</span></label>
+            <input id="f-game" name="game" value="{{ f.game or '' }}" maxlength="80" placeholder="Forza Horizon 5"></div>
+          <div class="field"><label for="f-console">{{ _('ui.console_id') }} <span class="opt">({{ _('ui.optional') }})</span></label>
+            <input id="f-console" class="mono" name="console_id" value="{{ f.console_id or '' }}" maxlength="64" pattern="[0-9A-Fa-f\-]*" autocomplete="off" placeholder="a1b2c3d4…"></div>
+        </div>
+        <p class="help mt-2">{{ icon('info', 12)|replace('class="icon ', 'class="icon ') }} {{ _('ui.console_help') }}</p>
+      </div>
+    </div>
+    <div class="fstep">
+      <span class="n">3</span>
+      <div>
+        <h3>{{ _('ui.photos_title') }} <span class="opt help">({{ _('ui.optional') }})</span></h3>
+        <p class="help">{{ _('rep.photos', n=max_files, mb=max_mb) }}</p>
+        <div class="drop">
+          <input type="file" name="photos" id="f-photos" accept="image/jpeg,image/png,image/webp" multiple data-dropzone data-previews="#previews"
+                 data-max="{{ max_files }}" data-max-mb="{{ max_mb }}" data-error="#photo-err" data-count="#photo-count" aria-describedby="drop-help">
+          <span class="drop-ico">{{ icon('upload', 22) }}</span>
+          <b>{{ _('ui.drop_title') }}</b>
+          <span class="help" id="drop-help">{{ _('ui.drop_help', n=max_files, mb=max_mb) }}</span>
+          <span class="badge outline num" id="photo-count"></span>
+        </div>
+        <p class="err-msg hide mt-2" id="photo-err" role="alert"></p>
+        <div class="previews" id="previews"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card-foot">
+    <span class="help">{{ icon('lock', 12) }} {{ _('ui.report_private') }}</span>
+    <div class="form-actions"><a class="btn ghost" href="{{ url_for('tester.area') }}">{{ _('common.cancel') }}</a>
+      <button class="btn primary">{{ icon('send', 16) }}{{ _('rep.submit') }}</button></div>
+  </div>
+</form>
+{% endblock %}

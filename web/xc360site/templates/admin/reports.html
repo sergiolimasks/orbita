@@ -1,0 +1,59 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, pager, empty, status, avatar with context %}
+{% block title %}{{ _('adm.reports') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.reports')) }}{% endblock %}
+{% block content %}
+{% set filtered = fq or fv or fg or fs or ft %}
+<div class="page-head">
+  <div><h1>{{ _('adm.reports') }}</h1><p class="lead">{{ _('ui.reports_lead') }}</p></div>
+</div>
+<div class="card">
+  <nav class="tabs" aria-label="{{ _('rep.status') }}">
+    {% for k in [''] + ['open'] + statuses|list %}
+    {% set c = counts.get(k or 'all', 0) %}
+    {% if not k or k == 'open' or c or fs == k %}
+    <a class="tab" href="{{ url_for('admin.reports', status=k or None, version=fv or None, game=fg or None, q=fq or None, tester=ft or None) }}"{% if fs == k %} aria-current="page"{% endif %}>{{ _('common.all') if not k else _('ui.open') if k == 'open' else _('status.' ~ k) }} <span class="count">{{ c }}</span></a>
+    {% endif %}
+    {% endfor %}
+  </nav>
+  <form class="toolbar" method="get" role="search">
+    {% if fs %}<input type="hidden" name="status" value="{{ fs }}">{% endif %}
+    <div class="input-icon">{{ icon('search', 16) }}<input type="search" name="q" value="{{ fq }}" placeholder="{{ _('ui.search_reports') }}" aria-label="{{ _('ui.search') }}"></div>
+    <select name="tester" aria-label="{{ _('adm.tester') }}" data-autosubmit data-tester-filter><option value="">{{ _('ui.all_testers') }}</option>{% for t in testers %}<option value="{{ t.id }}" {{ 'selected' if t.id|string == ft }}>{{ t.name }} ({{ t.n }})</option>{% endfor %}</select>
+    <select name="version" aria-label="{{ _('rep.version') }}" data-autosubmit><option value="">{{ _('ui.all_versions') }}</option>{% for v in versions %}<option {{ 'selected' if v == fv }}>{{ v }}</option>{% endfor %}</select>
+    <input name="game" value="{{ fg }}" maxlength="80" placeholder="{{ _('rep.game') }}" aria-label="{{ _('rep.game') }}" class="grow">
+    <button class="btn secondary">{{ icon('search', 14) }}{{ _('common.filter') }}</button>
+    {% if fq or fv or fg or ft %}<a class="btn ghost" href="{{ url_for('admin.reports', status=fs or None) }}">{{ icon('x', 14) }}{{ _('ui.clear') }}</a>{% endif %}
+  </form>
+  {% if ft %}
+  <div class="card-body tight"><div class="chips">
+    <span class="chip" aria-current="true" data-tester-chip>{{ icon('users', 13) }}{{ _('adm.tester') }}: {% if tu %}<a href="{{ url_for('admin.tester_detail', uid=tu.id) }}">{{ tu.name }}</a>{% else %}{{ _('ui.tester_unknown') }}{% endif %}
+      <a href="{{ url_for('admin.reports', status=fs or None, version=fv or None, game=fg or None, q=fq or None) }}" aria-label="{{ _('ui.clear') }}">{{ icon('x', 13) }}</a></span>
+  </div></div>
+  {% endif %}
+  {% if reports %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('ui.report') }}</th><th>{{ _('rep.status') }}</th><th>{{ _('adm.tester') }}</th><th>{{ _('rep.version') }}</th><th>{{ _('rep.game') }}</th><th class="r">{{ icon('image', 13) }}<span class="sr-only">{{ _('adm.photos') }}</span></th><th>{{ _('common.date') }}</th></tr></thead>
+    <tbody>
+    {% for r in reports %}
+    <tr data-report-row>
+      <td class="lead-cell"><a class="row-link" href="{{ url_for('admin.report_detail', rid=r.id, back=request.full_path) }}"><span class="muted mono">#{{ r.id }}</span> {{ r.description.split('\n')[0]|truncate(70) }}</a>
+        <div class="xs muted clamp2">{{ r.description|truncate(160) }}</div></td>
+      <td data-label="{{ _('rep.status') }}">{{ status(r.status) }}</td>
+      <td data-label="{{ _('adm.tester') }}"><span class="row nowrap">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.reports', tester=r.user_id) }}" title="{{ _('ui.reports_of', n=r.uname) }}">{{ r.uname }}</a>{% if r.country %} <span aria-hidden="true">{{ flag(r.country) }}</span>{% endif %}</span></td>
+      <td data-label="{{ _('rep.version') }}" class="mono">{{ r.version or '—' }}</td>
+      <td data-label="{{ _('rep.game') }}">{{ r.game or '—' }}</td>
+      <td data-label="{{ _('adm.photos') }}" class="r num">{{ r.nfiles or '—' }}</td>
+      <td data-label="{{ _('common.date') }}" class="nowrap"><span title="{{ r.created_at|dt }}">{{ r.created_at|ago }}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ pager(page, 'admin.reports') }}
+  {% else %}
+    {% if ft and not (fq or fv or fg or fs) %}{{ empty(_('ui.no_reports_tester', n=tu.name if tu else ft), _('ui.no_reports_tester_text'), 'inbox') }}
+    {% else %}{{ empty(_('ui.no_results') if filtered else _('ui.no_reports_admin'), _('ui.no_results_filters') if filtered else _('ui.no_reports_admin_text'), 'search' if filtered else 'inbox') }}{% endif %}
+  {% endif %}
+</div>
+{% endblock %}

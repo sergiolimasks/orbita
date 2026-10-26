@@ -119,7 +119,10 @@ static void attempt_fail(xsm_t *m, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    if (m->attempt >= m->cfg.max_attempts) { fail(m, msg); return; }
+    xs_lock();
+    int keep = m->keep;
+    xs_unlock();
+    if (m->attempt >= m->cfg.max_attempts || keep) { fail(m, msg); return; }   /* v0.19.3: pausado = sem sessão nova */
     xc_log("[sess] tentativa %d/%d falhou: %s", m->attempt, m->cfg.max_attempts, msg);
     snprintf(m->last_err, sizeof(m->last_err), "%s", msg);
     xs_stop(&m->s);
@@ -179,6 +182,8 @@ void xsm_free(xsm_t *m) {
 /* ------------------------------------------------------- caixa (WebRTC) */
 
 void xsm_request_stop(xsm_t *m) { xs_lock(); m->stop_req = 1; xs_unlock(); }
+
+void xsm_set_keep(xsm_t *m, int on) { xs_lock(); m->keep = on ? 1 : 0; xs_unlock(); }
 
 void xsm_answer_active(xsm_t *m, int resume) { xs_lock(); m->ask_answer = resume ? 1 : 0; xs_unlock(); }
 

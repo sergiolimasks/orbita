@@ -1,0 +1,89 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, status, metric, bars, hbar, empty with context %}
+{% block title %}{{ _('adm.overview') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.overview')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('adm.overview') }}</h1>
+    <p class="lead">{% if synced %}{{ icon('refresh', 13) }} {{ _('adm.synced', t=synced|dt) }}{% else %}{{ _('ui.overview_lead') }}{% endif %}</p></div>
+  <div class="actions">
+    <a class="btn secondary" href="{{ url_for('admin.reports', status='new') }}">{{ icon('bug', 16) }}{{ _('ui.triage') }}{% if n.new_reports %} <span class="badge orange">{{ n.new_reports }}</span>{% endif %}</a>
+    <a class="btn primary" href="{{ url_for('admin.invites', new=1) }}">{{ icon('plus', 16) }}{{ _('adm.invite_new') }}</a>
+  </div>
+</div>
+
+{% if blocked %}
+<div class="alert error mb-4" role="alert" id="blocked-keys">{{ icon('ban', 16) }}<div><b>{{ _('key.adm_alert', n=blocked|length) }}</b>
+  {% for b in blocked[:5] %}<span class="nowrap"> · <a href="{{ url_for('admin.tester_detail', uid=b.id) }}">{{ b.name }}</a> <span class="muted">{{ b.dup_at|ago }}</span></span>{% endfor %}
+  <a href="{{ url_for('admin.testers', status='blocked') }}">{{ _('ui.see') }}</a></div></div>
+{% endif %}
+
+<div class="grid g-4 keep-2">
+  {{ metric(_('adm.active_testers'), n.testers, 'users', url_for('admin.testers', status='active'), '', deltas.testers, foot=_('ui.new_7d', n=n.testers_7), sp=sparks.testers) }}
+  {{ metric(_('adm.open_reports'), n.open_reports, 'bug', url_for('admin.reports', status='open'), 'flare', deltas.reports, True, _('ui.reports_7d', n=n.reports_7), sparks.open, 'flare') }}
+  {{ metric(_('ui.consoles_7d_short'), n.consoles, 'monitor', url_for('admin.logs'), 'ok', deltas.consoles, foot=_('ui.vs_prev_7d'), sp=sparks.consoles, sp_cls='ok') }}
+  {{ metric(_('adm.pending_invites'), n.invites, 'mail', url_for('admin.invites', state='pending'), 'violet', None, foot=_('ui.invites_used_30', n=n.invites_used_30), sp=None) }}
+</div>
+
+<div class="grid g-main section">
+  <section class="card" aria-labelledby="ch-title">
+    <div class="card-head"><div><h2 id="ch-title">{{ _('ui.ch_batches') }}</h2><span class="sub">{{ _('ui.last_30d') }}</span></div>
+      <div class="chart-legend"><span class="chart-total num">{{ totals.batches }}</span></div></div>
+    <div class="card-body">
+      {{ bars(charts.batches, '', _('ui.ch_batches')) }}
+      <div class="row-between mt-4"><h3 class="small muted">{{ _('ui.ch_reports') }}</h3><span class="small"><b class="num">{{ totals.reports }}</b> <span class="muted">{{ _('ui.last_30d') }}</span></span></div>
+      {{ bars(charts.reports, 'flare', _('ui.ch_reports')) }}
+    </div>
+  </section>
+
+  <div class="stack">
+    {% for ch, m in [('stable', stable), ('beta', beta)] %}
+    <section class="card channel is-{{ ch }}">
+      <div class="card-body">
+        <div class="c-top"><span class="badge {{ ch }}"><span class="dot"></span>{{ _('ui.ch_' ~ ch) }}</span>
+          <a class="small" href="{{ url_for('admin.versions') }}">{{ _('adm.versions') }} {{ icon('chevron-right', 12) }}</a></div>
+        {% if m %}<div class="c-ver">{{ m.version }}</div>
+          {% if m.notes %}<p class="small muted mt-2 clamp2">{{ m.notes }}</p>{% endif %}
+        {% else %}<div class="c-ver muted">—</div><p class="small muted mt-2">{{ _('ui.no_channel') }}</p>{% endif %}
+      </div>
+    </section>
+    {% endfor %}
+    {% if pending %}<div class="alert warn">{{ icon('rocket', 16) }}<div>{{ _('ui.promo_waiting', n=pending|length) }} <a href="{{ url_for('admin.versions') }}#pending">{{ _('ui.see') }}</a></div></div>{% endif %}
+  </div>
+</div>
+
+<div class="grid g-main section">
+  <section class="card" aria-labelledby="last-title">
+    <div class="card-head"><h2 id="last-title">{{ icon('bug', 18) }}{{ _('ui.latest_reports') }}</h2><a class="small" href="{{ url_for('admin.reports') }}">{{ _('ui.see_all') }} ({{ n.reports }})</a></div>
+    {% if recent %}
+    <div class="rep-list">
+      {% for r in recent %}
+      <a class="rep-item" href="{{ url_for('admin.report_detail', rid=r.id) }}">
+        <div class="grow"><div class="r-title">{{ r.description.split('\n')[0]|truncate(100) }}</div>
+          <div class="r-meta"><span>#{{ r.id }}</span><span>{{ r.uname }}</span><span>{{ r.created_at|ago }}</span>
+            {% if r.game %}<span>{{ icon('gamepad', 12) }}{{ r.game }}</span>{% endif %}{% if r.nfiles %}<span>{{ icon('image', 12) }}{{ r.nfiles }}</span>{% endif %}</div></div>
+        {{ status(r.status) }}
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}{{ empty(_('ui.no_reports_admin'), _('ui.no_reports_admin_text')) }}{% endif %}
+  </section>
+
+  <div class="stack">
+    <section class="card"><div class="card-head"><h2>{{ _('adm.reports') }}</h2><span class="sub">{{ _('ui.by_status') }}</span></div>
+      <div class="card-body tight">
+        {% set mx = (by_status|map(attribute='n')|max) if by_status else 1 %}
+        {% for s in by_status %}<a class="row-between small mt-2" href="{{ url_for('admin.reports', status=s.status) }}">{{ status(s.status) }}<b class="num">{{ s.n }}</b></a>{% else %}<p class="muted small">{{ _('common.none') }}</p>{% endfor %}
+      </div></section>
+    <section class="card"><div class="card-head"><h2>{{ _('ui.versions_use') }}</h2><span class="sub">{{ _('ui.7d_consoles') }}</span></div>
+      <div class="card-body tight">
+        {% set mx = (vers|map(attribute='consoles')|max) if vers else 1 %}
+        {% for v in vers %}{{ hbar(v.app, v.consoles, mx) }}{% else %}<p class="muted small">{{ _('common.none') }}</p>{% endfor %}
+      </div></section>
+    <section class="card"><div class="card-head"><h2>{{ _('ui.top_games') }}</h2><span class="sub">{{ _('ui.30d_batches') }}</span></div>
+      <div class="card-body tight">
+        {% set mx = (games|map(attribute='batches')|max) if games else 1 %}
+        {% for gm in games %}{{ hbar(gm.game, gm.batches, mx, gm.batches ~ ' · ' ~ gm.consoles ~ ' ' ~ _('adm.consoles')) }}{% else %}<p class="muted small">{{ _('common.none') }}</p>{% endfor %}
+      </div></section>
+  </div>
+</div>
+{% endblock %}

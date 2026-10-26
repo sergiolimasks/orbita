@@ -38,6 +38,7 @@ typedef struct {
 /* Main: dispara (no-op se já roda). 0 = ok. */
 int  lt_start(void);
 int  lt_running(void);
+int  lt_login_running(void);
 void lt_cancel(void);
 void lt_clear_cancel(void);   /* stage 5: before the session thread starts */
 void lt_snapshot(lt_snap_t *s);

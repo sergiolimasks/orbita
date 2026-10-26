@@ -1,0 +1,35 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, empty with context %}
+{% block title %}{{ _('rn.nav') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('rn.nav')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('rn.nav') }}</h1><p class="lead">{{ _('rn.lead') }}</p></div>
+  <div class="actions"><a class="btn primary" href="{{ url_for('admin.note_edit') }}">{{ icon('plus', 16) }}{{ _('rn.new') }}</a></div>
+</div>
+<div class="card">
+  {% if notes %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('rn.version') }}</th><th>{{ _('rn.channel') }}</th><th>{{ _('rn.date') }}</th><th>{{ _('rep.status') }}</th><th class="r">{{ _('rn.items') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    <tbody>
+    {% for n in notes %}
+    <tr>
+      <td class="lead-cell"><a class="row-link mono" href="{{ url_for('admin.note_edit', nid=n.id) }}">{{ n.version }}</a>
+        {% if n.summary_pt %}<div class="xs muted clamp2">{{ n.summary_pt }}</div>{% endif %}</td>
+      <td data-label="{{ _('rn.channel') }}"><span class="badge {{ n.channel }}"><span class="dot"></span>{{ _('ui.ch_' ~ n.channel) }}</span></td>
+      <td data-label="{{ _('rn.date') }}" class="nowrap">{{ n.released_on|date if n.released_on else _('st.unreleased') }}</td>
+      <td data-label="{{ _('rep.status') }}">{% if n.published %}<span class="badge green"><span class="dot"></span>{{ _('rn.pub') }}</span>{% else %}<span class="badge gray"><span class="dot"></span>{{ _('rn.draft') }}</span>{% endif %}</td>
+      <td data-label="{{ _('rn.items') }}" class="r num">{{ n.nitems }}</td>
+      <td class="actions"><div class="row-actions">
+        <a class="btn ghost sm" href="{{ url_for('public.release_note', version=n.version) }}" target="_blank" rel="noopener">{{ icon('external', 14) }}{{ _('rn.preview') }}</a>
+        <a class="btn secondary sm" href="{{ url_for('admin.note_edit', nid=n.id) }}">{{ icon('settings', 14) }}{{ _('ft.edit') }}</a></div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    {% call empty(_('rn.none'), _('st.no_notes')) %}<a class="btn primary" href="{{ url_for('admin.note_edit') }}">{{ icon('plus', 16) }}{{ _('rn.new') }}</a>{% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

@@ -62,7 +62,7 @@ case "$T" in
         CC="$PPC_CC"; FLAGS="-O2 -g -Wall -m32 -mcpu=7450 -mno-altivec --sysroot=$PPC_SYSROOT -static"; RUN="$QEMU_PPC -cpu 7450" ;;
   *) echo "target?"; exit 2 ;;
 esac
-DEFS="-DXCLOUD360_MENU=1 -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_webrtc_config.h\""
+DEFS="-DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_webrtc_config.h\""
 INC="$DEFS -I$SRC/webrtc -I$W/$T/include -I$SRC/session -I$SRC/login -I$SRC"
 LIBS="-L$W/$T/lib -lpeer-xc -lusrsctp-xc -lsrtp2-xc -lmbedtls-xcwebrtc -lpthread -lm"
 $CC $FLAGS $INC -o "$OUT/standalone_e2e" \

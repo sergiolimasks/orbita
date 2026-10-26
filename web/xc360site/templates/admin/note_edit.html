@@ -1,0 +1,88 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, errors as errs with context %}
+{% block title %}{{ _('rn.edit', v=n.version) if n else _('rn.new') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('rn.nav'), url_for('admin.notes')) }}{{ crumb(n.version if n else _('rn.new')) }}{% endblock %}
+{% block content %}
+{% macro item_fields(it, pre) -%}
+<div class="field"><label for="{{ pre }}-kind">{{ _('rn.kind') }}</label>
+  <select id="{{ pre }}-kind" name="kind">{% for k in kinds %}<option value="{{ k }}" {{ 'selected' if it.kind == k }}>{{ _('st.k_' ~ k) }}</option>{% endfor %}</select></div>
+<div class="stack-sm">
+  <div class="lang-grid">
+    {% for l in ('pt', 'en', 'es') %}
+    <div class="field"><label for="{{ pre }}-t{{ l }}"><span class="lang-tag">{{ l|upper }}</span>{{ _('rn.text') }}{% if l != 'pt' %} <span class="opt">({{ _('ui.optional') }})</span>{% endif %}</label>
+      <textarea id="{{ pre }}-t{{ l }}" name="text_{{ l }}" rows="2" maxlength="300"{% if l == 'pt' %} required{% endif %}>{{ it['text_' ~ l] or '' }}</textarea></div>
+    {% endfor %}
+  </div>
+  <div class="form-grid">
+    <div class="field"><label for="{{ pre }}-feat">{{ _('rn.feature') }}</label>
+      <select id="{{ pre }}-feat" name="feature_id"><option value="">{{ _('rn.no_feature') }}</option>
+        {% for g_ in group_keys %}<optgroup label="{{ _('st.g_' ~ g_) }}">{% for ft in feats if ft.grp == g_ %}<option value="{{ ft.id }}" {{ 'selected' if it.feature_id == ft.id }}>{{ ft.name_pt }} · {{ _('st.s_' ~ ft.status) }}</option>{% endfor %}</optgroup>{% endfor %}
+      </select></div>
+    <div class="field"><label for="{{ pre }}-sort">{{ _('ft.sort') }}</label><input id="{{ pre }}-sort" type="number" name="sort" value="{{ it.sort or 100 }}" min="0" max="100000"></div>
+  </div>
+</div>
+{%- endmacro %}
+<div class="page-head">
+  <div><div class="row mb-2">{% if n %}{% if n.published %}<span class="badge green"><span class="dot"></span>{{ _('rn.pub') }}</span>{% else %}<span class="badge gray"><span class="dot"></span>{{ _('rn.draft') }}</span>{% endif %}{% endif %}</div>
+    <h1>{{ _('rn.edit', v=n.version) if n else _('rn.new') }}</h1><p class="lead">{{ _('rn.lead') }}</p></div>
+  <div class="actions">
+    <a class="btn secondary" href="{{ url_for('admin.notes') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a>
+    {% if n %}<a class="btn secondary" href="{{ url_for('public.release_note', version=n.version) }}" target="_blank" rel="noopener">{{ icon('external', 16) }}{{ _('rn.preview') }}</a>{% endif %}
+  </div>
+</div>
+{{ errs(errors) }}
+
+<form method="post" action="{{ url_for('admin.note_edit', nid=n.id) if n else url_for('admin.note_edit') }}" class="card mt-4" novalidate>
+  {{ csrf() }}
+  <div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
+  <div class="card-body stack">
+    <div class="form-grid form-3">
+      <div class="field{{ ' has-error' if ferr.version }}"><label for="f-version">{{ _('rn.version') }}</label>
+        <input id="f-version" class="mono" name="version" value="{{ f.version or '' }}" maxlength="40" required placeholder="0.22.0"{% if ferr.version %} aria-invalid="true"{% endif %}>
+        {% if ferr.version %}<span class="err-msg">{{ icon('alert', 12) }}{{ ferr.version }}</span>{% endif %}</div>
+      <div class="field"><label for="f-channel">{{ _('rn.channel') }}</label>
+        <select id="f-channel" name="channel">{% for c in ('beta', 'stable') %}<option value="{{ c }}" {{ 'selected' if f.channel == c }}>{{ _('ui.ch_' ~ c) }}</option>{% endfor %}</select></div>
+      <div class="field{{ ' has-error' if ferr.released_on }}"><label for="f-date">{{ _('rn.date') }}</label>
+        <input id="f-date" type="date" name="released_on" value="{{ f.released_on or '' }}">
+        {% if ferr.released_on %}<span class="err-msg">{{ ferr.released_on }}</span>{% else %}<span class="help">{{ _('rn.date_help') }}</span>{% endif %}</div>
+    </div>
+    <div class="lang-grid">
+      {% for l in ('pt', 'en', 'es') %}
+      <div class="field"><label for="f-sum-{{ l }}"><span class="lang-tag">{{ l|upper }}</span>{{ _('rn.summary') }}{% if l != 'pt' %} <span class="opt">({{ _('ui.optional') }})</span>{% endif %}</label>
+        <textarea id="f-sum-{{ l }}" name="summary_{{ l }}" rows="3" maxlength="600">{{ f['summary_' ~ l] or '' }}</textarea></div>
+      {% endfor %}
+    </div>
+    <label class="toggle"><input type="checkbox" name="published" value="1" {{ 'checked' if f.published }}> {{ _('rn.published') }}</label>
+  </div>
+  <div class="card-foot"><span></span><button class="btn primary">{{ _('common.save') }}</button></div>
+</form>
+
+{% if n %}
+<section class="card section" id="items" aria-labelledby="it-t">
+  <div class="card-head"><h2 id="it-t">{{ _('rn.items') }}</h2><span class="sub">{{ items|length }}</span></div>
+  {% for it in items %}
+  <form method="post" action="{{ url_for('admin.note_item', nid=n.id, iid=it.id) }}" class="item-row">
+    {{ csrf() }}
+    {{ item_fields(it, 'i' ~ it.id) }}
+    <div></div>
+    <div class="row-between"><span class="badge kind-{{ it.kind }}">{{ _('st.k_' ~ it.kind) }}</span>
+      <div class="form-actions">
+        <button class="btn danger-ghost sm" formaction="{{ url_for('admin.note_item_delete', nid=n.id, iid=it.id) }}" formnovalidate>{{ icon('x', 14) }}{{ _('rn.delete_item') }}</button>
+        <button class="btn secondary sm">{{ _('rn.save_item') }}</button></div></div>
+  </form>
+  {% else %}
+  <div class="card-body"><p class="muted">{{ _('rn.no_items') }}</p></div>
+  {% endfor %}
+  <form method="post" action="{{ url_for('admin.note_item', nid=n.id) }}" class="item-row card-foot-like">
+    {{ csrf() }}
+    {{ item_fields({'kind': 'new', 'sort': (items|length + 1) * 10}, 'new') }}
+    <div></div>
+    <div class="form-actions"><button class="btn primary sm">{{ icon('plus', 14) }}{{ _('rn.add_item') }}</button></div>
+  </form>
+</section>
+
+<section class="card warn section"><div class="card-body row-between">
+  <div><h3>{{ _('rn.delete') }}</h3><p class="small muted">{{ _('rn.delete_confirm') }}</p></div>
+  <form method="post" action="{{ url_for('admin.note_delete', nid=n.id) }}" data-confirm="{{ _('rn.delete_confirm') }}" data-confirm-title="{{ _('rn.delete') }} {{ n.version }}?" data-confirm-ok="{{ _('rn.delete') }}" data-danger>{{ csrf() }}<button class="btn danger-ghost">{{ icon('x', 16) }}{{ _('rn.delete') }}</button></form>
+</div></section>
+{% endif %}
+{% endblock %}

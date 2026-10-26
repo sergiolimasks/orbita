@@ -1,5 +1,11 @@
 # xcloud-launcher
 
+> **v0.20.0 do app (h264play):** o modo PC saiu do app. O Xbox não abre mais a
+> conexão :9002 nem recebe vídeo/áudio do PC; este launcher (e o capture-rtp)
+> ficam no repo só como referência/ferramenta de bancada. Desde a v0.20.1
+> nem o LOG/STAT por UDP :9003 vai mais pro PC (log beta por HTTPS, ver
+> app/h264play/LOGS-UPLOAD.md). Ver app/h264play/STANDALONE-STAGE5.md.
+
 PC-side daemon the Xbox app talks to so it can pick a game: it serves the
 xCloud catalog, starts/stops `capture-rtp` for the chosen title, reports
 queue/provisioning/streaming status, restarts dead sessions on its own and
@@ -50,7 +56,7 @@ launcher (Ctrl-C / SIGTERM) also stops its capture-rtp.
 
 ## Protocol (TCP, UTF-8 lines ending in `\n`, fields separated by TAB)
 
-Xbox → PC: `HELLO\t<ver>`, `LIST`, `PLAY\t<TITLEID>`, `STOP`, `PING`.
+Xbox → PC: `HELLO\t<ver>`, `LIST`, `PLAY\t<TITLEID>`, `STOP`, `PAUSE` (v0.19.3), `PING`.
 
 PC → Xbox: `STATE\t<CODE>\t<text>`, `LOGIN\t<url>\t<code>`,
 `GAME\t<TITLEID>\t<name>\t<recent 0|1>` … `END`, `PONG`.
@@ -92,6 +98,21 @@ sent on HELLO and on changes; LIST is answered with the GAME…END block.
   `Signed in!` the pending LIST/PLAY is resumed. If capture-rtp still fails on
   credentials right after that login → ERROR (no login loop).
 * **STOP** → stops capture (and a pending login), `STATE IDLE`.
+* **PAUSE** (v0.19.3, Back+Start on the Xbox) → the Xbox went back to its
+  menu but the game stays open: capture-rtp keeps running (xCloud keepalive,
+  video on :9000 that the Xbox throws away), no STATE change. Then:
+  * `PLAY` of the **same** title → resumed at once: no new capture-rtp, just
+    the current `STATE` again (the Xbox opens a new :9000 connection, which
+    capture-rtp starts with an IDR);
+  * `PLAY` of **another** title → the paused capture is stopped first
+    (SIGINT → its DELETE), then the new one starts — same as any PLAY;
+  * `STOP` → as always;
+  * the paused game dies (capture-rtp exits, AU counter frozen, or a
+    restart was already scheduled) → **no restart**: `STATE IDLE
+    Sessao do xCloud encerrada: <reason>`; the next PLAY opens a new session.
+  PAUSE with nothing running is ignored. Compatibility: an older Xbox never
+  sends PAUSE (it sends STOP); an older launcher logs PAUSE as an unknown
+  command and keeps the game running (watchdog restarts still apply).
 * **Xbox disconnects** while a game runs → the game keeps running for 5 min;
   on reconnect HELLO gets `STATE STREAMING <name>`. After 5 min it is stopped.
 * **PING** → `PONG`.

@@ -1,0 +1,30 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, status, empty with context %}{% from "_report_parts.html" import gallery, timeline with context %}
+{% block title %}#{{ r.id }} · {{ _('area.myreports') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('area.myreports'), url_for('tester.reports')) }}{{ crumb('#' ~ r.id) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><div class="row mb-2">{{ status(r.status) }}<span class="muted small">#{{ r.id }} · {{ r.created_at|when }}</span></div>
+    <h1>{{ r.description.split('\n')[0]|truncate(90) }}</h1></div>
+  <div class="actions"><a class="btn secondary" href="{{ url_for('tester.reports') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a></div>
+</div>
+<div class="grid g-main">
+  <div class="stack">
+    <section class="card"><div class="card-head"><h2>{{ _('ui.description') }}</h2></div>
+      <div class="card-body"><p class="desc-block">{{ r.description }}</p></div></section>
+    <section class="card"><div class="card-head"><h2>{{ icon('image', 18) }}{{ _('adm.photos') }}</h2><span class="sub">{{ files|length }}</span></div>
+      <div class="card-body">{% if files %}{{ gallery(files, r.id) }}{% else %}<p class="muted">{{ _('ui.no_photos') }}</p>{% endif %}</div></section>
+  </div>
+  <div class="stack">
+    <section class="card"><div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
+      <div class="card-body"><dl class="kv">
+        <dt>{{ _('rep.status') }}</dt><dd>{{ status(r.status) }}</dd>
+        <dt>{{ _('rep.version') }}</dt><dd>{{ r.version or '—' }}</dd>
+        <dt>{{ _('rep.game') }}</dt><dd>{{ r.game or '—' }}</dd>
+        <dt>{{ _('adm.console') }}</dt><dd>{% if r.console_id %}<code>{{ r.console_id }}</code>{% else %}—{% endif %}</dd>
+        <dt>{{ _('ui.updated') }}</dt><dd>{{ r.updated_at|when }}</dd>
+      </dl></div></section>
+    <section class="card"><div class="card-head"><h2>{{ icon('activity', 18) }}{{ _('ui.timeline') }}</h2></div>
+      <div class="card-body">{{ timeline(r, events) }}</div></section>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ n.version }} · {{ _('st.notes') }} — {{ brand.name }}{% endblock %}
+{% block main %}
+<section class="wrap">
+  <a class="back-link" href="{{ url_for('public.status') }}#rn-t">← {{ _('st.back') }}</a>
+  {% if not n.published %}<div class="draft-banner" role="status">{{ icon('alert', 16) }}{{ _('st.draft') }}</div>{% endif %}
+  <div class="rn-layout">
+    <div>
+      <div class="rn-hero">
+        <span class="eyebrow">{{ _('st.notes') }}</span>
+        <div class="ver">{{ n.version }}</div>
+        <p><span class="fpill {{ 'fs-working' if n.channel == 'stable' else 'fs-beta' }}">{{ _('ui.ch_' ~ n.channel) }}</span>
+          <span class="muted small">· {{ n.released_on|date if n.released_on else _('st.unreleased') }}</span></p>
+        {% if loc(n, 'summary') %}<p class="lead">{{ loc(n, 'summary') }}</p>{% endif %}
+      </div>
+      {% for k in kinds %}
+      {% set its = items|selectattr('kind', 'equalto', k)|list %}
+      {% if its %}
+      <h2 class="rn-kind-title"><span class="fpill k-{{ k }}">{{ _('st.k_' ~ k) }}</span><span class="muted small">{{ its|length }}</span></h2>
+      <div class="rn-card"><ul class="rn-items">
+        {% for it in its %}<li><span class="muted small">{% if it.f_status %}<span class="fpill fs-{{ it.f_status }}">{{ _('st.s_' ~ it.f_status) }}</span>{% endif %}</span>
+          <span>{{ loc(it, 'text') }}{% if it.feature_id and loc(it, 'f_name') != loc(it, 'text') %}<span class="rel">{{ _('st.related') }} {{ loc(it, 'f_name') }}</span>{% endif %}</span></li>{% endfor %}
+      </ul></div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <aside>
+      {% if others %}
+      <h3>{{ _('st.other_versions') }}</h3>
+      <nav class="side-list">{% for o in others %}<a href="{{ url_for('public.release_note', version=o.version) }}"><span>{{ o.version }}</span><span class="muted small">{{ o.released_on|date if o.released_on else _('ui.ch_' ~ o.channel) }}</span></a>{% endfor %}</nav>
+      {% endif %}
+      <p class="mt"><a href="{{ url_for('public.status') }}">{{ _('st.see_status') }} →</a></p>
+    </aside>
+  </div>
+</section>
+{% endblock %}

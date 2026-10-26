@@ -1,0 +1,86 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, empty with context %}
+{% block title %}{{ _('adm.versions') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.versions')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('adm.versions') }}</h1><p class="lead">{{ _('ui.versions_lead') }}</p></div>
+  <div class="actions"><a class="btn secondary" href="{{ url_for('admin.notes') }}">{{ icon('file', 16) }}{{ _('rn.nav') }}</a></div>
+</div>
+
+{% if r2_error %}<div class="alert error mb-4">{{ icon('alert', 18) }}<div>{{ _('adm.r2_error') }}</div></div>{% endif %}
+
+{% if pending %}
+<section class="card warn mb-4" id="pending" aria-labelledby="pp-t">
+  <div class="card-head"><h2 id="pp-t">{{ icon('rocket', 18) }}{{ _('adm.promote_pending') }}</h2><span class="badge yellow">{{ pending|length }}</span></div>
+  <div class="card-body stack">
+    <p class="small muted">{{ _('ui.promote_how') }}</p>
+    {% for p in pending %}
+    <div class="stack-sm">
+      <div class="row small"><b class="mono">{{ p.version }}</b><span class="muted">· {{ _('ui.requested') }} {{ p.requested_at|when }}</span></div>
+      <div class="copy-line"><code id="cmd-{{ p.id }}">cd /mnt/storage/projetos/PROJETOS/XCloud360 &amp;&amp; python3 tools/release.py promote {{ p.version }}</code>
+        <button type="button" class="btn sm" data-copy="#cmd-{{ p.id }}" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
+    </div>
+    {% endfor %}
+    <p class="help">{{ icon('info', 12) }} {{ _('ui.promote_autoclose') }}</p>
+  </div>
+</section>
+{% endif %}
+
+<div class="grid g-2">
+  {% for ch, m in [('stable', stable), ('beta', beta)] %}
+  <section class="card channel is-{{ ch }}" aria-labelledby="ch-{{ ch }}">
+    <div class="card-body">
+      <div class="c-top"><span class="badge {{ ch }}" id="ch-{{ ch }}"><span class="dot"></span>{{ _('ui.ch_' ~ ch) }}</span>
+        {% if m and m.public %}<span class="badge outline">{{ _('adm.public') }}</span>{% endif %}</div>
+      {% if m %}
+      <div class="c-ver">{{ m.version }}</div>
+      <div class="c-facts">
+        <div><span>{{ _('area.size') }}</span><b>{{ m.size|size }}</b></div>
+        <div><span>SHA-256</span><b class="hash" title="{{ m.sha256 }}">{{ m.sha256[:16] }}…</b></div>
+      </div>
+      {% if m.notes %}<div class="mt-4"><span class="label">{{ _('area.notes') }}</span><p class="notes mt-2">{{ m.notes }}</p></div>{% endif %}
+      {% if ch == 'beta' and (not stable or semver(m.version) > semver(stable.version)) %}
+      <div class="row mt-4">
+        {% if m.version in pending_versions %}
+          <span class="btn secondary disabled" aria-disabled="true">{{ icon('clock', 16) }}{{ _('ui.promote_requested') }}</span>
+        {% else %}
+          <form method="post" action="{{ url_for('admin.promote') }}" data-confirm="{{ _('ui.promote_confirm', v=m.version) }}" data-confirm-title="{{ _('adm.promote') }}?" data-confirm-ok="{{ _('adm.promote') }}">{{ csrf() }}<input type="hidden" name="version" value="{{ m.version }}"><button class="btn primary">{{ icon('rocket', 16) }}{{ _('adm.promote') }}</button></form>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% else %}
+      <div class="c-ver muted">—</div><p class="muted small mt-2">{{ _('ui.no_channel') }}</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<section class="card section" aria-labelledby="all-v">
+  <div class="card-head"><h2 id="all-v">{{ _('ui.all_versions_t') }}</h2><span class="sub">{{ versions|length }}</span></div>
+  {% if versions %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('rep.version') }}</th><th>{{ _('adm.channel') }}</th><th>{{ _('area.size') }}</th><th>{{ _('area.notes') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    <tbody>
+    {% for m in versions %}
+    <tr>
+      <td class="lead-cell nowrap"><b class="mono">{{ m.version }}</b>
+        {% if stable and m.version == stable.version %} <span class="badge stable">{{ _('ui.current') }}</span>{% endif %}
+        {% if beta and m.version == beta.version %} <span class="badge beta">{{ _('ui.current') }}</span>{% endif %}
+        {% if m.public %} <span class="badge outline">{{ _('adm.public') }}</span>{% endif %}</td>
+      <td data-label="{{ _('adm.channel') }}"><span class="badge {{ m.channel }}"><span class="dot"></span>{{ _('ui.ch_' ~ m.channel) if m.channel in ('beta', 'stable') else m.channel }}</span></td>
+      <td data-label="{{ _('area.size') }}" class="num nowrap">{{ m.size|size }}</td>
+      <td data-label="{{ _('area.notes') }}" class="small muted"><span class="clamp2">{{ m.notes }}</span></td>
+      <td class="actions">
+        {% if m.version in pending_versions %}<span class="badge yellow">{{ icon('clock', 12) }}{{ _('ui.promote_requested') }}</span>
+        {% elif not stable or semver(m.version) > semver(stable.version) %}<form method="post" action="{{ url_for('admin.promote') }}" data-confirm="{{ _('ui.promote_confirm', v=m.version) }}" data-confirm-title="{{ _('adm.promote') }}?" data-confirm-ok="{{ _('adm.promote') }}">{{ csrf() }}<input type="hidden" name="version" value="{{ m.version }}"><button class="btn secondary sm">{{ icon('rocket', 14) }}{{ _('adm.promote') }}</button></form>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}{{ empty(_('adm.no_versions'), '', 'inbox') }}{% endif %}
+</section>
+{% endblock %}

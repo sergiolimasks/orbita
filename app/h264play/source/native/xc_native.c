@@ -42,6 +42,13 @@ static volatile unsigned g_play_seq;
 static volatile int      g_kf_req, g_kf_force;
 /* hw1 -> main */
 static volatile int      g_att;        /* hw1 is attached (owns a PC or may create one) */
+/* v0.19.3: main -> hw1, jogo pausado no menu (xn_pause / xn_resume) */
+static volatile int      g_paused;
+static char              g_title[48], g_name[64];   /* main: o do último xn_play */
+/* hw1: pausa já aplicada em qual PC (PC novo nasce sem pausa) */
+static xcw_t   *g_pause_pc;
+static int      g_pause_on;
+static uint32_t g_pause_aus, g_pause_audio;
 
 /* hw1 only */
 static xcws_t   g_g;
@@ -104,6 +111,8 @@ static void cb_log(void *u, const char *line) {
 
 static void cb_au(void *u, const uint8_t *au, size_t n, const xcw_au_info_t *info) {
     (void)u;
+    /* v0.19.3: pausado (a hw1 ainda não aplicou no PC): fora, sem resync */
+    if (g_paused) { g_pause_aus++; return; }
     if (g_p.inject_au && g_p.inject_au(au, n, info->idr, info->params_prepended) == 0) {
         g_inj_aus++;
         g_inj_bytes += n;
@@ -130,6 +139,7 @@ static void cb_au(void *u, const uint8_t *au, size_t n, const xcw_au_info_t *inf
 static void cb_audio(void *u, uint16_t seq, uint32_t ts, const uint8_t *p, size_t n) {
     (void)u;
     g_a_pkts++;
+    if (g_paused) { g_pause_audio++; return; }   /* v0.19.3: menu é mudo */
     if (g_p.audio) g_p.audio(seq, ts, p, n);
 }
 
@@ -177,8 +187,15 @@ int xn_init(const xn_platform_t *p, const xn_cfg_t *cfg) {
 
 /* v0.19.2: a session whose live phases sit on hw1 has no thread running
  * but is still alive (owner != DONE). */
-int xn_can_play(void) { return g_inited && !g_want && !g_att && !xst_running() && xst_owner() == XSM_OWN_DONE; }
-int xn_busy(void) { return g_inited && (g_want || g_att || xst_running() || xst_owner() != XSM_OWN_DONE); }
+/* v0.20.4: a hw 3 também é usada pelo worker das capas, pela atualização e
+ * pela validação da chave beta; com eles lá, xst_running() dava "sessão
+ * ocupada" sem jogo nenhum ("Feche o jogo aberto antes de atualizar").
+ * O main diz quem mais está na hw 3; o padrão (hosttests) é ninguém. */
+__attribute__((weak)) int xc_hw3_other_owner(void) { return 0; }
+static int sess_thread_running(void) { return xst_running() && !xc_hw3_other_owner(); }
+
+int xn_can_play(void) { return g_inited && !g_want && !g_att && !sess_thread_running() && xst_owner() == XSM_OWN_DONE; }
+int xn_busy(void) { return g_inited && (g_want || g_att || sess_thread_running() || xst_owner() != XSM_OWN_DONE); }
 int xn_session_thread_busy(void) { return xst_running(); }
 
 static int owner_locked(void) {   /* xs_lock held */
@@ -249,6 +266,9 @@ int xn_play(const char *title_id, const char *name, int f2p) {
     }
     g_kf_req = g_kf_force = 0;
     g_play_seq++;
+    g_paused = 0;   /* v0.19.3 */
+    snprintf(g_title, sizeof(g_title), "%s", title_id);
+    snprintf(g_name, sizeof(g_name), "%s", name ? name : "");
     fence();
     g_want = 1;   /* hw1 attaches on its next step */
     logf_("[xn] PLAY %s (%s)%s: sessao no Xbox", title_id, name, f2p ? " f2p" : "");
@@ -264,6 +284,65 @@ void xn_stop(void) {
 }
 
 unsigned xn_state_line(char *out, size_t cap) { return xst_state_line(out, cap); }
+
+/* ---- v0.19.3: pausa no menu ---- */
+
+/* A thread da sessão saiu e a máquina terminou (DONE/ERROR): só falta
+ * soltar o WebRTC. */
+static int machine_finished(void) { return !xst_running() && xst_owner() == XSM_OWN_DONE; }
+
+int xn_pause(void) {
+    if (!g_inited || !g_want || machine_finished()) return XN_EBUSY;
+    xsm_t *m = xst_machine();
+    if (m) xsm_set_keep(m, 1);
+    fence();
+    g_paused = 1;
+    fence();
+    logf_("[xn] PAUSA: %s segue aberto no menu (keepalive), video/audio descartados", g_title);
+    return XN_OK;
+}
+
+int xn_resume(const char *title_id) {
+    if (!g_inited || !g_want || !g_paused || machine_finished()) return XN_EBUSY;
+    if (!title_id || strcmp(title_id, g_title)) return XN_EBUSY;
+    xsm_t *m = xst_machine();
+    if (m) xsm_set_keep(m, 0);
+    fence();
+    g_paused = 0;   /* a hw1 liga o IDR gate e pede o keyframe (apply_pause) */
+    fence();
+    logf_("[xn] VOLTA: %s na mesma sessao (sem /play), pedindo keyframe; %u AUs / %u audio descartados no menu",
+          g_title, (unsigned)g_pause_aus, (unsigned)g_pause_audio);
+    return XN_OK;
+}
+
+int xn_session(char *title_id, size_t tn, char *name, size_t nn) {
+    int st = XN_SESS_NONE;
+    if (g_inited) {
+        if (g_want && g_paused && machine_finished()) {
+            /* o xCloud derrubou com o jogo no menu: solta o WebRTC já */
+            logf_("[xn] sessao pausada de %s acabou: webrtc desligado", g_title);
+            xn_stop();
+        }
+        if (g_want) {
+            if (g_paused) {
+                st = XN_SESS_PAUSED;
+            } else if (machine_finished()) {
+                st = XN_SESS_ENDING;   /* acabou no jogo: o main faz o xn_stop */
+            } else {
+                xsm_t *m = xst_machine();
+                xs_lock();
+                int streaming = m && m->phase == XSM_P_STREAMING;
+                xs_unlock();
+                st = streaming ? XN_SESS_PLAYING : XN_SESS_STARTING;
+            }
+        } else if (xn_busy()) {
+            st = XN_SESS_ENDING;
+        }
+    }
+    if (title_id && tn) snprintf(title_id, tn, "%s", st ? g_title : "");
+    if (name && nn) snprintf(name, nn, "%s", st ? g_name : "");
+    return st;
+}
 
 void xn_request_keyframe(int force) {
     if (force) g_kf_force = 1;
@@ -363,6 +442,19 @@ static void snapshot(xcw_t *x) {
         logf_("[xn] SRTP: %u pacotes rejeitados (total %u)", s.srtp_errors - g_srtp_logged, s.srtp_errors);
         g_srtp_logged = s.srtp_errors;
     }
+}
+
+/* v0.19.3: hw1, leva o g_paused pro PC atual (e pro PC novo de uma
+ * re-sinalização). Entrando na pausa: controles neutros no xCloud. */
+static void apply_pause(xcw_t *x) {
+    if (!x) return;
+    int p = g_paused;
+    if (x == g_pause_pc && p == g_pause_on) return;
+    int was = x == g_pause_pc ? g_pause_on : 0;
+    xcw_set_video_paused(x, p);
+    if (p && !was) xn_pad_neutral();
+    g_pause_pc = x;
+    g_pause_on = p;
 }
 
 static void detach(void) {
@@ -475,6 +567,9 @@ void xn_net_step(void) {
         g_inj_aus = g_inj_drops = g_a_pkts = g_pcs = g_steps = 0;
         g_inj_bytes = g_rtc_us = 0;
         g_last_xcw_state = -1;
+        g_pause_pc = NULL;
+        g_pause_on = 0;
+        g_pause_aus = g_pause_audio = 0;
         xs_lock();
         memset(&g_sh, 0, sizeof(g_sh));
         xs_unlock();
@@ -488,12 +583,14 @@ void xn_net_step(void) {
 
     uint64_t t0 = xcw_now_us();
     xcw_t *x = xcws_pc(&g_g);
+    apply_pause(x);   /* v0.19.3: antes dos pedidos e do xcws_step */
     if (x) {
         if (g_kf_force) { g_kf_force = 0; g_kf_req = 0; xcw_request_keyframe(x, 1); }
         else if (g_kf_req) { g_kf_req = 0; xcw_request_keyframe(x, 0); }
     }
     xcws_step(&g_g);
     x = xcws_pc(&g_g);
+    apply_pause(x);   /* PC novo (re-sinalização) no meio da pausa */
     g_rtc_us += xcw_now_us() - t0;
     g_steps++;
 
@@ -532,7 +629,7 @@ void xn_net_step(void) {
 xcw_t *xn_pc(void) { return g_att ? xcws_pc(&g_g) : NULL; }
 
 void xn_pad_frame(const uint8_t *buf, size_t n) {
-    if (!g_att) return;
+    if (!g_att || g_paused) return;   /* v0.19.3: pausado = neutro */
     xcw_t *x = xcws_pc(&g_g);
     if (!x) return;
     xcp_gamepad_t pad;

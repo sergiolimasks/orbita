@@ -1,23 +1,36 @@
 /*
- * XCloud360 — h264play v0.7.0 hybrid TCP live + embedded fallback.
+ * XCloud360 — h264play: cliente xCloud nativo pro Xbox 360 (libxenon).
  *
- * Boot flow:
- *   1. stream_init() — se Aurora ja tem netif up, skip network_init, connect TCP
- *   2. Se TCP conecta em <5s: length-prefix AU decode loop
- *   3. Se TCP falha OU eof: fallback pra embedded stream (proven v0.6.0 path)
+ * Boot: rede + thread de rede (hw 1), login Microsoft/Xbox e catálogo no
+ * próprio Xbox (source/login, hw 3), depois menu <-> jogo pra sempre.
+ * PLAY (A) abre a sessão xCloud pelo Xbox (source/session) e o WebRTC roda
+ * na thread de rede (source/webrtc, source/native), alimentando o decoder
+ * (frame threading, deps/xenon-pthread) + GPU (YUV->RGB no Xenos), o áudio
+ * Opus e o controle.
  *
- * Aurora-safe: nao chama network_init se netif.ip_addr.addr != 0.
- *
- * v0.16 (make MENU=1, padrão): boota num menu de jogos em vez de ir direto
- * pro stream. Conexão de controle com o launcher do PC (:9002, ctrl_conn.c),
- * lista de jogos no console (menu_ui.c/menu_model.c), PLAY -> o vídeo chega
- * na :9000 como antes -> pipeline de vídeo (run_video). Back+Start 2s no
- * jogo = STOP e volta pro menu. MENU=0 = fluxo antigo acima, intacto.
- *
- * v0.17 (make XBOX_LOGIN=1, padrão): o próprio Xbox faz o login Microsoft/
- * Xbox e baixa o catálogo xCloud por HTTPS (source/login/, thread hw 3);
- * o PLAY continua indo pro launcher do PC. Falhou = catálogo do launcher
- * como na v0.16, com o passo que falhou na tela. XBOX_LOGIN=0 = v0.16.
+ * v0.16: menu de jogos; Back+Start 2 s no jogo = volta pro menu.
+ * v0.19.3: Back+Start não encerra a sessão (game_session.h): o jogo fica
+ * aberto no menu e o A nele volta na hora; outro jogo encerra antes.
+ * v0.20.0:
+ *   - menu novo (source/ui, MENU-UI.md) como padrão: hero + fileiras de
+ *     capas (source/catalog, CATALOG-COVERS.md), botões Reiniciar/Desligar
+ *     no topo, telas de estado. O menu de texto (menu_ui.c) saiu;
+ *   - o modo PC saiu: nada de launcher (:9002), vídeo TCP :9000, áudio UDP
+ *     :9004, controle/KFRQ UDP :9001 nem "B: usar o catálogo do PC". O app
+ *     só funciona nativo. tools/xcloud-launcher e tools/xcloud-capture
+ *     continuam no repo, mas o app não fala mais com eles;
+ * v0.20.1: marca orbita no menu; botão "Atualizar" (source/update,
+ *   UPDATE.md): checa sozinho depois do login e instala pelo próprio Xbox.
+ * v0.20.1: log/STAT por HTTPS pros testadores beta (source/login/xc_logup.c,
+ *   LOGS-UPLOAD.md): só com XC360/BETAKEY.TXT no pendrive; o UDP :9003 pro
+ *   PC saiu (era o último resquício do modo PC).
+ * v0.20.3 (BETA-GATE.md):
+ *   - build BETA=1: chave beta OBRIGATÓRIA e presa ao console (source/beta):
+ *     no boot, antes do login, valida XC360/BETAKEY.TXT (ou abre o teclado
+ *     na tela); ID de hardware (fusíveis + MAC) no lugar do CONSOLE.ID;
+ *     header X-Console em check/logs/update; Configurações no topo;
+ *   - atualização obrigatória: logo na entrada (depois da chave, antes do
+ *     login) procura versão nova; obrigatória = popup sem "Depois".
  */
 
 #include <stdio.h>
@@ -31,6 +44,7 @@
 #include <xenos/xenos.h>
 #include <xenos/xenos_videomodes.h>
 #include <xenon_soc/xenon_power.h>
+#include <xenon_smc/xenon_smc.h>   /* v0.19.3: Reiniciar/Desligar no menu */
 #include <ppc/timebase.h>
 #include <ppc/atomic.h>
 #include <time/time.h>
@@ -41,67 +55,66 @@
 #include <libavutil/mem.h>
 
 #include "tcp_stream.h"
-#include "input_udp.h"
 #ifdef XCLOUD360_GPU
 #include "gpu_present.h"   /* v0.15: YUV->RGB no Xenos (make GPU=1) */
 #endif
-#ifdef XCLOUD360_MENU
-#include "ctrl_conn.h"     /* v0.16: controle com o launcher do PC (:9002) */
 #include "menu_model.h"
-#include "menu_ui.h"
-#endif
-#ifdef XCLOUD360_LOGIN
+#include "game_session.h"   /* v0.19.3: jogo aberto no menu */
+#include "polite_wait.h"
+#include "ui/xui.h"          /* v0.20.0: menu novo */
+#include "ui/xui_mm.h"
+#include "ui/xui_cat.h"
+#include "ui/xui_fb_xenon.h"
+#include "catalog/xc_catalog.h"
 #include "login/login_task.h"   /* v0.17: login + catálogo no Xbox */
 #include "login/net_pipe.h"
-#endif
-#ifdef XCLOUD360_NATIVE
+#include "login/xc_logup.h"     /* v0.20.1: log dos testadores beta */
+#include "update/xc_update.h"   /* v0.20.1: atualização pelo próprio Xbox */
+#include "beta/xc_beta.h"       /* v0.20.3: chave beta presa ao console */
+#include "beta/xc_keypad.h"
 #include "native/xc_native.h"   /* stage 5: sessão + WebRTC no próprio Xbox */
 #include "webrtc/xc_udp_xenon.h"
 #include "login/xc_port.h"
-#endif
 #ifdef XCLOUD360_AUDIO
 #include "audio/audio.h"        /* v0.18: áudio do jogo (Opus) */
 /* v0.18: o teste offline (X) dura pelo menos 2 voltas do tom embutido. */
 #define AUDIO_TEST_US 9000000ULL
-/* v0.18.0: a 1a build pra hardware deu tela vermelha no boot, antes da rede.
- * Cada passo do boot vai pra tela: a foto mostra o último que passou. */
-#define BOOT_STEP(s) printf("[boot] %s\n", s)
-#else
-#define BOOT_STEP(s) ((void)0)
 #endif
+/* v0.18.0: cada passo do boot vai pra tela: a foto mostra o último que passou. */
+#define BOOT_STEP(s) printf("[boot] %s\n", s)
 
 extern const uint8_t embedded_stream[];
 extern const size_t embedded_stream_len;
 
 #ifndef XCLOUD360_BUILD_VERSION
-#define XCLOUD360_BUILD_VERSION "0.15.0"
+#define XCLOUD360_BUILD_VERSION "0.20.0"
 #endif
-#ifdef XCLOUD360_NATIVE
+/* v0.20.0: versão curta pra tela e pro log ("v0.20.0"). */
+#ifndef XCLOUD360_APP_VERSION
+#define XCLOUD360_APP_VERSION "v0.20.0"
+#endif
 #ifndef XST_HW_THREAD
 #define XST_HW_THREAD 3
 #endif
 #ifndef XCLOUD360_NATIVE_DEC_THREADS
 #define XCLOUD360_NATIVE_DEC_THREADS 4   /* v0.19.2: hw 4,2,5,3 (sessão na hw1) */
 #endif
+#ifndef XCLOUD360_BETA
+#define XCLOUD360_BETA 0
+#endif
+/* v0.20.3: plataforma do xc_beta (beta/xcb_port_xenon.c) */
+void xcbp_hw_material(uint64_t fuse[XCB_NFUSE], uint8_t mac[6]);
+const xcb_ops_t *xcbp_ops(void);
 #define XC360_STR_(x) #x
 #define XC360_STR(x) XC360_STR_(x)
-#endif
-
-#ifndef XCLOUD360_STREAM_SERVER_IP
-#define XCLOUD360_STREAM_SERVER_IP "192.168.15.64"
-#endif
-#ifndef XCLOUD360_STREAM_SERVER_PORT
-#define XCLOUD360_STREAM_SERVER_PORT 9000
-#endif
 
 #define FB_W 1280
 #define FB_H 720
 
 /* ============================================================
- *  P7.2 — 2-core pipeline
- *  Main thread (core 0):  decode, memcpy planes into ring slot
- *  Worker thread (core 2, primary of core 1): convert+present
- *  2-slot ring so main can produce N+1 while worker consumes N.
+ *  P7.2 — caminho de CPU (GPU=0): o main decodifica e copia os planos
+ *  pro ring de slots; o worker (hw 2) converte a metade de cima e a
+ *  thread de rede (hw 1) a de baixo.
  * ============================================================ */
 #define RING_SLOTS 2
 struct ring_slot {
@@ -124,11 +137,7 @@ static volatile int g_producer_done = 0;
 static volatile uint64_t g_cvt_us_total = 0;
 static volatile int g_worker_frames = 0;
 
-/* v0.14.4: convert dividido em duas metades. O worker (hw thread 2, núcleo 1)
- * faz a de cima; a thread de rede (hw thread 1, núcleo 0 — irmã do main, que
- * passa a maior parte do tempo esperando o decoder) faz a de baixo entre um
- * network_poll e outro, via convert_bottom_step(). Telemetria da v0.14.2:
- * decode a 59fps com ring vazio, mas só ~15fps na tela com convert ~64ms. */
+/* v0.14.4: convert dividido em duas metades (worker hw 2 + thread de rede). */
 static volatile int g_split_active = 0;
 static int g_bot_cons_idx = 0;            /* só a thread de rede */
 static volatile uint64_t g_bot_us_total = 0;
@@ -144,14 +153,6 @@ static uint64_t now_us(void) {
 
 /* ============================================================
  *  Fase 0 — Instrumentação AU→flip. Sob TRACE_LATENCY.
- *  4 timestamps do MESMO relógio (mftb) por AU sequencial:
- *   - t_arrival:  bytes do AU completos no ring
- *   - t_decoded:  avcodec_decode_video2 devolveu frame
- *   - t_dispatch: main thread produziu slot pro worker
- *   - t_flipped:  worker terminou o write no framebuffer
- *  + ring_bytes no instante de t_arrival.
- *  Array cíclico 64 amostras. Main escreve arrival/decoded/dispatch;
- *  worker escreve flipped indexado por au_seq lido do slot.
  * ============================================================ */
 #ifdef XCLOUD360_TRACE_LATENCY
 #define TRACE_HISTORY 64
@@ -169,8 +170,6 @@ static trace_slot_t g_trace[TRACE_HISTORY] __attribute__((aligned(128)));
 static uint64_t g_au_seq_counter = 0;
 static uint64_t g_trace_last_reported = 0;   /* último au_seq resumido */
 #ifdef XCLOUD360_GPU
-/* v0.15: com GPU o "flip" é a troca de scanout feita pelo main em
- * gpu_present_poll(), que chama isto com o au_seq passado no submit. */
 static void trace_on_gpu_flip(uint64_t seq, uint64_t t_flip_us) {
     int tslot = (int)(seq % TRACE_HISTORY);
     if (g_trace[tslot].au_seq != seq) return;
@@ -180,14 +179,7 @@ static void trace_on_gpu_flip(uint64_t seq, uint64_t t_flip_us) {
 #endif
 #endif
 
-/* -------- Direct Xenos tiled framebuffer writer (P7.1) -----------------
- * P7.0 used console_pset() per pixel — ~29ms/frame @720p60 = infeasible.
- * P7.1 replicates the exact formula from libxenon/drivers/console/console.c
- * inline and writes 4 pixels per iteration (aligned x). Xenos tile layout:
- * 32x32 tiles, blocks of 4x1 pixels contiguously stored, X-swap on (y&8).
- * fb pointer comes from the ATI info register at 0xec806100.
- * `| 0x80000000` maps to non-cached alias — writes go straight to RAM,
- * no dcbst needed. */
+/* -------- Direct Xenos tiled framebuffer writer (P7.1, caminho de CPU) ---- */
 static uint32_t* g_fb = NULL;
 static int g_fb_stride_pixels = 0;   /* padded to multiple of 32 */
 
@@ -213,8 +205,6 @@ static void fb_direct_init(void) {
            (void*)g_fb, g_fb_stride_pixels, raw_w, raw_h);
 }
 
-/* Compute Xenos tile pixel offset. x must be pixel-aligned (any value works,
- * but the 4-pixel batch below assumes x % 4 == 0). */
 static inline uint32_t fb_tile_off(int x, int y) {
     return ((y >> 5) * 32 * g_fb_stride_pixels
           + ((x >> 5) << 10)
@@ -224,7 +214,6 @@ static inline uint32_t fb_tile_off(int x, int y) {
           ^ ((y & 8) << 2);
 }
 
-/* Pack BGRA0 word matching what console_pset does: (b<<24)|(g<<16)|(r<<8). */
 static inline uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)b << 24) | ((uint32_t)g << 16) | ((uint32_t)r << 8);
 }
@@ -235,25 +224,17 @@ static inline uint8_t clip8(int v) {
     return (uint8_t)v;
 }
 
-/* BT.601 SD YUV to RGB (video-range 16-235 Y, 16-240 UV).
- * Integer fixed-point Q10. Chroma is 4:2:0 (subsampled 2x in both dims). */
-
-/* P7.1: 4 luma per iter, 2 rows in parallel. Compute base tile offset ONCE
- * per 4-pixel block (aligned to 4 in X), then 4 contiguous 32-bit stores
- * (Xenos 4x1 sub-block). This is the inner loop — hot path budget was
- * ~29ms; goal is <=3ms. */
+/* BT.601 (video-range), 4 luma por iteração, 2 linhas. */
 static void convert_and_present_2rows_fast(
     const uint8_t* Y0, const uint8_t* Y1,
     const uint8_t* U,  const uint8_t* V,
     int W, int y_row)
 {
-    /* Bounds guard: don't write past active display area. */
     if (!g_fb) return;
     if ((uint32_t)(y_row + 1) >= g_fb_height) return;
     if ((uint32_t)W > g_fb_width) W = g_fb_width;
 
     for (int x = 0; x < W; x += 4) {
-        /* 2 UV samples cover 4 luma horizontally (4:2:0) */
         int u0 = U[(x  )>>1] - 128, v0 = V[(x  )>>1] - 128;
         int u1 = U[(x+2)>>1] - 128, v1 = V[(x+2)>>1] - 128;
         int rc0 = ( 1596 * v0 + 512) >> 10;
@@ -272,7 +253,6 @@ static void convert_and_present_2rows_fast(
         int y12 = 1164 * (Y1[x+2] - 16) >> 10;
         int y13 = 1164 * (Y1[x+3] - 16) >> 10;
 
-        /* 4-pixel block is contiguous in Xenos tile — base+0..3 covers it */
         uint32_t base_r0 = fb_tile_off(x, y_row);
         uint32_t base_r1 = fb_tile_off(x, y_row + 1);
         g_fb[base_r0 + 0] = pack_rgb(clip8(y00 + rc0), clip8(y00 + gc0), clip8(y00 + bc0));
@@ -289,20 +269,14 @@ static void convert_and_present_2rows_fast(
 /* Worker thread — runs on core 1 primary (thread 2 in PIR terms). */
 static void worker_convert(void) {
     while (1) {
-        /* Wait for a produced slot */
         int idx = g_cons_idx % RING_SLOTS;
         while (!g_ring[idx].ready) {
             if (g_producer_done) {
-                /* Drain: one more check then bail */
                 if (!g_ring[idx].ready) return;
                 break;
             }
-            /* spin-wait; short delay to avoid starving SMT peer */
             for (volatile int i = 0; i < 100; i++) {}
         }
-
-        /* Acquire barrier: ensure plane reads happen AFTER seeing ready=1.
-         * lwsync = load-load + load-store barrier (lightweight sync). */
         __asm__ __volatile__("lwsync" ::: "memory");
         uint64_t t0 = now_us();
         int W = g_ring[idx].W;
@@ -319,7 +293,6 @@ static void worker_convert(void) {
                 W, y);
         }
         if (split) {
-            /* Espera a thread de rede terminar a metade de baixo deste slot. */
             while (!g_ring[idx].bottom_done) {
                 if (g_producer_done) return;
                 __asm__ __volatile__("db16cyc" ::: "memory");
@@ -331,8 +304,6 @@ static void worker_convert(void) {
         g_cvt_us_total += (t1 - t0);
         g_worker_frames++;
 #ifdef XCLOUD360_TRACE_LATENCY
-        /* Registrar t_flipped na célula do au_seq que esse slot representa.
-         * lwsync acima já garantiu que au_seq foi lido em ordem com ready=1. */
         uint64_t seq = g_ring[idx].au_seq;
         int tslot = (int)(seq % TRACE_HISTORY);
         g_trace[tslot].t_flipped = t1;
@@ -340,21 +311,18 @@ static void worker_convert(void) {
         g_trace[tslot].flipped_seen = 1;
 #endif
         g_ring[idx].ready = 0;   /* free the slot */
-        /* Ordem importa: ready=0 antes de bottom_done=0. A thread de rede lê
-         * bottom_done primeiro e ready depois, então nunca vê bottom_done=0
-         * novo com ready=1 velho (e reconverteria o frame antigo). */
+        /* Ordem importa: ready=0 antes de bottom_done=0. */
         __asm__ __volatile__("sync" ::: "memory");
         g_ring[idx].bottom_done = 0;
         g_cons_idx++;
     }
 }
 
-/* v0.14.4: hook da thread de rede. Converte a metade de baixo do próximo
- * slot se ele estiver pronto. Retorna 1 se fez trabalho. */
+/* v0.14.4: hook da thread de rede: metade de baixo do próximo slot. */
 static int convert_bottom_step(void) {
     if (!g_split_active) return 0;
     int idx = g_bot_cons_idx % RING_SLOTS;
-    if (g_ring[idx].bottom_done) return 0;      /* worker ainda não liberou */
+    if (g_ring[idx].bottom_done) return 0;
     __asm__ __volatile__("lwsync" ::: "memory");
     if (!g_ring[idx].ready) return 0;
     __asm__ __volatile__("lwsync" ::: "memory");
@@ -377,15 +345,7 @@ static int convert_bottom_step(void) {
     return 1;
 }
 
-/* P11 v0.9.6: radial 8000 do v0.9.5 não pegou drift assimétrico do stick
- * (cursor indo pra ESQUERDA — X drift consistente > 8000 com Y ~0), por isso
- * o limiar de 12000.
- * v0.15.1: radial COM RESCALA. O v0.9.6 zerava cada eixo abaixo de 12000 e
- * passava o valor cru acima disso: o stick saltava de 0 pra 37% de força de
- * uma vez (e o jogo ainda aplica a deadzone dele por cima) → movimento
- * "bruto", passando do ponto. Agora a magnitude abaixo de STICK_DZ vira 0 e
- * acima cresce contínua de 0 até 100%, saturando em STICK_OUTER (sticks
- * gastos não chegam a 32767). Mesmo limiar de 12000 → drift continua morto. */
+/* v0.15.1: deadzone radial com rescala (limiar 12000 mata o drift). */
 #ifndef STICK_DZ
 #define STICK_DZ 12000
 #endif
@@ -404,14 +364,7 @@ static void apply_deadzone(int16_t *x, int16_t *y, float dz) {
     *x = (int16_t)ox;
     *y = (int16_t)oy;
 }
-/* v0.15.3: stick de câmera (direito). Calibrado como o esquerdo ficava
- * "bruto". Curva sobre a magnitude normalizada m (0..1) depois da deadzone:
- *   m' = ADZ + (GAIN - ADZ) * m^EXPO      (m > 0)
- * ADZ ("anti-deadzone") começa a saída logo acima da deadzone do próprio
- * jogo (~20-25%) — sem isso, GAIN<1 e curva empurravam o começo do giro pra
- * ~2/3 do curso físico. GAIN = velocidade máxima (70% da de antes), EXPO =
- * quão devagar cresce no meio. Deadzone própria menor (o drift era só no
- * stick esquerdo). */
+/* v0.15.3: stick de câmera: m' = ADZ + (GAIN - ADZ) * m^EXPO. */
 #ifndef RSTICK_DZ
 #define RSTICK_DZ 9000
 #endif
@@ -442,35 +395,25 @@ static uint8_t apply_trigger_dz(uint8_t t) {
     return t <= TRIGGER_DEADZONE ? 0 : t;
 }
 
-/* stage 5: 1 = o jogo pedido/em andamento é a sessão nativa (WebRTC no
- * Xbox): controle, KFRQ, STAT e STOP vão pro xc_native, não pro PC. Main
- * escreve (PLAY/fim do jogo); a thread de rede só lê. */
-#ifdef XCLOUD360_NATIVE
+/* stage 5: 1 = há jogo nativo pedido/em andamento (controle, keyframe e
+ * STAT vão pro xc_native). Main escreve; a thread de rede só lê. */
 static volatile int g_native_game = 0;
 static volatile int g_pad_neutral_req = 0;
-#endif
 
-/* P11: read USB gamepad, pack into 24-byte little-endian frame, UDP -> devbox:9001.
- * v0.19: um frame por controle (até 4); buf[0] = slot do libxenon, que o
- * capture-rtp usa como gamepadIndex do xCloud. */
+/* P11: lê o controle e monta o frame de 24 bytes little-endian (o formato
+ * de xc_proto.h) pro xn_pad_frame. v0.19: um frame por controle (até 4). */
 #define MAX_PADS 4
 static void send_pad(int port) {
     struct controller_data_s d;
     int r = get_controller_data(&d, port);
-    /* Slot 0 sempre manda (como antes, frame zerado até o controle sincar).
-     * Slots 1-3 só depois do primeiro report: senão o PC anunciaria 4
-     * controles fantasmas pro jogo. */
     static int seen[MAX_PADS];
     if (r && !seen[port]) {
         printf("[input] controller slot %d attached — first fresh report\n", port);
         seen[port] = 1;
     }
 
-    /* Y invertido: libxenon Xbox 360 controller devolve Y positivo = stick UP,
-     * mas Green-NX serializer JÁ inverte pra Switch (axis(-left_y)). Isso
-     * resulta em dupla-inversão errada pro xCloud. Negamos aqui pra
-     * cancelar. Sergio confirmou 2026-09-10: UP → cursor DOWN, DOWN → UP.
-     * Clamp em INT16_MIN pra evitar overflow em -(-32768). */
+    /* Y invertido (libxenon: Y positivo = stick pra cima). Clamp em
+     * INT16_MIN pra evitar overflow em -(-32768). */
     int16_t sx1 = d.s1_x;
     int16_t sy1 = (d.s1_y == -32768) ? 32767 : -d.s1_y;
     int16_t sx2 = d.s2_x;
@@ -511,10 +454,8 @@ static void send_pad(int port) {
     buf[11] = (uint8_t)(rx & 0xff);  buf[12] = (uint8_t)((rx >> 8) & 0xff);
     buf[13] = (uint8_t)(ry & 0xff);  buf[14] = (uint8_t)((ry >> 8) & 0xff);
     /* v0.18.2: o índice do xCloud (buf[0]) é a ordem em que cada controle
-     * foi usado pela primeira vez, não o slot do libxenon: o receptor sem
-     * fio do 360 ocupa o slot 0 mesmo sem controle pareado, e o controle do
-     * One caía no slot 1 = jogador 2 (o jogo ignorava). Controle nunca
-     * usado não manda nada; o PC mantém o jogador 1 vivo sozinho. */
+     * foi usado pela primeira vez, não o slot do libxenon. Controle nunca
+     * usado não manda nada. */
     {
         static int xidx[MAX_PADS] = { -1, -1, -1, -1 };
         static int next_idx = 0;
@@ -528,18 +469,9 @@ static void send_pad(int port) {
         }
         buf[0] = (uint8_t)xidx[port];
     }
-#ifdef XCLOUD360_NATIVE
-    /* stage 5: mesmo frame de 24 bytes, direto pro xcw_set_gamepad (esta é
-     * a thread de rede, a mesma do WebRTC). O xcw anuncia o controle novo
-     * com gamepadChanged, como o input_send_loop do capture-rtp. */
+    /* stage 5: direto pro xcw_set_gamepad (esta é a thread de rede, a mesma
+     * do WebRTC). v0.20.0: sem jogo nativo o frame não vai pra lugar nenhum. */
     if (g_native_game) xn_pad_frame(buf, 24);
-    else
-#endif
-    input_udp_send(buf, 24);
-    /* Diagnostic: print visible line whenever any button is pressed OR
-     * sticks leave the deadzone. Empty otherwise so it does not scroll
-     * the console up. Confirms whether libxenon is actually reading the
-     * wireless controller after boot. */
     static int prev_any_v[MAX_PADS];
     int prev_any = prev_any_v[port];
     int any = d.a || d.b || d.x || d.y || d.up || d.down || d.left || d.right
@@ -557,8 +489,7 @@ static void poll_and_send_gamepad(void) {
     for (int port = 0; port < MAX_PADS; port++) send_pad(port);
 }
 
-/* v0.18.2: junta os 4 slots (botões em OR, stick com o maior desvio) pro
- * menu e pro Back+Start: qualquer controle navega, inclusive o do One. */
+/* v0.18.2: junta os 4 slots pro menu e pro Back+Start. */
 static void get_any_pad(struct controller_data_s *o) {
     struct controller_data_s d;
     memset(o, 0, sizeof(*o));
@@ -577,45 +508,32 @@ static void get_any_pad(struct controller_data_s *o) {
     }
 }
 
-/* v0.15.2: leitura do controle na thread de rede, a 1kHz. Antes o main lia
- * o USB uma vez por volta do loop — preso no avcodec, o estado do stick podia
- * esperar ~16ms pra sair. Quando g_input_on_net=1 o main não toca mais no
- * USB (libxenon usb não é thread-safe): só esta thread chama usb_do_poll. */
+/* v0.15.2: leitura do controle na thread de rede, a 1kHz. Quando
+ * g_input_on_net=1 o main não toca mais no USB. */
 static volatile int g_input_on_net = 0;
-/* v0.16: 0 = lê o USB mas não manda o controle pro jogo (menu: o A que
- * escolhe o jogo não pode chegar no capture-rtp). Sem menu fica sempre 1. */
-static volatile int g_pad_forward = 1;
-#ifdef XCLOUD360_LOGIN
-/* v0.17: a thread do login usa o pendrive (FatFs). USB não é thread-safe:
- * enquanto ela segura, a thread de rede não chama usb_do_poll. */
+/* v0.16: 0 = lê o USB mas não manda o controle pro jogo (menu). */
+static volatile int g_pad_forward = 0;
+/* v0.17: a thread do login/catálogo usa o pendrive (FatFs). USB não é
+ * thread-safe: enquanto ela segura, a thread de rede não chama usb_do_poll. */
 static volatile int g_usb_hold_req = 0, g_usb_hold_ack = 0;
 int xc_usb_hold(int on) {
     if (!on) {
         __asm__ __volatile__("sync" ::: "memory");
         g_usb_hold_req = 0;
         __asm__ __volatile__("sync" ::: "memory");
-        /* espera a rede ver a soltura: senão um hold logo em seguida
-         * poderia ler o ack velho com a rede entrando no usb_do_poll */
         for (int i = 0; i < 2000 && g_input_on_net && g_usb_hold_ack; i++) udelay(100);
         return 0;
     }
     g_usb_hold_req = 1;
     __asm__ __volatile__("sync" ::: "memory");
     if (!g_input_on_net) return 0;   /* sem thread de rede: o login nem roda */
-    /* v0.18.2: antes esperava 200ms e seguia mexendo no USB mesmo sem o ack,
-     * com a rede ainda dentro do usb_do_poll (dois threads no USB). Agora
-     * espera até 2s e, sem ack, desiste: quem chamou pula o pendrive. */
     for (int i = 0; i < 20000 && !g_usb_hold_ack; i++) udelay(100);
     if (g_usb_hold_ack) return 0;
     g_usb_hold_req = 0;
     __asm__ __volatile__("sync" ::: "memory");
     return -1;
 }
-#endif
-/* v0.17.1: hora do último usb_do_poll (net thread) e o maior buraco entre
- * dois polls desde a última leitura. Controle sem poll recente = estado
- * velho: o menu trata como solto (senão a repetição de tecla dispara sozinha
- * e a lista "pula" 20 itens) e o STAT mostra o buraco (ugap_ms). */
+/* v0.17.1: hora do último usb_do_poll e o maior buraco entre dois polls. */
 static volatile uint64_t g_usb_poll_us = 0;
 static volatile uint32_t g_ugap_max_us = 0, g_ugaps = 0;
 #define UGAP_SLOW_US 25000
@@ -623,9 +541,7 @@ static int net_hook(void) {
     int worked = g_split_active ? convert_bottom_step() : 0;
 #ifdef XCLOUD360_AUDIO
     {
-        /* v0.18: jitter buffer + Opus + xenon_sound nesta thread, 1x por ms
-         * (o hook gira sem parar na pausa da rede e o nível do DAC é MMIO).
-         * Decodificou = volta pro network_poll. */
+        /* v0.18: jitter buffer + Opus + xenon_sound nesta thread, 1x por ms. */
         static uint64_t last_a = 0;
         uint64_t ta = now_us();
         if (ta - last_a >= 1000) {
@@ -634,14 +550,12 @@ static int net_hook(void) {
         }
     }
 #endif
-#ifdef XCLOUD360_LOGIN
     if (g_usb_hold_req) {
         g_usb_hold_ack = 1;
         __asm__ __volatile__("sync" ::: "memory");
         return worked;
     }
     if (g_usb_hold_ack) { g_usb_hold_ack = 0; __asm__ __volatile__("sync" ::: "memory"); }
-#endif
     if (g_input_on_net) {
         static uint64_t last_us = 0;
         uint64_t t = now_us();
@@ -658,34 +572,25 @@ static int net_hook(void) {
             if (g_pad_forward) poll_and_send_gamepad();
         }
     }
-#ifdef XCLOUD360_NATIVE
     if (g_pad_neutral_req) {   /* saindo do jogo: solta tudo no xCloud */
         g_pad_neutral_req = 0;
         xn_pad_neutral();
     }
-#endif
     return worked;
 }
 
-/* Length-prefix AU extractor pra TCP stream. Retorna 1 se AU pronta, 0 se pending.
- * v0.11.1: g_au_buf cresceu 128KB → 512KB. Cena 3000kbps 720p complexa gera IDR
- * concentrando 20+ NALs em um AU único; 128KB estourava, disparava stream_reset,
- * ring inteiro perdido, decoder na sopa até próximo IDR. Sintoma: normal→artefato
- * cíclico. Se ainda estourar 512KB, TCP inteiro é derrubado — reconexao busca
- * próximo IDR limpo da xCloud em vez de tentar recuperar meio de bytestream. */
+/* v0.20.0: com o menu novo o console do libxenon não pode desenhar no fb
+ * (é o mesmo que o XUI usa): o stdout vai só pra UART (putch). */
+static void quiet_stdout(const char *buf, int len) { (void)buf; (void)len; }
+extern void (*stdout_hook)(const char *buf, int len);
+static void quiet_stdout_install(void) { stdout_hook = quiet_stdout; }
+
+/* AU do ring: [u32 BE n][AU]. v0.11.1: 512KB por AU. */
 #define AU_BUF_CAP (512 * 1024)
 static uint8_t  g_au_buf[AU_BUF_CAP];
 static uint32_t g_pending_au_size = 0;
 
-/* v0.12.0 (Fase 1 latência): esperar IDR em vez de decodar lixo.
- * Duas situações entram em g_wait_idr:
- *  - avcodec_decode_video2 < 0 (referência quebrada): antes dava `continue`
- *    e seguia decodando P-frames contra a referência corrompida → sopa até
- *    o próximo IDR periódico.
- *  - backlog: ring com mais de BACKLOG_BYTES pendentes = decoder atrás do
- *    stream. Decodar tudo isso só mostra o passado atrasado (é o "delay do
- *    controle"). Joga fora até o próximo IDR, que zera as referências.
- * Nos dois casos pede IDR pro capture-rtp via UDP "KFRQ" (o PC limita a 1/s). */
+/* v0.12.0: esperar IDR em vez de decodar lixo (erro de decode ou backlog). */
 #define BACKLOG_BYTES   (128 * 1024)
 #define KFRQ_PERIOD_US  500000
 static int      g_wait_idr = 0;
@@ -698,15 +603,10 @@ static void request_idr(void) {
     uint64_t now = now_us();
     if (now - g_last_kfrq_us < KFRQ_PERIOD_US) return;
     g_last_kfrq_us = now;
-#ifdef XCLOUD360_NATIVE
-    /* stage 5: = KFRQ do capture-rtp: PLI + videoKeyframeRequested (o xcw
-     * limita a 1/s, como o request_keyframe_throttled) */
-    if (g_native_game) { xn_request_keyframe(0); return; }
-#endif
-    input_udp_send((const uint8_t *)"KFRQ", 4);
+    /* stage 5: PLI + videoKeyframeRequested (o xcw limita a 1/s) */
+    if (g_native_game) xn_request_keyframe(0);
 }
 
-#ifdef XCLOUD360_NATIVE
 /* v0.19.2: a hw 3 (XST_HW_THREAD) é do decoder só com o aluguel na mão
  * (xn_dec_claim_hw3). k_slots do deps/xenon-pthread: GPU = 4,2,5,3,1 -> a
  * 4a thread de frame cai na hw 3; CPU = 4,1,5,3 (hw1 = rede) -> a 3a. */
@@ -734,10 +634,8 @@ static AVCodecContext *dec_open_threads(AVCodec *codec, int threads) {
     return ctx;
 }
 
-/* No meio do jogo nativo: fecha o decoder (junta as threads de frame) e
- * reabre com `want`, esperando o próximo IDR (pede um). ~1 IDR de vídeo
- * congelado; só acontece quando a sessão precisa da hw 3 (raro) e quando
- * ela devolve. NULL = não reabriu nem com 1 thread (sai do jogo). */
+/* No meio do jogo: fecha o decoder e reabre com `want`, esperando o
+ * próximo IDR. NULL = não reabriu nem com 1 thread (sai do jogo). */
 static AVCodecContext *dec_reopen(AVCodec *codec, AVCodecContext *old, int want) {
     int had = old->thread_count;
     uint64_t t0 = now_us();
@@ -766,7 +664,6 @@ static AVCodecContext *dec_reopen(AVCodec *codec, AVCodecContext *old, int want)
     xn_set_dec_threads(ctx ? ctx->thread_count : 0);
     return ctx;
 }
-#endif
 
 /* Annex-B scan: 1 se o AU tem slice IDR (NAL type 5). */
 static int au_has_idr(const uint8_t *p, int n) {
@@ -780,13 +677,6 @@ static int au_has_idr(const uint8_t *p, int n) {
 }
 
 static int pull_next_au(uint8_t **out, int *out_size) {
-    /* v0.14: conexão nova = ring descartado; um header de AU lido pela metade
-     * da conexão velha não vale mais (antes ficava pendurado e o próximo
-     * "AU" saía desalinhado). O capture-rtp abre toda conexão com IDR. */
-    if (stream_take_reset()) {
-        g_pending_au_size = 0;
-        g_wait_idr = 1;
-    }
     if (g_pending_au_size == 0) {
         if (stream_available() < 4) return 0;
         uint8_t hdr[4];
@@ -796,13 +686,15 @@ static int pull_next_au(uint8_t **out, int *out_size) {
                             ((uint32_t)hdr[2] <<  8) |
                             ((uint32_t)hdr[3]);
         if (g_pending_au_size == 0 || g_pending_au_size > AU_BUF_CAP) {
-            /* Fase 1 do plano Sergio: se au_size veio corrompido, não sabemos
-             * onde começa o próximo AU. Derrubar conexão TCP força capture-rtp
-             * a mandar novo IDR na reconexão — sync limpo garantido. */
-            printf("[play] bogus au_size=%u (cap=%d) — DROP TCP for clean re-IDR\n",
+            /* v0.20.0: sem TCP pra derrubar: joga o ring fora (o produtor
+             * publica AUs inteiros, o próximo começa num cabeçalho) e pede
+             * IDR. Não deveria acontecer com o inject. */
+            printf("[play] bogus au_size=%u (cap=%d) — ring descartado, esperando IDR\n",
                    g_pending_au_size, AU_BUF_CAP);
             g_pending_au_size = 0;
-            stream_force_reconnect();
+            stream_discard();
+            g_wait_idr = 1;
+            request_idr();
             return 0;
         }
     }
@@ -814,53 +706,68 @@ static int pull_next_au(uint8_t **out, int *out_size) {
     return 1;
 }
 
-#ifdef XCLOUD360_MENU
 /* ============================================================
- *  v0.16 — menu de jogos (make MENU=1)
+ *  Menu (v0.16; v0.20.0 = menu novo source/ui)
  *
  *  Donos (quem pode tocar em quê):
- *   - lwIP: só a thread de rede (hw 1), que sobe logo depois do
- *     network_init. O vídeo (:9000) e o controle (:9002, ctrl_conn.c) são
- *     dois pcbs no mesmo net_step; o main só usa APIs com lock/ring.
+ *   - lwIP: só a thread de rede (hw 1). O main só usa APIs com lock/ring.
  *   - USB: só a thread de rede (usb_do_poll a 1kHz no net_hook). O main lê
- *     o estado com get_controller_data(). g_pad_forward = 0 no menu: lê o
- *     controle mas não manda pro jogo.
- *   - console/fb: só o main (menu_ui.c desenha direto no fb; stdout vira
- *     log no rodapé). No jogo a GPU tira o console da tela no 1º flip.
- *   - Xe_*: só o main. Xe_Init uma vez no boot (antes de qualquer thread,
- *     como na v0.15); entre jogos gpu_present_finish/gpu_present_init.
+ *     o estado com get_controller_data(). g_pad_forward = 0 no menu.
+ *   - fb: só o main (xui_fb_present copia o retângulo sujo; o stdout vai
+ *     só pra UART enquanto o menu está na tela). No jogo a GPU tira o fb
+ *     do console da tela no 1º flip.
+ *   - hw 3: login (lt_*), catálogo/capas + upload do log (xcc_bg_*) ou a
+ *     sessão do xCloud (xn_*), nunca dois ao mesmo tempo. Antes de PLAY,
+ *     lt_start ou do teste offline: xcc_bg_stop() e esperar
+ *     !xcc_bg_running() (CATALOG-COVERS.md).
+ *   - Xe_*: só o main. Xe_Init uma vez no boot.
  * ============================================================ */
-#ifndef XCLOUD360_CTRL_PORT
-#define XCLOUD360_CTRL_PORT 9002
-#endif
-
 #define EXIT_STREAM_END 0    /* stream embutido acabou / erro de decode */
 #define EXIT_USER       1    /* Back+Start 2s */
-#define EXIT_PC_IDLE    2    /* launcher mandou STATE IDLE no meio do jogo */
 #define EXIT_NATIVE_END 3    /* stage 5: a sessão do Xbox acabou (ERROR/IDLE) */
 
 static menu_model_t g_mm;
-static int          g_stop_pending = 0;   /* STOP não saiu (desconectado) */
 static uint64_t     g_hold_since = 0;     /* Back+Start apertados desde */
 
-#ifdef XCLOUD360_NATIVE
 static int      g_native_ok = 0;   /* xn_init ok + thread de rede de pé */
 static uint64_t g_t_video_first = 0;   /* v0.19.2: 1o AU nativo no ring (espera a hw3) */
 static unsigned g_xn_seen = 0;
-/* Main: linha STATE da sessão do Xbox -> menu_model (mesmos códigos e
- * textos do launcher do PC). 1 se mudou. */
+/* Main: linha STATE da sessão do Xbox -> menu_model. 1 se mudou. */
 static int native_poll_state(void) {
     char l[240];
     unsigned s = xn_state_line(l, sizeof(l));
     if (!s || s == g_xn_seen) return 0;
     g_xn_seen = s;
     mm_handle_line(&g_mm, l);
+    /* v0.20.1: erro de sessão = o lote do log beta sai logo */
+    if (g_mm.state == MM_ST_ERROR) xlu_flush_soon();
     return 1;
 }
-#endif
 
-/* Zera IDR/AU entre sessões: decoder novo precisa de IDR, conexão nova
- * começa num (capture-rtp), e os contadores do STAT são por jogo. */
+/* ---- v0.19.3: jogo aberto no menu (game_session.h) ---- */
+static mm_game_t g_next_play;   /* A num jogo: entra quando a hw 3 / a sessão anterior liberar */
+static int       g_next_on = 0;
+/* v0.20.4: quem além da sessão pode estar na hw 3 (ver xc_native.c). */
+int xc_hw3_other_owner(void) { return xcc_bg_running() || xcu_running() || xcb_running(); }
+
+static int native_paused(void) { return g_native_ok && xn_session(NULL, 0, NULL, 0) == XN_SESS_PAUSED; }
+
+int xc_game_session(xc_game_session_t *o) {
+    memset(o, 0, sizeof(*o));
+    if (!g_native_ok) return XC_GS_NONE;
+    /* xn_session também solta o WebRTC de uma pausada que o xCloud derrubou */
+    switch (xn_session(o->id, sizeof(o->id), o->name, sizeof(o->name))) {
+        case XN_SESS_STARTING: o->state = XC_GS_STARTING; break;
+        case XN_SESS_PLAYING:  o->state = XC_GS_PLAYING; break;
+        case XN_SESS_PAUSED:   o->state = XC_GS_OPEN; break;
+        case XN_SESS_ENDING:   o->state = XC_GS_ENDING; break;
+        default: o->id[0] = o->name[0] = '\0'; break;
+    }
+    return o->state;
+}
+
+/* Zera IDR/AU entre sessões: decoder novo precisa de IDR e os contadores
+ * do STAT são por jogo. */
 static void video_session_reset(void) {
     g_pending_au_size = 0;
     g_wait_idr = 1;
@@ -870,23 +777,10 @@ static void video_session_reset(void) {
     g_decode_errors = 0;
 }
 
-static void send_stop(void) {
-    if (ctrl_send_line("STOP") != 0) g_stop_pending = 1;   /* reenvia ao reconectar */
-}
-
-/* Fim do jogo pedido pelo Xbox: sessão nativa = DELETE pela thread da
- * sessão (stage 5); PC = STOP pro launcher. */
-static void stop_game(void) {
-#ifdef XCLOUD360_NATIVE
-    if (g_native_game) { xn_stop(); return; }
-#endif
-    send_stop();
-}
-
 /* No jogo, a cada ~10ms: Back+Start por 2s = volta pro menu; a cada 100ms
- * drena a conexão de controle (o PC pode dizer que o jogo acabou). */
-static int ingame_check(uint64_t now, int use_tcp) {
-    static uint64_t last_ctrl = 0;
+ * o STATE da sessão do Xbox (ERROR / IDLE = acabou). */
+static int ingame_check(uint64_t now) {
+    static uint64_t last_st = 0;
     struct controller_data_s d;
     if (!g_input_on_net) usb_do_poll();   /* sem thread de rede o USB é do main */
     get_any_pad(&d);
@@ -896,69 +790,37 @@ static int ingame_check(uint64_t now, int use_tcp) {
     } else {
         g_hold_since = 0;
     }
-    if (now - last_ctrl >= 100000) {
-        last_ctrl = now;
-        char line[512];
-#ifdef XCLOUD360_NATIVE
-        if (g_native_game) {
-            /* o launcher do PC não manda neste jogo: só esvazia a fila */
-            while (ctrl_recv_line(line, sizeof(line))) {}
-            /* RECONNECTING/STARTING (re-sinalização) ficam no jogo: o vídeo
-             * congela e volta sozinho. ERROR / IDLE = acabou. */
-            if (native_poll_state() && (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE))
-                return EXIT_NATIVE_END;
-            return 0;
-        }
-#endif
-        while (ctrl_recv_line(line, sizeof(line))) {
-            int ev = mm_handle_line(&g_mm, line);
-            /* Queda de vídeo não sai (o launcher reconecta e o cliente de
-             * vídeo tenta a cada 500ms); só o PC dizendo IDLE = sem jogo. */
-            if (use_tcp && ev == MM_EV_STATE && g_mm.state == MM_ST_IDLE) return EXIT_PC_IDLE;
-        }
+    if (g_native_game && now - last_st >= 100000) {
+        last_st = now;
+        /* RECONNECTING/STARTING (re-sinalização) ficam no jogo: o vídeo
+         * congela e volta sozinho. ERROR / IDLE = acabou. */
+        if (native_poll_state() && (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE))
+            return EXIT_NATIVE_END;
     }
     return 0;
 }
 
 /* Volta do jogo pro menu. Ordem:
- *  1. para de mandar o controle pro jogo e solta tudo (estado neutro), pra
- *     um STOP perdido não deixar Back+Start apertados no xCloud;
+ *  1. para de mandar o controle e solta tudo no xCloud; keep = 1
+ *     (Back+Start) = xn_pause (sessão segue aberta), senão xn_stop;
  *  2. tela: GPU espera o último frame e devolve o scanout pro fb do console
- *     (gpu_present_finish); no caminho de CPU espera o worker esvaziar o
- *     ring de slots (senão ele pinta vídeo por cima do menu);
- *  3. decoder: avcodec_close junta as threads de frame (pthread_join espera
- *     xenon_is_thread_task_running cair — o startup do libxenon zera o slot
- *     quando a task retorna), liberando as hw threads 4,2,5,3 pro próximo;
- *  4. vídeo: derruba a conexão :9000 e espera a thread de rede atender
- *     (stream_reconnects_done), descarta o ring; zera IDR/contadores. */
+ *     (gpu_present_finish); no caminho de CPU espera o worker esvaziar;
+ *  3. decoder: avcodec_close junta as threads de frame (libera hw 4,2,5,3);
+ *  4. ring descartado; zera IDR/contadores. */
 static void video_teardown(AVCodecContext *ctx, AVCodecParserContext *parser,
-                           AVFrame *frame, int use_tcp, int gpu_on) {
+                           AVFrame *frame, int gpu_on, int keep) {
 #ifdef XCLOUD360_AUDIO
     audio_session_end();   /* v0.18: fade + silêncio já (menu é mudo) */
 #endif
-#ifdef XCLOUD360_NATIVE
     if (g_native_game) {
-        /* stage 5: mesmo cuidado do PC — controles soltos no xCloud antes de
-         * fechar —, depois DELETE (thread da sessão) e a thread de rede
-         * destrói o PeerConnection no próximo passo. */
         g_pad_forward = 0;
         __asm__ __volatile__("sync" ::: "memory");
         g_pad_neutral_req = 1;
-        udelay(20000);   /* hook a 1 kHz zera; o xcw manda em <= 4 ms */
-        xn_stop();
-    } else
-#endif
-    if (use_tcp) {
-        uint8_t neutral[24];
-        memset(neutral, 0, sizeof(neutral));
-        g_pad_forward = 0;
-        __asm__ __volatile__("sync" ::: "memory");
-        input_udp_send(neutral, sizeof(neutral));
-        /* A thread de rede pode ter lido g_pad_forward=1 logo antes e posto o
-         * estado real na mailbox depois do neutro: manda de novo. */
-        udelay(5000);
-        input_udp_send(neutral, sizeof(neutral));
+        xc_polite_udelay(20000);   /* hook a 1 kHz zera; o xcw manda em <= 4 ms */
+        /* v0.19.3: Back+Start = pausa; sessão que já acabou / erro = DELETE */
+        if (!keep || xn_pause() != XN_OK) xn_stop();
     }
+    g_pad_forward = 0;
 #ifdef XCLOUD360_GPU
     if (gpu_on) {
         gpu_present_finish();   /* console fb de volta na tela + console_open */
@@ -970,98 +832,66 @@ static void video_teardown(AVCodecContext *ctx, AVCodecParserContext *parser,
             int busy = 0;
             for (int i = 0; i < RING_SLOTS; i++) busy |= g_ring[i].ready;
             if (!busy) break;
-            udelay(1000);
+            xc_polite_udelay(1000);
         }
     }
     (void)gpu_on;
-    ui_log_install();   /* printf daqui em diante vai pro rodapé do menu */
+    quiet_stdout_install();   /* console_open reinstalou o desenho do console */
     if (parser) av_parser_close(parser);
     if (ctx) {
         avcodec_close(ctx);
         av_free(ctx);
     }
-#ifdef XCLOUD360_NATIVE
     /* v0.19.2: threads de frame juntadas -> a hw 3 pode ir pro DELETE */
     if (g_dec_hw3) { xn_dec_release_hw3(); g_dec_hw3 = 0; }
     xn_set_dec_threads(0);
-#endif
     if (frame) av_free(frame);
-#ifdef XCLOUD360_NATIVE
     if (g_native_game) {
-        /* inject: não há conexão pra derrubar; o menu descarta o resto */
-        stream_take_reset();
-        stream_discard();
+        stream_discard();   /* o menu descarta o resto */
         g_native_game = 0;
-    } else
-#endif
-    if (use_tcp) {
-        unsigned want = stream_reconnects_done() + 1;
-        stream_force_reconnect();
-        uint64_t t0 = now_us();
-        while ((int)(stream_reconnects_done() - want) < 0 && now_us() - t0 < 1000000) {
-            stream_poll();   /* no-op com a thread de rede */
-            udelay(1000);
-        }
-        stream_take_reset();
     }
     video_session_reset();
+    xlu_flush_soon();   /* v0.20.1: fim de sessão = lote do log beta */
     printf("[menu] jogo encerrado, decoder fechado\n");
 }
-#endif /* XCLOUD360_MENU */
 
-/* v0.16: o pipeline de vídeo da v0.15 (abre o decoder, loop de AUs, decode,
- * GPU/worker, STAT), agora numa função pra poder rodar várias vezes a partir
- * do menu. Com MENU=0 roda uma vez como antes. Retorna EXIT_* (MENU) ou 0;
- * -1 = não abriu o decoder. */
-static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
+/* v0.16: o pipeline de vídeo (decoder, loop de AUs, GPU/worker, STAT).
+ * live = 1: jogo nativo (AUs do WebRTC no ring); 0: teste offline (stream
+ * embutido + tom). Retorna EXIT_*; -1 = não abriu o decoder. */
+static int run_video(int live, int gpu_on, int net_thread_on) {
     int exit_reason = 0;
     (void)net_thread_on;
-#ifdef XCLOUD360_MENU
     uint64_t t_last_chk = 0;
     video_session_reset();
     g_hold_since = 0;
 #ifdef XCLOUD360_GPU
-    /* 1ª vez: já armado no boot (no-op). Depois de um finish: re-arma sem
-     * Xe_Init (gpu_present.c gp_rearm). */
+    /* 1ª vez: já armado no boot (no-op). Depois de um finish: re-arma. */
     if (gpu_on && gpu_present_init(FB_W, FB_H) != 0) {
         printf("[gpu] re-arm falhou\n");
-        if (use_tcp) stop_game();   /* não deixa o PC transmitindo pra ninguém */
-#ifdef XCLOUD360_NATIVE
+        if (live) xn_stop();   /* não deixa a sessão aberta pra ninguém */
         g_native_game = 0;
-#endif
-        stream_force_reconnect();
+        stream_discard();
         return -1;
     }
 #endif
-    g_pad_forward = use_tcp;   /* teste offline: controle não vai pra lugar nenhum */
-#endif
+    g_pad_forward = live;   /* teste offline: controle não vai pra lugar nenhum */
 
     AVCodec* codec = avcodec_find_decoder(CODEC_ID_H264);
     if (!codec) {
         printf("[err] no H264 decoder\n");
-#ifdef XCLOUD360_MENU
-        if (use_tcp) stop_game();
-        video_teardown(NULL, NULL, NULL, use_tcp, gpu_on);
-#endif
+        video_teardown(NULL, NULL, NULL, gpu_on, 0);
         return -1;
     }
 
     AVCodecContext* ctx = avcodec_alloc_context3(codec);
 #if XCLOUD360_DECODE_THREADS > 1
-    /* v0.13: frame threading — N frames decodando em paralelo nas threads de
-     * hardware 4/1/5 (deps/xenon-pthread). Custa N-1 frames de atraso fixo
-     * (~16ms cada a 60fps), mas o decode deixa de ser o gargalo. LOW_DELAY
-     * desliga frame threading no libavcodec 0.10, então fica de fora. */
+    /* v0.13: frame threading nas threads de hardware livres. */
     ctx->thread_count = XCLOUD360_DECODE_THREADS;
-#if defined(XCLOUD360_NATIVE)
     {
-        /* stage 5: conta as hw threads livres de verdade. v0.19.2: no jogo
-         * nativo a sessão sai da hw 3 assim que o answer é publicado (as
-         * fases ao vivo vão pra hw1), então o decoder volta a ter
-         * NATIVE_DEC_THREADS = 4 (hw 4,2,5,3). A hw 3 é ALUGADA (xn_dec_claim_hw3):
-         * se a thread da sessão ainda estiver nela (re-login, handshake...),
-         * abre com 3 e o loop do jogo cresce pra 4 quando ela sair.
-         * Login (hw 3) rodando no teste offline: idem, pela contagem. */
+        /* stage 5: conta as hw threads livres de verdade. v0.19.2: no jogo a
+         * sessão sai da hw 3 assim que o answer é publicado, então o decoder
+         * volta a ter NATIVE_DEC_THREADS = 4 (hw 4,2,5,3). A hw 3 é ALUGADA
+         * (xn_dec_claim_hw3). */
         int free_hw = 0;
         for (int id = 1; id < 6; id++)
             if (!xenon_is_thread_task_running(id)) free_hw++;
@@ -1081,18 +911,6 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
             ctx->thread_count = want;
         }
     }
-#elif defined(XCLOUD360_GPU)
-    {
-        /* v0.15: cada thread do decoder precisa de uma thread de hardware
-         * livre (deps/xenon-pthread não multiplexa; se faltar, avcodec_open2
-         * falha). Livres = 6 - main - rede - worker de convert (só sem GPU). */
-        int free_hw = 6 - 1 - (net_thread_on ? 1 : 0) - (gpu_on ? 0 : 1);
-        if (ctx->thread_count > free_hw) {
-            printf("[dec] threads %d -> %d (hw threads livres)\n", ctx->thread_count, free_hw);
-            ctx->thread_count = free_hw;
-        }
-    }
-#endif
     ctx->thread_type  = FF_THREAD_FRAME;
 #else
     ctx->thread_count = 1;
@@ -1100,50 +918,35 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
 #endif
     ctx->flags2 |= CODEC_FLAG2_FAST;
 #if XCLOUD360_SKIP_DEBLOCK
-    /* v0.14.2: sem deblocking (~20-30% do decode H.264). Em combate o xCloud
-     * passa de 4-5Mbps ignorando o REMB e o decoder não fecha 60fps → backlog
-     * → pula até IDR. Custo: bordas de bloco 8x8 mais visíveis em movimento.
-     * NONREF não serve: todo frame do xCloud é referência. */
     ctx->skip_loop_filter = AVDISCARD_ALL;
 #endif
     if (avcodec_open2(ctx, codec, NULL) < 0) {
         printf("[err] avcodec_open2 failed\n");
-#ifdef XCLOUD360_MENU
-        if (use_tcp) stop_game();
-        video_teardown(ctx, NULL, NULL, use_tcp, gpu_on);
-#endif
+        video_teardown(ctx, NULL, NULL, gpu_on, 0);
         return -1;
     }
     printf("[dec] threads=%d active_type=%d (1=frame 2=slice) skip_deblock=%d\n",
            ctx->thread_count, ctx->active_thread_type, XCLOUD360_SKIP_DEBLOCK);
-#ifdef XCLOUD360_NATIVE
     xn_set_dec_threads(ctx->thread_count);
     if (g_native_game) {
-        char l[96];
-        snprintf(l, sizeof(l), "[dec] jogo nativo: %d threads de frame%s", ctx->thread_count,
-                 g_dec_hw3 ? " (hw 4,2,5,3)" : " (hw3 com a sessao)");
+        char l[128];
+        snprintf(l, sizeof(l), "[dec] jogo nativo: %d threads de frame%s (%s)", ctx->thread_count,
+                 g_dec_hw3 ? " (hw 4,2,5,3)" : " (hw3 com a sessao)", XCLOUD360_BUILD_VERSION);
         np_log_line(l);
     }
-#endif
 #ifdef XCLOUD360_AUDIO
-    /* v0.18: jogo = o que chega na :9004; teste offline = tom embutido. */
-#ifdef XCLOUD360_NATIVE
-    if (g_native_game) audio_session_begin(AUDIO_SRC_RTC);   /* stage 5: Opus do WebRTC */
-    else
-#endif
-    audio_session_begin(use_tcp ? AUDIO_SRC_NET : AUDIO_SRC_TEST);
+    /* v0.18: jogo = Opus do WebRTC; teste offline = tom embutido. */
+    audio_session_begin(live ? AUDIO_SRC_RTC : AUDIO_SRC_TEST);
 #endif
     AVCodecParserContext* parser = av_parser_init(codec->id);
     AVFrame* frame = avcodec_alloc_frame();
     AVPacket pkt;
     av_init_packet(&pkt);
 
-    printf("[play] mode=%s -> decode -> BT.601 -> direct-FB tiled\n\n",
-           use_tcp ? "TCP-live" : "embedded");
+    printf("[play] mode=%s -> decode -> display\n\n", live ? "WebRTC-live" : "embedded");
 #ifdef XCLOUD360_GPU
     if (gpu_on) {
-        printf("[play] display = Xenos pixel shader (console goes dark at first frame;\n"
-               "       telemetry continues over UDP STAT)\n");
+        printf("[play] display = Xenos pixel shader (console goes dark at first frame)\n");
 #ifdef XCLOUD360_TRACE_LATENCY
         gpu_present_set_flip_cb(trace_on_gpu_flip);
 #endif
@@ -1151,15 +954,11 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
 #endif
 
     uint64_t t_wall_start = now_us();
-    /* v0.14.2: 2s (era 10s pra dar tempo de filmar a tela; agora a telemetria
-     * vai pro devbox via UDP "STAT"). */
 #define REPORT_PERIOD_US 2000000ULL
     uint64_t t_next_report = t_wall_start + REPORT_PERIOD_US;
     uint64_t acc_dec = 0, acc_cvt = 0;
     int frames_since_report = 0;
     int total_frames = 0;
-    /* v0.16: era static dentro do report — com várias sessões o total_frames
-     * (local) recomeça em 0 e o diff ficaria negativo. */
     int prev_total_frames = 0;
 
     const uint8_t *data = embedded_stream;
@@ -1169,20 +968,17 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         uint8_t *out_data = NULL;
         int out_size = 0;
 #ifdef XCLOUD360_TRACE_LATENCY
-        uint64_t trace_au_seq = 0;   /* válido só se use_tcp — mata warn de escopo */
+        uint64_t trace_au_seq = 0;
 #endif
-#ifdef XCLOUD360_MENU
         {
             uint64_t tn = now_us();
             if (tn - t_last_chk >= 10000) {
                 t_last_chk = tn;
-                int r = ingame_check(tn, use_tcp);
+                int r = ingame_check(tn);
                 if (r) { exit_reason = r; break; }
-#ifdef XCLOUD360_NATIVE
-                /* v0.19.2: a sessão precisa da hw 3 no meio do jogo (re-login,
-                 * handshake TLS completo, re-sinalização): empresta (decoder
-                 * com 3) e pega de volta (4) quando ela voltar pra hw1. */
-                if (g_native_game && use_tcp) {
+                /* v0.19.2: a sessão precisa da hw 3 no meio do jogo:
+                 * empresta (decoder com 3) e pega de volta (4). */
+                if (g_native_game && live) {
                     int w = xn_dec_threads_wanted(ctx->thread_count, XCLOUD360_NATIVE_DEC_THREADS);
                     if (w != ctx->thread_count) {
                         AVCodecContext *nc = dec_reopen(codec, ctx, w);
@@ -1190,37 +986,22 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
                         if (!ctx) { exit_reason = EXIT_STREAM_END; break; }
                     }
                 }
-#endif
             }
         }
-#endif
 #ifdef XCLOUD360_AUDIO
         if (!g_input_on_net) audio_service();   /* v0.18: sem thread de rede */
 #endif
 #ifdef XCLOUD360_GPU
-        /* v0.15: não bloqueia — troca o scanout pro frame mais novo que a GPU
-         * já terminou. Roda a cada AU e a cada 1ms no caminho ocioso. */
         if (gpu_on) gpu_present_poll();
 #endif
 
-        if (use_tcp) {
-            stream_poll();
-            /* v0.9.8: drop-on-pressure REMOVIDO. Cortava bytestream no meio de
-             * AU → libavcodec "error while decoding MB X Y, bytestream (t.)"
-             * → sopa de artefatos até próxima IDR. Solução: só variar taxa de
-             * convert do worker (skip adaptativo, ver mais abaixo). Decoder
-             * continua decodando bytestream inteiro sempre. */
+        if (live) {
             int pulled = pull_next_au(&out_data, &out_size);
             if (pulled <= 0) {
-                if (!g_input_on_net) {
-                    usb_do_poll();
-                    poll_and_send_gamepad();   /* P11: input pump idle path */
-                }
                 udelay(1000);
                 continue;
             }
 #ifdef XCLOUD360_TRACE_LATENCY
-            /* Fase 0: AU completo tá no ring. Reservar slot no anel de trace. */
             trace_au_seq = g_au_seq_counter++;
             int tslot_init = (int)(trace_au_seq % TRACE_HISTORY);
             g_trace[tslot_init].au_seq = trace_au_seq;
@@ -1232,11 +1013,6 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
             g_trace[tslot_init].skipped = 0;
             g_trace[tslot_init].flipped_seen = 0;
 #endif
-            if (!g_input_on_net) {
-                usb_do_poll();             /* P11: drain USB reports even */
-                poll_and_send_gamepad();   /* on active path or wireless */
-            }
-
             /* v0.12.0: IDR gating — ver comentário em g_wait_idr. */
             int is_idr = au_has_idr(out_data, out_size);
             if (is_idr) {
@@ -1254,8 +1030,7 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
             }
         } else {
 #ifdef XCLOUD360_AUDIO
-            /* v0.18: o vídeo embutido (~5 s, decodado sem relógio) recomeça
-             * até o tom ter tocado 2 voltas. Começa num IDR. */
+            /* v0.18: o vídeo embutido recomeça até o tom tocar 2 voltas. */
             if (left == 0 && now_us() - t_wall_start < AUDIO_TEST_US) {
                 data = embedded_stream;
                 left = embedded_stream_len;
@@ -1276,12 +1051,8 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         int r = avcodec_decode_video2(ctx, frame, &got, &pkt);
         uint64_t t_b = now_us();
         if (r < 0) {
-            /* Non-fatal: decoder rejected AU (missing reference picture after
-             * IDR loss, corrupt slice, etc). Skip and wait for next IDR
-             * instead of tearing down the whole session. v0.12.0: de fato
-             * espera o IDR (g_wait_idr) em vez de seguir decodando P-frames
-             * contra a referência quebrada. */
-            if (use_tcp) {
+            /* v0.12.0: referência quebrada = espera o próximo IDR. */
+            if (live) {
                 g_decode_errors++;
                 g_wait_idr = 1;
                 request_idr();
@@ -1291,40 +1062,26 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         }
         if (!got) continue;
 #ifdef XCLOUD360_TRACE_LATENCY
-        /* Fase 0: decode retornou got=1 pra esse AU. */
-        if (use_tcp) g_trace[(int)(trace_au_seq % TRACE_HISTORY)].t_decoded = t_b;
+        if (live) g_trace[(int)(trace_au_seq % TRACE_HISTORY)].t_decoded = t_b;
 #endif
 
-        /* Fase 2b (v0.11.0): descarte na SAIDA, não backpressure na entrada.
-         * Se o worker ainda não drenou o slot anterior, o frame decodado atual
-         * é descartado — o próximo decode continua imediatamente sem esperar.
-         * Regra: fila máxima = 1 frame em flight visual. Decoder mantém P-frame
-         * reference chain sempre (não pula decode, só pula dispatch pro worker). */
         static int decoded_count = 0;
         decoded_count++;
         acc_dec += (t_b - t_a);
         total_frames++;
 
 #if XCLOUD360_DISPLAY_DIVISOR > 1
-        /* v0.14.1: xCloud manda 60fps e todo frame é referência (nonref=0 em
-         * 58k AUs), então o decode não pode pular nenhum. Mas a exibição pode:
-         * mostra 1 a cada N → cadência fixa de 60/N fps em vez de 60 com
-         * buracos irregulares, e o main deixa de copiar 1.4MB por frame
-         * descartado (mesmo loop que alimenta o decoder em frame threading). */
         if (decoded_count % XCLOUD360_DISPLAY_DIVISOR) continue;
 #endif
         uint64_t t_d;
 #ifdef XCLOUD360_GPU
         if (gpu_on) {
-            /* v0.15: o main sobe os planos pras texturas (set livre), desenha
-             * e chuta a GPU sem esperar. prod_ms = chamada inteira; cvt_ms
-             * no STAT = só a cópia pras texturas (upload). */
             int gW = frame->width  < FB_W ? frame->width  : FB_W;
             int gH = frame->height < FB_H ? frame->height : FB_H;
             uint64_t t_c = now_us();
             uint64_t tag = 0;
 #ifdef XCLOUD360_TRACE_LATENCY
-            if (use_tcp) {
+            if (live) {
                 tag = trace_au_seq;
                 g_trace[(int)(trace_au_seq % TRACE_HISTORY)].t_dispatch = t_c;
             }
@@ -1339,7 +1096,7 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         int prod = g_prod_idx % RING_SLOTS;
         if (g_ring[prod].ready) {
 #ifdef XCLOUD360_TRACE_LATENCY
-            if (use_tcp) g_trace[(int)(trace_au_seq % TRACE_HISTORY)].skipped = 1;
+            if (live) g_trace[(int)(trace_au_seq % TRACE_HISTORY)].skipped = 1;
 #endif
             continue;   /* worker ocupado — drop este frame na saída */
         }
@@ -1352,7 +1109,6 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         const uint8_t* Up = frame->data[1];
         const uint8_t* Vp = frame->data[2];
 
-        /* Slot livre — publica pro worker. Sem while() de espera. */
         uint64_t t_c = now_us();
         g_ring[prod].W = W;
         g_ring[prod].H = H;
@@ -1364,7 +1120,7 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
             memcpy(g_ring[prod].V + y*(W/2), Vp + y*UVst, W/2);
         }
 #ifdef XCLOUD360_TRACE_LATENCY
-        if (use_tcp) {
+        if (live) {
             g_ring[prod].au_seq = trace_au_seq;
             g_trace[(int)(trace_au_seq % TRACE_HISTORY)].t_dispatch = now_us();
         }
@@ -1374,8 +1130,7 @@ static int run_video(int use_tcp, int gpu_on, int net_thread_on) {
         g_prod_idx++;
         t_d = now_us();
 
-        /* v0.9.6: acc_dec / total_frames já contabilizados antes do skip. */
-        acc_cvt += (t_d - t_c);       /* now = memcpy + backpressure wait */
+        acc_cvt += (t_d - t_c);
         frames_since_report++;
 
 #ifdef XCLOUD360_GPU
@@ -1385,15 +1140,11 @@ report:
             double sec = (t_d - (t_next_report - REPORT_PERIOD_US)) / 1e6;
             int dec_frames = total_frames - prev_total_frames;
             prev_total_frames = total_frames;
-            /* acc_dec soma o tempo de TODOS os decodes do período; com frame
-             * threading é o tempo que o main ficou preso no avcodec. */
             double dec_ms = dec_frames > 0 ? (double)acc_dec / 1000.0 / dec_frames : 0;
             double prod_ms = (double)acc_cvt / 1000.0 / frames_since_report;
             double fps    = frames_since_report / sec;
             double dec_fps = dec_frames / sec;
             int worker_fps_snapshot = g_worker_frames;
-            /* v0.14.3: média do período (antes era desde o boot e escondia
-             * mudanças). Leitura sem trava: o worker só soma, erro de 1 frame. */
             static uint64_t prev_cvt_total = 0;
             static int prev_worker_frames = 0;
             uint64_t cvt_total = g_cvt_us_total;
@@ -1406,9 +1157,6 @@ report:
             double bot_ms = wf > 0 ? (double)(bot_total - prev_bot_total) / 1000.0 / wf : 0;
             prev_bot_total = bot_total;
 #ifdef XCLOUD360_GPU
-            /* v0.15: com GPU não há worker nem metade de baixo. cvt_ms vira o
-             * upload (cópia dos planos pras texturas + dcbst), bot_ms = 0, e
-             * wF conta os flips de scanout. Extras no fim do STAT. */
             double gwait_ms = 0, flip_lag_ms = 0;
             unsigned gflips = 0, gsuper = 0, gtimeouts = 0;
             if (gpu_on) {
@@ -1434,18 +1182,12 @@ report:
                 dec_ms, prod_ms, wcvt_ms, fps, worker_fps_snapshot, ring_bytes);
             printf("[idr]  skipped=%u backlog=%u dec_err=%u\n",
                 g_skipped_aus, g_backlog_events, g_decode_errors);
-            /* v0.14.2: telemetria pro capture-rtp logar (não dá pra fotografar
-             * a tela a tempo). Sai pela thread de rede junto com o controle. */
-            if (use_tcp) {
-#if defined(XCLOUD360_NATIVE)
-                char stat[580];   /* stage 5: + chaves do WebRTC; sai pelo LOG (:9003) */
-#elif defined(XCLOUD360_AUDIO)
-                char stat[320];   /* = STAT_MAX do input_udp.c (v0.18: + áudio) */
-#elif defined(XCLOUD360_GPU)
-                char stat[240];   /* = STAT_MAX do input_udp.c */
-#else
-                char stat[200];
-#endif
+            if (live && g_native_game) {
+                /* STAT do jogo: vai pro log beta (xc_logup) como "STAT ...",
+                 * com as chaves do WebRTC no fim e, por último, v0.20.0:
+                 * ver=<versão do ELF>. No jogo o worker não roda: as linhas
+                 * esperam a volta pro menu. */
+                char stat[600];
                 int n = snprintf(stat, sizeof(stat),
                     "STAT t=%d dec_fps=%.1f disp_fps=%.1f dec_ms=%.1f prod_ms=%.1f "
                     "cvt_ms=%.1f bot_ms=%.1f ring=%u skipped=%u backlog=%u dec_err=%u",
@@ -1453,7 +1195,6 @@ report:
                     prod_ms, wcvt_ms, bot_ms, (unsigned)ring_bytes,
                     g_skipped_aus, g_backlog_events, g_decode_errors);
 #ifdef XCLOUD360_GPU
-                /* Chaves novas só no FIM: as de cima ficam iguais. */
                 if (gpu_on && n > 0 && n < (int)sizeof(stat)) {
                     int m = snprintf(stat + n, sizeof(stat) - n,
                         " gpu=1 gwait_ms=%.2f flip_ms=%.1f flips=%u sup=%u gto=%u",
@@ -1471,36 +1212,29 @@ report:
                     if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
                 }
 #ifdef XCLOUD360_AUDIO
-                /* v0.18: chaves do áudio no FIM (as de cima ficam iguais). */
                 if (n > 0 && n < (int)sizeof(stat)) n += audio_stat(stat + n, sizeof(stat) - n);
 #endif
-#ifdef XCLOUD360_NATIVE
-                /* stage 5: sem capture-rtp pra logar o STAT da :9001 -> o
-                 * listener de LOG do PC (UDP :9003) recebe "LOG STAT ...",
-                 * com as chaves do WebRTC no fim (rtt, perdas, kbps, NACK,
-                 * keyframes, SRTP, carga da hw1). */
-                if (g_native_game) {
-                    if (n > 0 && n < (int)sizeof(stat)) n += xn_stat_tail(stat + n, sizeof(stat) - n);
-                    if (n > 0) np_log_line(stat);
-                } else
-#endif
-                if (n > 0) input_udp_send_stat(stat, (size_t)n);
+                if (n > 0 && n < (int)sizeof(stat)) n += xn_stat_tail(stat + n, sizeof(stat) - n);
+                if (n > 0 && n < (int)sizeof(stat) - 1) {
+                    int m = snprintf(stat + n, sizeof(stat) - n, " ver=%s", XCLOUD360_BUILD_VERSION);
+                    if (m > 0) n += m;
+                    if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
+                }
+                if (n > 0) np_log_line(stat);
             }
             acc_dec = acc_cvt = 0; frames_since_report = 0;
             t_next_report = t_d + REPORT_PERIOD_US;
 #ifdef XCLOUD360_TRACE_LATENCY
-            /* Fase 0: sumario das amostras com t_flipped preenchido desde o
-             * ultimo report. Trace_last_reported é o proximo au_seq esperado. */
             uint64_t stop_seq = g_au_seq_counter;
-            uint64_t d_ar_de_min = ~0ULL, d_ar_de_max = 0, d_ar_de_sum = 0;
-            uint64_t d_de_di_min = ~0ULL, d_de_di_max = 0, d_de_di_sum = 0;
-            uint64_t d_di_fl_min = ~0ULL, d_di_fl_max = 0, d_di_fl_sum = 0;
-            uint64_t d_ar_fl_min = ~0ULL, d_ar_fl_max = 0, d_ar_fl_sum = 0;
-            size_t   ring_min = ~0U, ring_max = 0; uint64_t ring_sum = 0;
+            uint64_t d_ar_de_max = 0, d_ar_de_sum = 0;
+            uint64_t d_de_di_max = 0, d_de_di_sum = 0;
+            uint64_t d_di_fl_max = 0, d_di_fl_sum = 0;
+            uint64_t d_ar_fl_max = 0, d_ar_fl_sum = 0;
+            size_t   ring_max = 0; uint64_t ring_sum = 0;
             int n_full = 0, n_skipped = 0, n_pending = 0;
             for (uint64_t s = g_trace_last_reported; s < stop_seq; s++) {
                 int idx = (int)(s % TRACE_HISTORY);
-                if (g_trace[idx].au_seq != s) continue;  /* recycled beyond window */
+                if (g_trace[idx].au_seq != s) continue;
                 uint64_t ta = g_trace[idx].t_arrival;
                 uint64_t td = g_trace[idx].t_decoded;
                 uint64_t tp = g_trace[idx].t_dispatch;
@@ -1508,24 +1242,16 @@ report:
                 if (g_trace[idx].skipped) { n_skipped++; continue; }
                 if (!tf) { n_pending++; continue; }
                 n_full++;
-                uint64_t d1 = td - ta;
-                uint64_t d2 = tp - td;
-                uint64_t d3 = tf - tp;
-                uint64_t d4 = tf - ta;
-                if (d1 < d_ar_de_min) d_ar_de_min = d1;
+                uint64_t d1 = td - ta, d2 = tp - td, d3 = tf - tp, d4 = tf - ta;
                 if (d1 > d_ar_de_max) d_ar_de_max = d1;
                 d_ar_de_sum += d1;
-                if (d2 < d_de_di_min) d_de_di_min = d2;
                 if (d2 > d_de_di_max) d_de_di_max = d2;
                 d_de_di_sum += d2;
-                if (d3 < d_di_fl_min) d_di_fl_min = d3;
                 if (d3 > d_di_fl_max) d_di_fl_max = d3;
                 d_di_fl_sum += d3;
-                if (d4 < d_ar_fl_min) d_ar_fl_min = d4;
                 if (d4 > d_ar_fl_max) d_ar_fl_max = d4;
                 d_ar_fl_sum += d4;
                 size_t rb = g_trace[idx].ring_bytes_at_arrival;
-                if (rb < ring_min) ring_min = rb;
                 if (rb > ring_max) ring_max = rb;
                 ring_sum += rb;
             }
@@ -1544,35 +1270,10 @@ report:
 #endif
         }
     }
-#ifdef XCLOUD360_MENU
-    /* v0.16: STOP sai antes do teardown, pro PC já ir fechando o jogo. */
-#ifdef XCLOUD360_NATIVE
+    uint64_t t_wall_end = now_us();
     /* nativo: o video_teardown solta os controles no xCloud e só então faz
-     * o xn_stop (DELETE + PeerConnection destruída) */
-    if (exit_reason == EXIT_USER && use_tcp && !g_native_game) send_stop();
-#else
-    if (exit_reason == EXIT_USER && use_tcp) send_stop();
-#endif
-    uint64_t t_wall_end = now_us();
-    video_teardown(ctx, parser, frame, use_tcp, gpu_on);
-#else
-    /* Signal worker to drain and exit */
-    g_producer_done = 1;
-#ifdef XCLOUD360_AUDIO
-    audio_session_end();
-#endif
-#ifdef XCLOUD360_GPU
-    /* v0.15: com GPU a hw thread 2 é do decoder (nunca termina) — não esperar
-     * por ela. Espera a GPU, devolve o scanout pro console e reabre o printf. */
-    if (gpu_on) gpu_present_finish();
-    else
-#endif
-    while (g_worker_frames < total_frames && xenon_is_thread_task_running(2)) {
-        for (volatile int i = 0; i < 10000; i++) {}
-    }
-
-    uint64_t t_wall_end = now_us();
-#endif
+     * o xn_pause (Back+Start) ou o xn_stop */
+    video_teardown(ctx, parser, frame, gpu_on, exit_reason == EXIT_USER);
     double wall_s = (t_wall_end - t_wall_start) / 1e6;
     double fps = total_frames / wall_s;
     printf("\n==== RESULT ====\n");
@@ -1585,48 +1286,81 @@ report:
     return exit_reason;
 }
 
-#ifdef XCLOUD360_MENU
-/* ---- tela do menu (menu_ui.c desenha, menu_model.c guarda o estado) ---- */
+/* ---- tela do menu (source/ui desenha, menu_model.c guarda o estado) ---- */
 
 #define MENU_GO_STREAM 1
 #define MENU_GO_TEST   2
 
-enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET };
+enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET, SCR_LOADING, SCR_FAIL, SCR_UPDATE,
+       SCR_BCHECK, SCR_BKEY, SCR_BMSG, SCR_BSET };   /* v0.20.3: chave beta */
 
-/* Layout em px pra 720p; o rodapé fica dentro da área segura de TV (~25px). */
-#define UI_X        48
-#define UI_TITLE_Y  28
-#define UI_STAT_Y   76
-#define UI_DET_Y    112
-#define UI_LIST_Y   152
-#define UI_ROW_H    32
-#define UI_ROWS     13          /* 152 + 13*32 = 568 */
-#define UI_HELP_Y   584
-#define UI_LOG_Y    608         /* 4 linhas de 16px -> 672 */
+/* v0.20.0: estado do XUI (MENU-UI.md). */
+static xui_view_t     *g_xv;
+static xui_mm_t        g_xmm;
+static xui_cat_t       g_xcat;
+static xui_home_data_t g_xd;
 
-#define C_BG     UI_RGB(14, 18, 28)
-#define C_BAR    UI_RGB(16, 110, 16)     /* verde Xbox */
-#define C_SEL    UI_RGB(40, 90, 150)
-#define C_WHITE  UI_RGB(240, 240, 240)
-#define C_DIM    UI_RGB(150, 155, 170)
-#define C_LOG    UI_RGB(100, 105, 120)
-#define C_YELLOW UI_RGB(255, 210, 60)
-#define C_RED    UI_RGB(255, 110, 90)
-#define C_GREEN  UI_RGB(120, 230, 120)
+/* v0.20.1: atualização (UPDATE.md). g_upd_auto = checar sozinho assim que a
+ * hw 3 estiver livre; g_upd_screen = tela de atualização aberta (modal). */
+static int        g_upd_auto = 0;
+static int        g_upd_screen = 0;
+static xcu_snap_t g_us;
+/* v0.20.3: atualização obrigatória. g_boot_upd: 1 = procurar antes do login,
+ * 2 = procurando; o login espera (g_login_deferred). Falha de rede = segue e
+ * tenta de novo em g_upd_retry_us. g_upd_dismissed = versão que o usuário
+ * deixou pra depois (só opcional). */
+static int        g_boot_upd = 0;
+static int        g_login_deferred = 0;
+static uint64_t   g_upd_retry_us = 0;
+static unsigned   g_upd_seen = 0;
+static char       g_upd_dismissed[32] = "";
+#define UPD_RETRY_US (10ULL * 60 * 1000000)
 
-static int  g_scr_drawn = -1;
-static char g_login_drawn[64];
-
-#ifdef XCLOUD360_LOGIN
 /* v0.17: de onde vem o catálogo. 0 = login do Xbox em andamento,
- * 1 = catálogo do Xbox na tela, -1 = Xbox falhou -> launcher (v0.16). */
+ * 1 = catálogo do Xbox na tela, -1 = login falhou (v0.20.0: sem PC pra cair). */
 static int       g_cat_src = 0;
 static int       g_xbox_login = 0;       /* tela de código do Xbox */
 static unsigned  g_lt_runs_seen = 0;
 static lt_snap_t g_lts;
 static char      g_xbox_err[170] = "";
 
-#ifdef XCLOUD360_NATIVE
+/* ---- v0.20.3: chave beta (source/beta, BETA-GATE.md) ----
+ * g_bui = tela do beta aberta. Sem autorização (BETA=1) nada além destas
+ * telas aparece: nem login, nem capas, nem log. */
+enum { BG_NONE = 0, BG_KEY, BG_MSG, BG_SETTINGS };
+static int        g_bui = BG_NONE;
+static int        g_bchange = 0;          /* trocar chave (veio das Configurações): B volta */
+static int        g_beta_boot = 0;        /* falta o xcb_boot_start (hw 3) */
+static int        g_beta_pend = 0;        /* 1 = validar g_beta_arg, 2 = ler do pendrive: esperando a hw 3 */
+static char       g_beta_arg[16];
+static unsigned   g_bseen = 0;
+static xcb_snap_t g_bs;
+static xkp_t      g_kp;
+static char       g_kerr[160];
+static char       g_set_notice[64];
+static char       g_kp_text[16], g_key_status[80], g_ver_line[64];
+static xui_key_t      g_kd;
+static xui_settings_t g_sd;
+
+static int beta_ok(void) { return !XCLOUD360_BETA || xcb_authorized(); }
+static int beta_screen_p(int scr) { return scr >= SCR_BCHECK && scr <= SCR_BSET; }
+
+/* unix -> "25/10/2026 22:56" no horário de Brasília (UTC-3, sem verão) */
+static void fmt_brt(char *o, size_t n, long long t) {
+    t -= 3 * 3600;
+    long long days = t / 86400, sec = t % 86400;
+    if (sec < 0) { sec += 86400; days--; }
+    /* civil_from_days (H. Hinnant) */
+    long long z = days + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long long y = (long long)yoe + era * 400;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153, d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    if (m <= 2) y++;
+    snprintf(o, n, "%02u/%02u/%04lld %02d:%02d", d, m, y, (int)(sec / 3600), (int)(sec / 60 % 60));
+}
+
 /* stage 5: flags do catálogo (XA_F_ADPLAY = jogo com anúncio -> oferta
  * xgpuwebf2p) por titleId; o menu_model só guarda id/nome. */
 static struct { char id[MM_ID_LEN]; unsigned flags; } g_xflags[MM_MAX_GAMES];
@@ -1636,59 +1370,52 @@ static unsigned xbox_title_flags(const char *id) {
         if (!strcmp(g_xflags[i].id, id)) return g_xflags[i].flags;
     return 0;
 }
-#endif
 
-/* Lista do Xbox -> menu_model, pelas mesmas linhas GAME/END do launcher. */
+/* Lista do Xbox -> menu_model, pelas linhas GAME/END. v0.20.0: nomes em
+ * UTF-8 (o menu novo desenha acentos). */
 static void xbox_catalog_commit(void) {
     xa_title_t *t = NULL;
     int n = 0;
     if (lt_take_games(&t, &n) != 0) return;
     char line[16 + MM_ID_LEN + MM_NAME_LEN];
-#ifdef XCLOUD360_NATIVE
     g_nxflags = 0;
-#endif
     for (int i = 0; i < n; i++) {
         snprintf(line, sizeof(line), "GAME\t%s\t%s\t0", t[i].id, t[i].name[0] ? t[i].name : t[i].id);
         mm_handle_line(&g_mm, line);
-#ifdef XCLOUD360_NATIVE
         if (g_nxflags < MM_MAX_GAMES) {
             snprintf(g_xflags[g_nxflags].id, MM_ID_LEN, "%.*s", MM_ID_LEN - 1, t[i].id);
             g_xflags[g_nxflags++].flags = t[i].flags;
         }
-#endif
     }
     snprintf(line, sizeof(line), "END");
     mm_handle_line(&g_mm, line);
     free(t);
 }
 
-/* Uma vez por volta do menu. Retorna 1 se o launcher deve mandar a lista. */
-static int xbox_login_poll(void) {
+/* Uma vez por volta do menu. */
+static void xbox_login_poll(void) {
     lt_snapshot(&g_lts);
     g_xbox_login = g_lts.phase == LT_RUNNING && g_lts.uri[0];
-    if (g_xbox_login) {
-        snprintf(g_mm.login_url, sizeof(g_mm.login_url), "%s", g_lts.uri);
-        snprintf(g_mm.login_code, sizeof(g_mm.login_code), "%s", g_lts.code);
-    }
-    if (g_lts.runs == g_lt_runs_seen) return 0;
+    if (g_xbox_login) xlu_add_secret(g_lts.code);   /* o código nunca vai pro log */
+    if (g_lts.runs == g_lt_runs_seen) return;
     g_lt_runs_seen = g_lts.runs;
     if (g_lts.phase == LT_DONE) {
         xbox_catalog_commit();
         g_cat_src = 1;
         g_xbox_err[0] = 0;
+        /* v0.20.3: a atualização já foi procurada antes do login (g_boot_upd) */
         printf("[menu] catalogo: Xbox (%d jogos)\n", g_mm.ngames);
-        return 0;
+        return;
     }
     if (g_lts.phase == LT_FAILED) {
-        snprintf(g_xbox_err, sizeof(g_xbox_err), "Xbox: %s", g_lts.err);
+        snprintf(g_xbox_err, sizeof(g_xbox_err), "%s", g_lts.err);
+        xlu_flush_soon();
         /* Já tinha catálogo do Xbox (Y falhou): fica com ele. */
-        if (g_cat_src != 1) { g_cat_src = -1; return 1; }
+        if (g_cat_src != 1) g_cat_src = -1;
     }
-    return 0;
 }
-#endif
 
-typedef struct { int up, down, left, right, a, b, x, y, lb, rb, rt; } menu_btn_t;
+typedef struct { int up, down, left, right, a, b, x, y, lb, rb, start; } menu_btn_t;
 
 /* Controle no menu: D-pad ou stick esquerdo. Sem usb_do_poll aqui quando a
  * thread de rede está de pé (ela é a dona do USB). */
@@ -1696,9 +1423,7 @@ static void menu_read_buttons(menu_btn_t *b) {
     struct controller_data_s d;
     if (!g_input_on_net) usb_do_poll();
     else if (now_us() - g_usb_poll_us > 40000) {
-        /* v0.17.1: USB parado (pendrive em uso / rede ocupada): estado velho.
-         * Direções contam como soltas (zera a repetição); botões ficam como
-         * estavam, pra não virar um "aperto novo" quando o USB voltar. */
+        /* v0.17.1: USB parado (pendrive em uso): direções contam como soltas. */
         b->up = b->down = b->left = b->right = 0;
         return;
     }
@@ -1707,491 +1432,827 @@ static void menu_read_buttons(menu_btn_t *b) {
     b->down  = d.down  || d.s1_y < -20000;
     b->left  = d.left  || d.s1_x < -20000;
     b->right = d.right || d.s1_x >  20000;
-    b->a = d.a; b->b = d.b; b->x = d.x; b->y = d.y; b->lb = d.lb; b->rb = d.rb;
-    b->rt = d.rt > 128;   /* stage 5: RT segurado + A = jogar via PC */
+    b->a = d.a; b->b = d.b; b->x = d.x; b->y = d.y; b->lb = d.lb; b->rb = d.rb; b->start = d.start;
 }
 
 /* Repetição de tecla segurada: dispara ao apertar, de novo após 400ms e
- * depois a cada 80ms. */
+ * depois a cada 80ms (v0.20.0: 140ms, cada passo anima um card). */
 static int key_repeat(int held, uint64_t now, uint64_t *next) {
     if (!held) { *next = 0; return 0; }
     if (*next == 0) { *next = now + 400000; return 1; }
-    if (now >= *next) { *next = now + 80000; return 1; }
+    if (now >= *next) { *next = now + 140000; return 1; }
     return 0;
 }
 
-static void menu_status(char *st, char *det, size_t n, uint32_t *col,
-                        int screen, int conn, const char *play_name, const char *notice) {
-    det[0] = '\0';
-    *col = C_WHITE;
-    if (screen == SCR_NONET) {
-        snprintf(st, n, "Sem rede: network_init falhou");
-        snprintf(det, n, "Verifique o cabo e reinicie o Xbox. X: teste offline");
-        *col = C_RED;
-        return;
-    }
-#ifdef XCLOUD360_LOGIN
-    if (screen == SCR_LOGIN && g_xbox_login) {
-        snprintf(st, n, "Faca login: acesse %s e digite %s", g_mm.login_url, g_mm.login_code);
-        snprintf(det, n, "%s", g_lts.status);
-        *col = C_YELLOW;
-        return;
-    }
-    if (screen == SCR_LIST && g_cat_src == 0) {
-        snprintf(st, n, "%s", g_lts.status[0] ? g_lts.status : "Login do Xbox...");
-        snprintf(det, n, "catalogo: Xbox (carregando)%s", conn ? "" : "  |  PC desconectado");
-        *col = C_YELLOW;
-        return;
-    }
-#ifdef XCLOUD360_NATIVE
-    /* stage 5: jogo sem PC. A espera mostra os STATE da sessão do Xbox
-     * (mesmos códigos do launcher) sem depender da conexão com o PC. */
-    if (screen == SCR_WAIT && g_native_game) conn = 1;
-    if (screen == SCR_LIST && g_cat_src == 1 && g_native_ok && !conn) {
-        int calm = g_mm.state == MM_ST_NONE || g_mm.state == MM_ST_IDLE || g_mm.state == MM_ST_UNKNOWN ||
-                   g_mm.state == MM_ST_CATALOG;
-        snprintf(st, n, "Escolha um jogo  -  catalogo: Xbox (%d jogos), sem PC", g_mm.ngames);
-        if (notice && notice[0]) snprintf(det, n, "%s", notice);
-        else if (!calm && g_mm.state_text[0]) snprintf(det, n, "%s", g_mm.state_text);
-        else snprintf(det, n, "A: jogar   (PC desconectado: RT+A indisponivel)");
-        *col = g_mm.state == MM_ST_ERROR && !(notice && notice[0]) ? C_RED : C_WHITE;
-        return;
-    }
-#endif
-    if (screen == SCR_LIST && g_cat_src == 1 && !conn) {
-        snprintf(st, n, "catalogo: Xbox (%d jogos)  -  PC desconectado", g_mm.ngames);
-        snprintf(det, n, "Para jogar, abra o launcher no PC (%s:%d)", XCLOUD360_STREAM_SERVER_IP,
-                 XCLOUD360_CTRL_PORT);
-        *col = C_YELLOW;
-        return;
-    }
-#endif
-    if (!conn) {
-        snprintf(st, n, screen == SCR_WAIT ? "Reconectando ao PC..." : "Conectando ao PC...");
-        snprintf(det, n, "Abra o launcher no PC (%s:%d)", XCLOUD360_STREAM_SERVER_IP,
-                 XCLOUD360_CTRL_PORT);
-        *col = C_YELLOW;
-        return;
-    }
-    switch (g_mm.state) {
-    case MM_ST_LOGIN:
-        snprintf(st, n, "Faca login: acesse %s e digite %s", g_mm.login_url, g_mm.login_code);
-        *col = C_YELLOW;
-        break;
-    case MM_ST_CATALOG:      snprintf(st, n, "Carregando catalogo..."); break;
-    case MM_ST_STARTING:
-        snprintf(st, n, "Iniciando %s...", play_name[0] ? play_name : "jogo");
-        *col = C_GREEN;
-        break;
-    case MM_ST_QUEUE:        snprintf(st, n, "Na fila"); *col = C_YELLOW; break;
-    case MM_ST_STREAMING:
-        snprintf(st, n, screen == SCR_WAIT ? "Abrindo o video..." : "Jogo em andamento no PC");
-        *col = C_GREEN;
-        break;
-    case MM_ST_RECONNECTING: snprintf(st, n, "Reconectando..."); *col = C_YELLOW; break;
-    case MM_ST_ERROR:        snprintf(st, n, "Erro"); *col = C_RED; break;
-    default:
-        if (screen == SCR_WAIT) {
-            snprintf(st, n, "Iniciando %s...", play_name);
-            *col = C_GREEN;
-        } else {
-            snprintf(st, n, "Escolha um jogo");
-        }
-        break;
-    }
-    if (g_mm.state_text[0] && g_mm.state != MM_ST_LOGIN) snprintf(det, n, "%s", g_mm.state_text);
-    if (!det[0] && notice && notice[0]) snprintf(det, n, "%s", notice);
-#ifdef XCLOUD360_LOGIN
-    if (screen == SCR_LIST) {
-        /* PC parado (sem jogo pedido): a linha de status diz de onde veio a lista */
-        int calm = g_mm.state == MM_ST_NONE || g_mm.state == MM_ST_IDLE ||
-                   g_mm.state == MM_ST_UNKNOWN || g_mm.state == MM_ST_CATALOG;
-        if (g_cat_src == 1 && calm) {
-            snprintf(st, n, "Escolha um jogo  -  catalogo: Xbox (%d jogos)", g_mm.ngames);
-            *col = C_WHITE;
-        } else if (g_cat_src < 0 && g_xbox_err[0] && (!det[0] || (calm && !(notice && notice[0])))) {
-            snprintf(det, n, "%s - usando o catalogo do PC", g_xbox_err);
-        }
-    }
-#endif
+static const char *game_name(const char *id) {
+    for (int i = 0; id && i < g_mm.ngames; i++)
+        if (!strcmp(g_mm.games[i].id, id)) return g_mm.games[i].name;
+    return NULL;
 }
 
-static void menu_draw(int screen, int conn, const char *play_name, const char *notice) {
-    char st[256], det[256], t[200];   /* 256: url(160) + codigo(32) + texto */
-    uint32_t stcol;
-    int W = ui_width();
-    int cols2 = (W - 2 * UI_X) / 16;
-    int cols1 = (W - 2 * UI_X) / 8;
-    if (cols2 > 150) cols2 = 150;
-    if (cols1 > 150) cols1 = 150;
-
-    /* Código de login mudou de tamanho: o desenho grande (centralizado) não
-     * cobriria o anterior — redesenha a tela toda. */
-    if (screen == SCR_LOGIN && strcmp(g_login_drawn, g_mm.login_code) != 0) g_scr_drawn = -1;
-    if (screen != g_scr_drawn) {
-        /* Troca de tela: limpa uma vez (~15ms). Dentro da mesma tela só as
-         * linhas que mudaram são reescritas (cache do ui_line), sem piscar. */
-        ui_clear(C_BG);
-        ui_fill(0, UI_TITLE_Y - 10, W, 52, C_BAR);
-        g_scr_drawn = screen;
-        snprintf(g_login_drawn, sizeof(g_login_drawn), "%s", g_mm.login_code);
-    }
-
-    char right[32] = "";
-    if (screen == SCR_LIST && g_mm.ngames > 0)
-        snprintf(right, sizeof(right), "%d/%d", g_mm.cursor + 1, g_mm.ngames);
-    snprintf(t, sizeof(t), "XCloud360  v%s", XCLOUD360_BUILD_VERSION);
-    int pad = cols2 - (int)strlen(t) - (int)strlen(right);
-    if (pad > 0) {
-        size_t l = strlen(t);
-        for (int i = 0; i < pad && l + 1 < sizeof(t); i++) t[l++] = ' ';
-        t[l] = '\0';
-        strncat(t, right, sizeof(t) - strlen(t) - 1);
-    }
-    ui_line(0, UI_X, UI_TITLE_Y, 2, C_WHITE, C_BAR, cols2, t);
-
-    menu_status(st, det, sizeof(st), &stcol, screen, conn, play_name, notice);
-    ui_line(1, UI_X, UI_STAT_Y, 2, stcol, C_BG, cols2, st);
-    ui_line(2, UI_X, UI_DET_Y, 2, C_DIM, C_BG, cols2, det);
-
-    const char *help = "";
+/* Desenha um quadro (home ou tela de estado) e copia o sujo pro fb. */
+static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
+    xui_canvas_t *cv = xui_fb_canvas();
+    int anim = 0;
+    if (!g_xv || !cv) return 0;
+    xui_rect_t r;
     if (screen == SCR_LIST) {
-        for (int r = 0; r < UI_ROWS; r++) {
-            int idx = g_mm.top + r;
-            int y = UI_LIST_Y + r * UI_ROW_H;
-            if (idx < g_mm.ngames) {
-                const mm_game_t *g = &g_mm.games[idx];
-                int sel = (idx == g_mm.cursor);
-                snprintf(t, sizeof(t), "%s%s%s", sel ? "> " : "  ", g->name,
-                         g->recent ? "  (recente)" : "");
-                ui_line(3 + r, UI_X, y, 2, sel ? C_WHITE : (g->recent ? C_YELLOW : C_WHITE),
-                        sel ? C_SEL : C_BG, cols2, t);
-            } else if (r == 0 && g_mm.ngames == 0) {
-                const char *empty = g_mm.catalogs ? "Nenhum jogo no catalogo. Y: atualizar"
-                                                  : (conn ? "Aguardando o catalogo do PC..." : "");
-#ifdef XCLOUD360_LOGIN
-                if (g_cat_src == 0 && !g_mm.catalogs) empty = "Carregando o catalogo pelo Xbox...";
-#endif
-                ui_line(3 + r, UI_X, y, 2, C_DIM, C_BG, cols2, empty);
-            } else {
-                ui_line(3 + r, UI_X, y, 2, C_WHITE, C_BG, cols2, "");
-            }
-        }
-        help = "Cima/Baixo: mover   Esq/Dir: pagina   LB/RB: letra   A: jogar   Y: atualizar   "
-               "X: teste offline   |   No jogo: Back+Start 2s = menu";
-#ifdef XCLOUD360_NATIVE
-        if (g_native_ok && g_cat_src == 1)
-            help = "Cima/Baixo: mover  Esq/Dir: pagina  LB/RB: letra  A: jogar  RT+A: via PC  Y: atualizar  "
-                   "X: teste  |  No jogo: Back+Start 2s";
-#endif
-    } else if (screen == SCR_LOGIN) {
-        const char *code = g_mm.login_code;
-        int len = (int)strlen(code);
-        int s = 6;
-        while (s > 2 && len * 8 * s > W - 2 * UI_X) s--;
-        int code_y = UI_LIST_Y + 6 * UI_ROW_H;
-        ui_line(3, UI_X, UI_LIST_Y, 2, C_WHITE, C_BG, cols2, "Faca login na sua conta Microsoft:");
-        ui_line(4, UI_X, UI_LIST_Y + 2 * UI_ROW_H, 2, C_DIM, C_BG, cols2,
-                "1. No celular ou no PC, acesse:");
-        ui_line(5, UI_X + 32, UI_LIST_Y + 3 * UI_ROW_H, 2, C_YELLOW, C_BG, cols2 - 2, g_mm.login_url);
-        ui_line(6, UI_X, UI_LIST_Y + 5 * UI_ROW_H, 2, C_DIM, C_BG, cols2, "2. Digite o codigo:");
-        if (len > 0) ui_line(7, (W - len * 8 * s) / 2, code_y, s, C_YELLOW, C_BG, len, code);
-        const char *foot = "O menu continua sozinho quando o login terminar.";
-#ifdef XCLOUD360_LOGIN
-        if (g_xbox_login) foot = "O login fica salvo no pendrive (XC360/TOKEN.TXT).";
-#endif
-        ui_line(8, UI_X, code_y + 16 * s + 16, 2, C_DIM, C_BG, cols2, foot);
-        help = "Y: atualizar   X: teste offline   B: cancelar o jogo pedido";
-#ifdef XCLOUD360_LOGIN
-        if (g_xbox_login) help = "B: pular o login (usar o catalogo do PC)";
-#endif
-    } else if (screen == SCR_WAIT) {
-        snprintf(t, sizeof(t), "Iniciando %s...", play_name);
-        ui_line(3, UI_X, UI_LIST_Y + UI_ROW_H, 2, C_WHITE, C_BG, cols2, t);
-        const char *wtxt = "O video aparece assim que o jogo abrir no PC.";
-#ifdef XCLOUD360_NATIVE
-        if (g_native_game) wtxt = "Sessao no proprio Xbox (sem PC). O video aparece sozinho.";
-#endif
-        ui_line(4, UI_X, UI_LIST_Y + 3 * UI_ROW_H, 2, C_DIM, C_BG, cols2, wtxt);
-        ui_line(5, UI_X, UI_LIST_Y + 5 * UI_ROW_H, 2, C_DIM, C_BG, cols2, "B: cancelar");
-        ui_line(6, UI_X, UI_LIST_Y + 6 * UI_ROW_H, 2, C_DIM, C_BG, cols2,
-                "No jogo: segure Back + Start por 2 s para voltar ao menu.");
-        help = "B: cancelar";
+        r = xui_home_frame(g_xv, cv, &g_xd, xui_mm_confirm(&g_xmm, &g_mm), ms, &anim);
+    } else if (screen == SCR_BKEY) {
+        r = xui_key_frame(g_xv, cv, &g_kd, &g_xd, ms, &anim);   /* v0.20.3 */
+    } else if (screen == SCR_BSET) {
+        r = xui_settings_frame(g_xv, cv, &g_sd, &g_xd, ms, &anim);
     } else {
-        ui_line(3, UI_X, UI_LIST_Y + UI_ROW_H, 2, C_WHITE, C_BG, cols2,
-                "Sem rede o menu nao funciona.");
-        ui_line(4, UI_X, UI_LIST_Y + 3 * UI_ROW_H, 2, C_DIM, C_BG, cols2,
-                "X: tocar o stream de teste embutido");
-        help = "X: teste offline";
+        r = xui_status_frame(g_xv, cv, st, &g_xd, ms, &anim);
     }
-    ui_line(16, UI_X, UI_HELP_Y, 1, C_DIM, C_BG, cols1, help);
-
-    char lg[UI_LOG_LINES][UI_LOG_COLS];
-    ui_log_get(lg);
-    for (int i = 0; i < UI_LOG_LINES; i++)
-        ui_line(17 + i, UI_X, UI_LOG_Y + i * 16, 1, C_LOG, C_BG, cols1, lg[i]);
-    ui_flush();
+    xui_fb_present(r);
+    if (screen == SCR_LIST) xui_cat_want(&g_xcat, g_xv, &g_xd);
+    return anim;
 }
 
-/* Loop do menu (main thread, ~12ms por volta). Retorna quando é hora de
- * entrar no pipeline de vídeo: MENU_GO_STREAM (chegou vídeo depois de um
- * PLAY) ou MENU_GO_TEST (X = stream embutido). */
+/* ---- v0.19.3: Reiniciar / Desligar (v0.20.0: botões do topo) ----
+ * A ordem (encerra a sessão, timeout, SMC) está em mm_power_run
+ * (menu_model.c, testada no host); aqui só a plataforma: xn_stop = o mesmo
+ * DELETE do B e do Back+Start; acabou quando xn_busy() cai. v0.20.0: o
+ * worker do catálogo (pendrive!) também para antes do SMC. */
+static char g_pw_l1[80], g_pw_l2[160];
+
+static int pw_session_busy(void) {
+    return (g_native_ok && xn_busy()) || xcc_bg_running() || xcu_running() || xcb_running();
+}
+
+static int pw_session_open(void *u) { (void)u; return pw_session_busy(); }
+
+static void pw_session_stop(void *u) {
+    (void)u;
+    if (g_native_ok && xn_busy()) {
+        printf("[menu] energia: DELETE da sessao do Xbox\n");
+        xn_stop();
+    }
+    g_native_game = 0;
+    if (xcc_bg_running()) xcc_bg_stop();
+    if (xcu_running()) xcu_cancel();   /* v0.20.1 (a troca de arquivos não cancela: espera o timeout) */
+}
+
+static int pw_session_done(void *u) { (void)u; return !pw_session_busy(); }
+
+static unsigned long long pw_now_us(void *u) { (void)u; return now_us(); }
+
+static void pw_draw(void) {
+    xui_status_t s;
+    memset(&s, 0, sizeof(s));
+    s.kind = XUI_ST_BUSY;
+    s.title = g_pw_l1;
+    s.text = g_pw_l2;
+    s.progress = -1;
+    menu_present(SCR_WAIT, &s, (unsigned)(now_us() / 1000));
+}
+
+static void pw_wait(void *u) {
+    (void)u;
+#ifdef XCLOUD360_AUDIO
+    if (!g_input_on_net) audio_service();
+#endif
+    pw_draw();
+    xc_polite_udelay(10000);
+}
+
+static void pw_show(void *u, const char *l1, const char *l2) {
+    (void)u;
+    printf("[menu] %s %s\n", l1, l2);
+    snprintf(g_pw_l1, sizeof(g_pw_l1), "%s", l1);
+    snprintf(g_pw_l2, sizeof(g_pw_l2), "%s", l2);
+    pw_draw();
+}
+
+static void pw_reboot(void *u) {
+    (void)u;
+    xc_polite_udelay(300000);   /* dá pra ler o "Reiniciando..." */
+    xenon_smc_power_reboot();
+    for (;;) xc_polite_udelay(100000);
+}
+
+static void pw_shutdown(void *u) {
+    (void)u;
+    xc_polite_udelay(300000);
+    xenon_smc_power_shutdown();
+    for (;;) xc_polite_udelay(100000);
+}
+
+static void power_action(int item) {
+    const mm_power_ops_t ops = { NULL, pw_session_open, pw_session_stop, pw_session_done, pw_now_us,
+                                 pw_wait, pw_show, pw_reboot, pw_shutdown };
+    printf("[menu] energia: %s\n", item == MM_PWR_REBOOT ? "reiniciar" : "desligar");
+    mm_power_run(&ops, item, MM_PWR_TIMEOUT_MS);   /* não volta (SMC) */
+}
+
+/* ---- v0.20.3: chave beta ----
+ * hw 3 livre pro xc_beta: sem login, sem worker das capas, sem atualização,
+ * sem sessão. */
+__attribute__((unused)) static int beta_hw3_free(void) {
+    return !lt_running() && !xcc_bg_running() && !xcu_running() && !xcb_running() &&
+           (!g_native_ok || xn_can_play());
+}
+
+static void beta_poll(int *pend_upd) {
+    (void)pend_upd;
+#if XCLOUD360_BETA
+    if (g_beta_boot && beta_hw3_free() && xcb_boot_start() == 0) g_beta_boot = 0;
+    if (g_beta_pend && !xcb_running()) {
+        if (xcc_bg_running()) xcc_bg_stop();   /* regra da hw 3 */
+        else if (beta_hw3_free()) {
+            int r = g_beta_pend == 1 ? xcb_submit_start(g_beta_arg) : xcb_file_start();
+            if (r == 0) g_beta_pend = 0;
+        }
+    }
+    xcb_snapshot(&g_bs);
+    if (g_bs.seq != g_bseen && !g_bs.busy) {
+        g_bseen = g_bs.seq;
+        switch (g_bs.phase) {
+        case XCB_OK:
+        case XCB_OFFLINE_OK: {
+            char k[72];
+            if (xcb_key(k, sizeof(k)) > 0) xlu_use_key(k);   /* log beta com a chave validada */
+            memset(k, 0, sizeof(k));
+            if (g_bui == BG_KEY || g_bui == BG_MSG) {
+                if (g_bchange) {
+                    g_bui = BG_SETTINGS;
+                    snprintf(g_set_notice, sizeof(g_set_notice), "Chave trocada");
+                    /* chave nova pode ter acesso ao canal beta (UPDATE.md passo 7) */
+                    if (g_cat_src == 1) *pend_upd = 1;
+                } else {
+                    g_bui = BG_NONE;
+                }
+            }
+            xkp_clear(&g_kp);
+            g_kerr[0] = 0;
+            break;
+        }
+        case XCB_NEED_KEY:
+            g_bui = BG_KEY;
+            snprintf(g_kerr, sizeof(g_kerr), "%s", g_bs.msg);
+            break;
+        case XCB_INVALID:
+            g_bui = BG_KEY;
+            snprintf(g_kerr, sizeof(g_kerr), "Chave inválida. Confira e digite de novo.");
+            xkp_clear(&g_kp);
+            break;
+        case XCB_REVOKED: case XCB_DUPLICATE: case XCB_NOCONN: case XCB_ERROR:
+            g_bui = BG_MSG;
+            break;
+        default:
+            break;
+        }
+    }
+#endif
+    int son = XCLOUD360_BETA && xcb_authorized();
+    if (g_mm.settings_on != son) { g_mm.settings_on = son; mm_rows_fix(&g_mm); }
+}
+
+/* Qual tela do beta (ou -1). Sem autorização, sempre alguma. */
+static int beta_screen(void) {
+#if XCLOUD360_BETA
+    int busy = g_bs.busy || g_beta_pend || g_beta_boot;
+    if (g_bui == BG_SETTINGS) return SCR_BSET;
+    if (g_bui == BG_KEY) return SCR_BKEY;   /* o "Validando…" aparece dentro */
+    if (g_bui == BG_MSG) return busy ? SCR_BCHECK : SCR_BMSG;
+    if (!xcb_authorized()) return SCR_BCHECK;
+#endif
+    return -1;
+}
+
+/* B/A pedidos na tela da chave */
+static void beta_submit_typed(void) {
+    if (g_bchange && g_native_ok && !xn_can_play()) {
+        snprintf(g_kerr, sizeof(g_kerr), "Feche o jogo aberto antes de trocar a chave.");
+        return;
+    }
+    xkp_text(&g_kp, g_beta_arg);
+    g_beta_pend = 1;
+    g_kerr[0] = 0;
+}
+
+static void beta_from_file(void) {
+    if (g_bchange && g_native_ok && !xn_can_play()) {
+        snprintf(g_kerr, sizeof(g_kerr), "Feche o jogo aberto antes de trocar a chave.");
+        return;
+    }
+    g_beta_pend = 2;
+    g_kerr[0] = 0;
+}
+
+static void beta_open_key(int change) {
+    g_bui = BG_KEY;
+    g_bchange = change;
+    xkp_clear(&g_kp);
+    g_kerr[0] = 0;
+}
+
+/* Loop do menu (main thread). Retorna quando é hora de entrar no pipeline
+ * de vídeo: MENU_GO_STREAM (chegou vídeo depois de um PLAY) ou MENU_GO_TEST
+ * (X = stream embutido). */
 static int menu_loop(int net_ok, const char *msg) {
-    ui_log_install();
-    ui_attach();
-    g_scr_drawn = -1;
+    quiet_stdout_install();
+    if (xui_fb_attach() != 0) printf("[menu] xui_fb_attach falhou\n");
+    if (g_xv) xui_view_invalidate(g_xv);
 
     int waiting = 0;
-    unsigned want_reconn = 0;
+    int keep_st = XC_GS_NONE;   /* v0.19.3: estado do jogo aberto na volta anterior */
+    int pend_relogin = 0, pend_test = 0;   /* v0.20.0: esperando a hw 3 (worker) */
+    int pend_upd = 0;   /* v0.20.1: 1 = checar, 2 = instalar, quando a hw 3 largar */
+    char upd_title[96], upd_detail[96], upd_label[48];
+    uint64_t last_bg_try = 0;
     char play_name[MM_NAME_LEN] = "";
-    char notice[120];
+    char play_id[MM_ID_LEN] = "";
+    char notice[160];
+    char title[120];
     snprintf(notice, sizeof(notice), "%s", msg ? msg : "");
-    unsigned seen_gen = ctrl_conn_gen();
-    int need_list = 1;   /* recentes podem ter mudado com o jogo que acabou */
-    uint64_t rep_up = 0, rep_dn = 0;
+    uint64_t rep_up = 0, rep_dn = 0, rep_lf = 0, rep_rt = 0;
     menu_btn_t prev, b;
     /* Botões já apertados na entrada (Back+Start do jogo, A do teste) não
      * contam como clique. */
+    memset(&prev, 0, sizeof(prev));
     menu_read_buttons(&prev);
 
     for (;;) {
         uint64_t now = now_us();
-        if (net_ok) stream_poll();   /* no-op com a thread de rede */
 #ifdef XCLOUD360_AUDIO
         if (!g_input_on_net) audio_service();   /* termina o fade do jogo */
 #endif
-
-        char line[512];
-#ifdef XCLOUD360_LOGIN
-        if (xbox_login_poll()) need_list = 1;
-        while (ctrl_recv_line(line, sizeof(line))) {
-            /* Catálogo do Xbox (ou o login dele em andamento) manda: GAME/END
-             * do launcher só valem no fallback. */
-            if (g_cat_src >= 0 && (!strncmp(line, "GAME\t", 5) || !strcmp(line, "END"))) continue;
-#ifdef XCLOUD360_NATIVE
-            /* jogo nativo: o STATE que vale é o da sessão do Xbox */
-            if (g_native_game && !strncmp(line, "STATE\t", 6)) continue;
-#endif
-            mm_handle_line(&g_mm, line);
+        xbox_login_poll();
+        beta_poll(&pend_upd);   /* v0.20.3 */
+        /* v0.20.3: login só depois da chave (BETA) e da checagem de atualização */
+        if (g_login_deferred && beta_ok() && !g_boot_upd && !xcu_running() && !pend_upd && !xcb_running() &&
+            !g_upd_screen && !lt_running() && !xcc_bg_running()) {
+            g_login_deferred = 0;
+            printf("[login] thread do login hw=%d r=%d\n", LT_HW_THREAD, lt_start());
         }
-#else
-        while (ctrl_recv_line(line, sizeof(line))) mm_handle_line(&g_mm, line);
-#endif
-#ifdef XCLOUD360_NATIVE
-        /* sessão encerrando depois do jogo / do B: o STATE dela (IDLE
-         * "Sessao encerrada") segue chegando no menu */
-        if (!waiting && !g_native_game && xn_busy()) native_poll_state();
+        /* sessão encerrando depois do jogo / do B: o STATE dela segue chegando */
+        if (!waiting && !g_native_game && g_native_ok && xn_busy()) native_poll_state();
         if (g_native_game && waiting && native_poll_state() &&
             (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE)) {
-            /* a sessão do Xbox desistiu (erro com texto em pt-BR) ou acabou:
-             * volta pra lista com o motivo; xn_stop solta o WebRTC */
+            /* a sessão do Xbox desistiu ou acabou: volta pra lista com o motivo */
             printf("[menu] sessao do Xbox: %s\n", g_mm.state_text);
             xn_stop();
             g_native_game = 0;
             waiting = 0;
-            play_name[0] = '\0';
+            play_name[0] = play_id[0] = '\0';
+            xlu_set_game("");
             snprintf(notice, sizeof(notice), "%.*s", (int)sizeof(notice) - 1,
-                     g_mm.state_text[0] ? g_mm.state_text : "Sessao encerrada");
+                     g_mm.state_text[0] ? g_mm.state_text : "Sessão encerrada");
         }
-#endif
-        int conn = ctrl_connected();
-        if (conn) {
-            unsigned gen = ctrl_conn_gen();
-            if (gen != seen_gen) {
-                seen_gen = gen;
-                g_mm.receiving = 0;   /* GAMEs pela metade eram da conexão velha */
-                need_list = 1;
+        /* v0.19.3: jogo aberto no menu (xn_session solta o WebRTC se o
+         * xCloud derrubou; o STATE ERROR dele já veio pelo native_poll_state) */
+        static xc_game_session_t gs;
+        int ks = xc_game_session(&gs);
+        if (!waiting) {
+            if (keep_st == XC_GS_OPEN && ks != XC_GS_OPEN && !g_next_on &&
+                (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE) && g_mm.state_text[0]) {
+                snprintf(notice, sizeof(notice), "%.*s", (int)sizeof(notice) - 1, g_mm.state_text);
             }
-            if (g_stop_pending && ctrl_send_line("STOP") == 0) g_stop_pending = 0;
-#ifdef XCLOUD360_LOGIN
-            if (g_cat_src >= 0) need_list = 0;   /* catálogo é do Xbox */
-#endif
-            if (need_list && !g_stop_pending && ctrl_send_line("LIST") == 0) need_list = 0;
+            keep_st = ks;
+        } else {
+            keep_st = XC_GS_NONE;
         }
 
-        /* Vídeo: fora de um PLAY, o que chegar na :9000 é sobra (capture-rtp
-         * anterior) — joga fora. Depois do PLAY, só vale o que vier de uma
-         * conexão aberta depois do nosso stream_force_reconnect. */
-        if (net_ok) {
-            if (!waiting) {
-                stream_take_reset();
-                stream_discard();
-#ifdef XCLOUD360_NATIVE
-            } else if (g_native_game) {
-                /* stage 5: o WebRTC só injeta depois do 1o IDR do PC novo;
-                 * o ring foi esvaziado no PLAY (sem produtor até ali). */
-                stream_take_reset();
-                if (stream_available() >= 4) {
-                    /* v0.19.2: a thread da sessão entrega as fases ao vivo pra
-                     * hw1 e sai da hw 3 logo depois do answer; espera ela
-                     * (até 2 s) pro decoder abrir com as 4 threads. */
-                    if (!g_t_video_first) g_t_video_first = now;
-                    if (xn_session_thread_busy() && now - g_t_video_first < 2000000) {
-                        /* segue no menu mais um pouco */
-                    } else {
-                        printf("[menu] video do Xbox chegou (%u B), entrando no jogo%s\n",
-                               (unsigned)stream_available(),
-                               xn_session_thread_busy() ? " (sessao ainda na hw3)" : "");
-                        g_t_video_first = 0;
-                        return MENU_GO_STREAM;
-                    }
-                }
-#endif
-            } else if ((int)(stream_reconnects_done() - want_reconn) >= 0) {
-                stream_take_reset();
-                if (stream_available() >= 4) {
-                    printf("[menu] video chegou (%u B), entrando no jogo\n",
-                           (unsigned)stream_available());
-                    return MENU_GO_STREAM;
-                }
+        /* Vídeo: fora de um PLAY, o que chegar é sobra — joga fora. */
+        if (!waiting) {
+            stream_discard();
+        } else if (g_native_game && stream_available() >= 4) {
+            /* v0.19.2: a thread da sessão entrega as fases ao vivo pra hw1 e
+             * sai da hw 3 logo depois do answer; espera ela (até 2 s) pro
+             * decoder abrir com as 4 threads. */
+            if (!g_t_video_first) g_t_video_first = now;
+            if (!(xn_session_thread_busy() && now - g_t_video_first < 2000000)) {
+                printf("[menu] video do Xbox chegou (%u B), entrando no jogo%s\n",
+                       (unsigned)stream_available(), xn_session_thread_busy() ? " (sessao ainda na hw3)" : "");
+                g_t_video_first = 0;
+                return MENU_GO_STREAM;
             }
         }
 
-        /* Login tem prioridade até sobre "Iniciando": o token pode vencer
-         * justo no PLAY, e o código precisa aparecer grande. */
+        /* catálogo/capas (MENU-UI.md passo 3) */
+        xcc_poll();
+        xui_cat_sync(&g_xcat, &g_mm, &g_xd);
+        xui_mm_sync(&g_xmm, &g_mm, &g_xd, xui_cat_flags, &g_xcat);
+        /* v0.20.1: atualização. Regra da hw 3: só sem login, sem worker do
+         * catálogo, sem sessão e fora do jogo (UPDATE.md). */
+        xcu_snapshot(&g_us);
+        int hw3_ok = !waiting && !g_next_on && !lt_running() && (!g_native_ok || xn_can_play()) && net_ok &&
+                     g_input_on_net && !xcb_running() && !g_beta_pend && beta_ok();
+        /* v0.20.3: procura na entrada (antes do login) e de novo depois de uma
+         * falha de rede; versão nova abre o popup sozinha */
+        if (g_boot_upd == 1 && hw3_ok && !pend_upd && !xcu_running()) { pend_upd = 1; g_boot_upd = 2; }
+        if (g_upd_retry_us && now >= g_upd_retry_us && hw3_ok && !pend_upd && !xcu_running() && !g_upd_screen) {
+            g_upd_retry_us = 0;
+            g_upd_auto = 1;
+        }
+        if (g_upd_auto && !pend_upd && hw3_ok && !xcu_running()) { pend_upd = 1; g_upd_auto = 0; }
+        if (g_us.seq != g_upd_seen && !g_us.busy && !pend_upd) {
+            g_upd_seen = g_us.seq;
+            int ph = g_us.phase;
+            if (ph == XCU_AVAILABLE && !g_upd_screen &&
+                (g_us.mandatory || strcmp(g_upd_dismissed, g_us.latest))) {
+                g_upd_screen = 1;   /* popup: obrigatória (sem Depois) ou opcional nova */
+                printf("[update] popup v%s (%s)\n", g_us.latest, g_us.mandatory ? "obrigatoria" : "opcional");
+            }
+            if (g_boot_upd == 2 && ph != XCU_CHECKING) g_boot_upd = 0;
+            /* checagem que falhou (rede/servidor): segue pro menu e tenta depois */
+            if (ph == XCU_FAILED && !g_us.latest[0] && !g_upd_screen) g_upd_retry_us = now + UPD_RETRY_US;
+        }
+        if (pend_upd && hw3_ok) {
+            if (xcc_bg_running()) xcc_bg_stop();
+            else if (!xcu_running()) {
+                int r = pend_upd == 2 ? xcu_install_start() : xcu_check_start();
+                printf("[update] %s r=%d\n", pend_upd == 2 ? "instalar" : "procurar", r);
+                if (r == 0) g_upd_seen = g_us.seq;               /* v0.20.3: vale o próximo resultado */
+                else if (g_boot_upd == 2 && pend_upd == 1) g_boot_upd = 1;   /* hw 3 ocupada: tenta de novo */
+                pend_upd = 0;
+            }
+        }
+        /* worker do catálogo (+ upload do log) só com a hw 3 livre */
+        if (!waiting && !g_next_on && !pend_relogin && !pend_test && !pend_upd && !xcu_running() && !lt_running() &&
+            (!g_native_ok || xn_can_play()) && !xcc_bg_running() && now - last_bg_try >= 1000000 &&
+            !xcb_running() && !g_beta_pend && !g_beta_boot && beta_ok() && !g_boot_upd && !g_login_deferred) {
+            last_bg_try = now;
+            if (net_ok && g_input_on_net) xcc_bg_start();
+        }
+
+        int bscr = net_ok ? beta_screen() : -1;
         int screen = !net_ok ? SCR_NONET
-#ifdef XCLOUD360_LOGIN
+                   : bscr >= 0 ? bscr
+                   : (g_upd_screen && !waiting) ? SCR_UPDATE   /* v0.20.3: popup antes do login também */
                    : (!waiting && g_xbox_login) ? SCR_LOGIN
-#endif
-                   : (conn && g_mm.state == MM_ST_LOGIN && g_mm.have_login) ? SCR_LOGIN
                    : waiting ? SCR_WAIT
+                   : g_upd_screen ? SCR_UPDATE
+                   : (g_cat_src == 0 && g_mm.ngames == 0) ? SCR_LOADING
+                   : (g_cat_src < 0 && g_mm.ngames == 0) ? SCR_FAIL
                    : SCR_LIST;
 
         b = prev;
         menu_read_buttons(&b);
 #define PRESSED(f) (b.f && !prev.f)
-        if (screen == SCR_LIST) {
-            if (key_repeat(b.up, now, &rep_up))   mm_move(&g_mm, -1, UI_ROWS);
-            if (key_repeat(b.down, now, &rep_dn)) mm_move(&g_mm, +1, UI_ROWS);
-            if (PRESSED(left))  mm_page(&g_mm, -1, UI_ROWS);
-            if (PRESSED(right)) mm_page(&g_mm, +1, UI_ROWS);
-            if (PRESSED(lb))    mm_letter(&g_mm, -1, UI_ROWS);
-            if (PRESSED(rb))    mm_letter(&g_mm, +1, UI_ROWS);
-            if (PRESSED(a)) {
-                const mm_game_t *g = mm_current(&g_mm);
-                char cmd[16 + MM_ID_LEN];
-                if (g) snprintf(cmd, sizeof(cmd), "PLAY\t%s", g->id);
-                if (!g) {
-                    /* lista vazia: nada */
-#ifdef XCLOUD360_LOGIN
-                } else if (lt_running()) {
-                    /* a thread do login ocupa a hw 3 (o decoder precisa dela) */
-                    snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda esta carregando o catalogo");
-#endif
-#ifdef XCLOUD360_NATIVE
-                } else if (g_native_ok && g_cat_src == 1 && !b.rt) {
-                    /* stage 5: A = sessão no próprio Xbox (sem PC). RT+A = PC. */
-                    if (!xn_can_play()) {
-                        snprintf(notice, sizeof(notice), "Aguarde: encerrando a sessao anterior...");
-                    } else {
-                        int f2p = (xbox_title_flags(g->id) & XA_F_ADPLAY) != 0;
-                        g_xn_seen = 0;
-                        stream_set_inject(1);   /* vídeo = WebRTC (já é, desde o boot) */
-                        int r = xn_play(g->id, g->name, f2p);
-                        g_t_video_first = 0;
-                        if (r == XN_OK) {
-                            g_native_game = 1;
-                            snprintf(play_name, sizeof(play_name), "%s", g->name);
-                            printf("[menu] PLAY %s (%s) no Xbox\n", g->id, g->name);
-                            waiting = 1;
-                            notice[0] = '\0';
-                            g_mm.state = MM_ST_NONE;
-                            g_mm.state_text[0] = '\0';
-                        } else {
-                            snprintf(notice, sizeof(notice), "Nao consegui iniciar a sessao no Xbox (%d) - RT+A: via PC", r);
-                        }
-                    }
-#endif
-                } else if (conn && !g_stop_pending && ctrl_send_line(cmd) == 0) {
-#ifdef XCLOUD360_NATIVE
-                    /* fallback: vídeo volta pro TCP :9000 do capture-rtp. Pedido
-                     * antes do force_reconnect: a rede aplica os dois em ordem. */
-                    stream_set_inject(0);
-                    g_native_game = 0;
-#endif
+        /* v0.19.3/v0.20.0: A num jogo -> entra assim que a hw 3 (worker) e a
+         * sessão anterior liberarem. O mesmo jogo aberto = volta na hora. */
+        if (g_next_on && !waiting && screen == SCR_LIST && !xcc_bg_running() && !lt_running()) {
+            const mm_game_t *g = &g_next_play;
+            char sid[48];
+            int ss = xn_session(sid, sizeof(sid), NULL, 0);
+            if (ss == XN_SESS_PAUSED && !strcmp(sid, g->id)) {
+                g_next_on = 0;
+                if (xn_resume(g->id) == XN_OK) {
+                    stream_discard();
+                    g_xn_seen = 0;   /* reaplica o STATE atual (STREAMING) */
+                    g_t_video_first = 0;
+                    g_native_game = 1;
                     snprintf(play_name, sizeof(play_name), "%s", g->name);
-                    printf("[menu] PLAY %s (%s)\n", g->id, g->name);
-                    /* Derruba qualquer conexão de vídeo velha: o jogo novo
-                     * entra por uma conexão nova, que começa num IDR. */
-                    want_reconn = stream_reconnects_done() + 1;
-                    stream_force_reconnect();
+                    snprintf(play_id, sizeof(play_id), "%s", g->id);
+                    xlu_set_game(g->name);
+                    printf("[menu] VOLTA %s: mesma sessao do Xbox, pedindo keyframe\n", g->id);
                     waiting = 1;
                     notice[0] = '\0';
-                    /* STATE do jogo anterior (STREAMING) não vale pro novo
-                     * até o PC responder (STARTING/QUEUE/...). */
+                } else {
+                    /* não deu pra retomar: encerra e abre uma nova */
+                    printf("[menu] %s: retomada falhou, DELETE e sessao nova\n", g->id);
+                    xn_stop();
+                    g_next_on = 1;
+                }
+            } else if (ss == XN_SESS_PAUSED) {
+                xn_stop();   /* outro jogo aberto: DELETE antes (já pedido no A; reforço) */
+            } else if (xn_can_play()) {
+                g_next_on = 0;
+                int f2p = (xbox_title_flags(g->id) & XA_F_ADPLAY) != 0;
+                g_xn_seen = 0;
+                stream_discard();
+                int r = xn_play(g->id, g->name, f2p);
+                g_t_video_first = 0;
+                if (r == XN_OK) {
+                    g_native_game = 1;
+                    snprintf(play_name, sizeof(play_name), "%s", g->name);
+                    snprintf(play_id, sizeof(play_id), "%s", g->id);
+                    xlu_set_game(g->name);
+                    printf("[menu] PLAY %s no Xbox\n", g->id);
+                    xcc_mru_touch(g->id);
+                    waiting = 1;
+                    notice[0] = '\0';
                     g_mm.state = MM_ST_NONE;
                     g_mm.state_text[0] = '\0';
                 } else {
-                    snprintf(notice, sizeof(notice), "Sem conexao com o PC - tente de novo");
+                    snprintf(notice, sizeof(notice), "Não consegui iniciar a sessão no Xbox (%d)", r);
+                    xlu_flush_soon();
                 }
             }
-        } else {
-            rep_up = rep_dn = 0;
         }
-        if (waiting && (screen == SCR_WAIT || screen == SCR_LOGIN) && PRESSED(b)) {
-#ifdef XCLOUD360_NATIVE
-            if (g_native_game) {
-                /* stage 5: B = DELETE da sessão do Xbox (fila, provisionando,
-                 * SDP...). O pedido HTTPS em voo termina antes (até ~20 s);
-                 * o próximo PLAY espera a thread da sessão sair. */
-                printf("[menu] cancelado, DELETE da sessao do Xbox\n");
-                xn_stop();
-                g_native_game = 0;
-                snprintf(notice, sizeof(notice), "Cancelado: encerrando a sessao do xCloud...");
-            } else
-#endif
-            {
-                printf("[menu] cancelado, STOP\n");
-                send_stop();
-            }
-            waiting = 0;
-            play_name[0] = '\0';
+        if (pend_relogin && !xcc_bg_running()) {
+            pend_relogin = 0;
+            printf("[menu] Y: login/catalogo de novo (lt_start=%d)\n", lt_start());
         }
-#ifdef XCLOUD360_LOGIN
-        if (!waiting && screen == SCR_LOGIN && g_xbox_login && PRESSED(b)) {
-            printf("[menu] login do Xbox pulado\n");
-            lt_cancel();
-        }
-#ifdef XCLOUD360_NATIVE
-        if (!waiting && screen == SCR_LIST && PRESSED(y) && xn_busy()) {
-            /* login e sessão dividem a hw 3: nunca os dois ao mesmo tempo */
-            snprintf(notice, sizeof(notice), "Aguarde: encerrando a sessao anterior...");
-        } else
-#endif
-        if (!waiting && screen == SCR_LIST && PRESSED(y) && !lt_running()) {
-            /* Y: refaz o catálogo pelo Xbox (o token salvo vale); no
-             * fallback também pede a lista do PC. */
-            lt_start();
-            if (g_cat_src < 0 && conn) ctrl_send_line("LIST");
-            snprintf(notice, sizeof(notice), "Atualizando o catalogo...");
-        } else
-#endif
-        if (!waiting && (screen == SCR_LIST || screen == SCR_LOGIN) && PRESSED(y) && conn) {
-            ctrl_send_line("LIST");
-            snprintf(notice, sizeof(notice), "Atualizando o catalogo...");
-        }
-#ifdef XCLOUD360_LOGIN
-        if (!waiting && PRESSED(x) && lt_running()) {
-            snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda esta carregando o catalogo");
-        } else
-#endif
-        if (!waiting && PRESSED(x)) {
+        if (pend_test && !xcc_bg_running()) {
+            pend_test = 0;
             printf("[menu] teste offline (stream embutido)\n");
             return MENU_GO_TEST;
         }
+
+        if (screen == SCR_LIST) {
+            int dx = 0, dy = 0;
+            if (key_repeat(b.up, now, &rep_up))    dy = -1;
+            if (key_repeat(b.down, now, &rep_dn))  dy = +1;
+            if (key_repeat(b.left, now, &rep_lf))  dx = -1;
+            if (key_repeat(b.right, now, &rep_rt)) dx = +1;
+            if (dx || dy) mm_nav(&g_mm, dx, dy);
+            if (PRESSED(lb)) mm_nav_page(&g_mm, -1, 6);
+            if (PRESSED(rb)) mm_nav_page(&g_mm, +1, 6);
+            if (PRESSED(a)) {
+                int act = mm_press_a(&g_mm);
+                const mm_game_t *g = mm_focus_game(&g_mm);
+                if (act == MM_A_REBOOT || act == MM_A_SHUTDOWN) {
+                    power_action(act == MM_A_REBOOT ? MM_PWR_REBOOT : MM_PWR_SHUTDOWN);
+                } else if (act == MM_A_SETTINGS) {
+                    g_bui = BG_SETTINGS;   /* v0.20.3 */
+                    g_bchange = 0;
+                    g_set_notice[0] = 0;
+                } else if (act == MM_A_UPDATE) {
+                    /* v0.20.1: tela de atualização; procura de novo se não há
+                     * versão nova conhecida (e nada rodando) */
+                    if (g_native_ok && !xn_can_play()) {
+                        snprintf(notice, sizeof(notice), "Feche o jogo aberto antes de atualizar");
+                    } else {
+                        g_upd_screen = 1;
+                        g_next_on = 0;
+                        int ph = g_us.phase;
+                        if (!xcu_running() && ph != XCU_AVAILABLE && ph != XCU_DONE &&
+                            !((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0]))
+                            pend_upd = 1;
+                    }
+                } else if (act == MM_A_PLAY && g) {
+                    if (xcu_running() || pend_upd) {
+                        snprintf(notice, sizeof(notice), "Aguarde: procurando atualização…");
+                    } else if (lt_login_running()) {
+                        /* a thread do login ocupa a hw 3 (sessão/decoder precisam dela).
+                         * v0.20.2: o worker das capas também usa a hw 3, mas ele é
+                         * parado logo abaixo; antes o PLAY ficava preso aqui pra sempre. */
+                        snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda está carregando o catálogo");
+                    } else if (!g_native_ok || g_cat_src != 1) {
+                        snprintf(notice, sizeof(notice), "Sem sessão no Xbox: faça o login (Y: tentar de novo)");
+                    } else {
+                        char sid[48];
+                        int ss = xn_session(sid, sizeof(sid), NULL, 0);
+                        g_next_play = *g;
+                        g_next_on = 1;
+                        if (xcc_bg_running()) xcc_bg_stop();   /* regra da hw 3 */
+                        if (ss == XN_SESS_PAUSED && strcmp(sid, g->id)) {
+                            printf("[menu] %s aberto: DELETE antes de abrir %s\n", sid, g->id);
+                            xn_stop();
+                            snprintf(notice, sizeof(notice), "Encerrando a sessão anterior para abrir %.60s… (B: cancelar)",
+                                     g->name);
+                        } else if (!xn_can_play() && ss != XN_SESS_PAUSED) {
+                            snprintf(notice, sizeof(notice), "Aguarde: encerrando a sessão anterior… (B: cancelar)");
+                        }
+                    }
+                }
+            }
+            if (PRESSED(b) && !mm_press_b(&g_mm) && g_next_on) {
+                g_next_on = 0;
+                snprintf(notice, sizeof(notice), "Cancelado");
+            }
+        } else if (screen != SCR_BKEY) {
+            rep_up = rep_dn = rep_lf = rep_rt = 0;
+        }
+        /* ---- v0.20.3: telas da chave beta ---- */
+        if (screen == SCR_BKEY && !g_bs.busy && !g_beta_pend) {
+            int dx = 0, dy = 0;
+            if (key_repeat(b.up, now, &rep_up))    dy = -1;
+            if (key_repeat(b.down, now, &rep_dn))  dy = +1;
+            if (key_repeat(b.left, now, &rep_lf))  dx = -1;
+            if (key_repeat(b.right, now, &rep_rt)) dx = +1;
+            if (dx || dy) xkp_nav(&g_kp, dx, dy);
+            if (PRESSED(a)) {
+                int k = xkp_press(&g_kp);
+                if (k == XKP_CONFIRM) beta_submit_typed();
+                else if (k == XKP_FROM_FILE) beta_from_file();
+                else if (k == XKP_TYPED || k == XKP_DELETED) g_kerr[0] = 0;
+            }
+            if (PRESSED(start) && xkp_complete(&g_kp)) beta_submit_typed();
+            if (PRESSED(y)) beta_from_file();
+            if (PRESSED(b) && !xkp_backspace(&g_kp) && g_bchange) g_bui = BG_SETTINGS;
+        } else if (screen == SCR_BMSG) {
+            int ph = g_bs.phase;
+            if (ph == XCB_NOCONN || ph == XCB_ERROR) {
+                if (PRESSED(a)) {   /* tentar de novo: a mesma operação */
+                    if (g_bs.op == XCB_OP_BOOT) g_beta_boot = 1;
+                    else g_beta_pend = g_bs.op == XCB_OP_FILE ? 2 : 1;
+                }
+                if (PRESSED(y)) beta_open_key(g_bchange);
+            } else if (PRESSED(a)) {
+                beta_open_key(g_bchange);   /* revogada / bloqueada: só outra chave */
+            }
+            if (PRESSED(b) && g_bchange) g_bui = BG_SETTINGS;
+        } else if (screen == SCR_BSET) {
+            if (PRESSED(a)) beta_open_key(1);
+            if (PRESSED(b)) { g_bui = BG_NONE; g_bchange = 0; g_set_notice[0] = 0; }
+        }
+        if (waiting && (screen == SCR_WAIT || screen == SCR_LOGIN) && PRESSED(b)) {
+            /* B = DELETE da sessão do Xbox (fila, provisionando, SDP...). */
+            printf("[menu] cancelado, DELETE da sessao do Xbox\n");
+            xn_stop();
+            g_native_game = 0;
+            snprintf(notice, sizeof(notice), "Cancelado: encerrando a sessão na nuvem…");
+            waiting = 0;
+            play_name[0] = play_id[0] = '\0';
+            xlu_set_game("");
+        }
+        if (!waiting && (screen == SCR_LIST || screen == SCR_FAIL) && PRESSED(y)) {
+            if (g_native_ok && xn_busy()) {
+                /* login e sessão dividem a hw 3: nunca os dois ao mesmo tempo */
+                snprintf(notice, sizeof(notice), "%s", native_paused() ? "Há um jogo aberto: encerre-o (outro jogo) para atualizar"
+                                                                       : "Aguarde: encerrando a sessão anterior…");
+            } else if (xcu_running() || pend_upd) {
+                snprintf(notice, sizeof(notice), "Aguarde: procurando atualização…");
+            } else if (!lt_login_running() && net_ok && g_input_on_net) {
+                /* Y: refaz o catálogo pelo Xbox (o token salvo vale) */
+                if (xcc_bg_running()) xcc_bg_stop();
+                pend_relogin = 1;
+                g_next_on = 0;
+                snprintf(notice, sizeof(notice), "Atualizando o catálogo…");
+                if (g_cat_src < 0) g_cat_src = 0;
+            }
+        }
+        if (!waiting && PRESSED(x) && screen != SCR_LOGIN && screen != SCR_LOADING && !beta_screen_p(screen) &&
+            !(screen == SCR_UPDATE && g_us.mandatory)) {
+            if (lt_login_running()) {
+                snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda está carregando o catálogo");
+            } else if (xcu_running() || pend_upd || g_upd_screen) {
+                /* atualização em andamento: nada de teste offline */
+            } else if (g_native_ok && xn_busy()) {
+                snprintf(notice, sizeof(notice), "Há uma sessão na nuvem aberta: o teste offline precisa dela fechada");
+            } else {
+                if (xcc_bg_running()) xcc_bg_stop();
+                pend_test = 1;
+                g_next_on = 0;
+            }
+        }
+        if (screen == SCR_UPDATE) {
+            int ph = g_us.phase;
+            if (PRESSED(a)) {
+                if (ph == XCU_AVAILABLE || ((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0])) {
+                    pend_upd = 2;
+                } else if (ph == XCU_FAILED) {
+                    pend_upd = 1;
+                } else if (ph == XCU_DONE) {
+                    power_action(MM_PWR_REBOOT);   /* "Reinicie o Xbox" */
+                } else if (ph == XCU_UP_TO_DATE) {
+                    g_upd_screen = 0;
+                }
+            }
+            /* v0.20.3: obrigatória (versão nova conhecida) = sem B nenhum */
+            int forced = g_us.mandatory && g_us.latest[0] &&
+                         (ph == XCU_AVAILABLE || ph == XCU_DOWNLOADING || ph == XCU_VERIFYING || ph == XCU_INSTALLING ||
+                          ph == XCU_DONE || ph == XCU_FAILED || ph == XCU_CANCELLED);
+            if (PRESSED(b) && !forced) {
+                if (xcu_running() && g_us.cancellable) {
+                    xcu_cancel();   /* o download retoma da próxima vez */
+                    g_upd_screen = 0;
+                    pend_upd = 0;
+                } else if (!xcu_running() && ph != XCU_INSTALLING) {
+                    if (ph == XCU_AVAILABLE) snprintf(g_upd_dismissed, sizeof(g_upd_dismissed), "%s", g_us.latest);
+                    g_upd_screen = 0;
+                    pend_upd = 0;
+                }
+            }
+        }
 #undef PRESSED
         prev = b;
-#ifdef XCLOUD360_NATIVE
-        if (!waiting && !strncmp(notice, "Cancelado: encerrando", 21) && xn_can_play())
-            snprintf(notice, sizeof(notice), "Sessao do xCloud encerrada");
-#endif
+        if (!waiting && !strncmp(notice, "Cancelado: encerrando", 21) && (!g_native_ok || xn_can_play()))
+            snprintf(notice, sizeof(notice), "Sessão na nuvem encerrada");
 
-        menu_draw(screen, conn, play_name, notice);
-        udelay(12000);
+        /* ---- desenho ---- */
+        const char *sname = NULL, *sid = NULL;
+        if (ks == XC_GS_OPEN && !waiting) {
+            sid = gs.id;
+            sname = game_name(gs.id);
+            if (!sname) sname = gs.name;
+        }
+        g_xd.session_id = sid;
+        g_xd.session_name = sname;
+        g_xd.settings_avail = g_mm.settings_on;   /* v0.20.3 */
+        g_xd.update_avail = g_us.latest[0] && (g_us.phase == XCU_AVAILABLE || g_us.phase == XCU_FAILED ||
+                                               g_us.phase == XCU_CANCELLED);
+        if (g_xd.update_avail) {
+            snprintf(upd_label, sizeof(upd_label), "Atualizar: v%.24s", g_us.latest);
+            g_xd.update_label = upd_label;
+        } else {
+            g_xd.update_label = NULL;
+        }
+        const mm_game_t *fg = mm_focus_game(&g_mm);
+        g_xd.hint = (sid && fg && !strcmp(fg->id, sid)) ? "A:Voltar ao jogo|Y:Atualizar" : "A:Jogar|Y:Atualizar";
+        if (notice[0]) g_xd.notice = notice;
+        else if (sid && fg && strcmp(fg->id, sid)) g_xd.notice = "Ao abrir outro jogo, a sessão atual é encerrada.";
+        else if (g_cat_src == 1 && g_xbox_err[0]) g_xd.notice = g_xbox_err;
+        else if (xc_beta_state() == XC_BETA_INVALID)   /* v0.20.1: a ponte recusou a chave */
+            g_xd.notice = "Chave beta inválida: o log não está sendo enviado (até reiniciar).";
+        else g_xd.notice = NULL;
+
+        xui_status_t st;
+        memset(&st, 0, sizeof(st));
+        st.progress = -1;
+        switch (screen) {
+        case SCR_NONET:
+            st.kind = XUI_ST_ERROR;
+            st.title = "Sem rede";
+            st.text = "A rede do Xbox não subiu (network_init falhou). Verifique o cabo e reinicie o console.";
+            st.hint = "X:Teste offline";
+            break;
+        case SCR_LOGIN:
+            st.kind = XUI_ST_LOGIN;
+            st.title = "Entre na sua conta Microsoft";
+            st.text = "Pra jogar no orbita, use o celular ou o computador e acesse:";   /* v0.20.1 */
+            st.url = g_lts.uri;
+            st.code = g_lts.code;
+            st.detail = g_lts.status[0] ? g_lts.status : "O login fica salvo no pendrive.";
+            break;
+        case SCR_LOADING:
+            st.kind = XUI_ST_LOADING;
+            st.title = "Carregando o catálogo";
+            st.text = "Entrando na conta e buscando os jogos disponíveis na nuvem.";
+            st.detail = g_lts.status[0] ? g_lts.status : NULL;
+            break;
+        case SCR_FAIL:
+            st.kind = XUI_ST_ERROR;
+            st.title = "Não foi possível carregar o catálogo";
+            st.text = g_xbox_err[0] ? g_xbox_err : "O login não terminou.";
+            st.detail = notice[0] ? notice : NULL;
+            st.hint = "Y:Tentar de novo|X:Teste offline";
+            break;
+        case SCR_WAIT:
+            st.game_id = play_id[0] ? play_id : NULL;
+            st.hint = "B:Cancelar";
+            if (g_mm.state == MM_ST_QUEUE) {
+                st.kind = XUI_ST_QUEUE;
+                st.title = "Na fila";
+                st.text = "Os servidores estão cheios. Você entra no jogo assim que chegar a sua vez.";
+                st.detail = g_mm.state_text[0] ? g_mm.state_text : NULL;
+                st.hint = "B:Sair da fila";
+            } else {
+                st.kind = XUI_ST_STARTING;
+                snprintf(title, sizeof(title), "Iniciando %.80s", play_name[0] ? play_name : "o jogo");
+                st.title = title;
+                st.text = g_mm.state_text[0] ? g_mm.state_text
+                                             : "Preparando o console na nuvem. O vídeo aparece sozinho.";
+                st.detail = "No jogo: segure Back + Start por 2 s para voltar ao menu.";
+            }
+            break;
+        case SCR_UPDATE: {
+            /* v0.20.1: tela de atualização (UPDATE.md "Menu") */
+            int ph = pend_upd == 1 ? XCU_CHECKING : g_us.phase;
+            st.kind = XUI_ST_LOADING;
+            st.text = g_us.status[0] ? g_us.status : NULL;
+            if (ph == XCU_CHECKING || ph == XCU_IDLE) {
+                st.title = "Procurando atualização…";
+                st.text = "Conferindo se há uma versão nova do orbita.";
+                st.hint = "B:Voltar";
+            } else if (ph == XCU_UP_TO_DATE) {
+                st.kind = XUI_ST_STARTING;
+                st.progress = 100;
+                snprintf(upd_title, sizeof(upd_title), "Você já está na versão mais nova (v%.24s)", g_us.current);
+                st.title = upd_title;
+                st.text = "Nenhuma atualização disponível agora.";
+                st.hint = "B:Voltar";
+            } else if (ph == XCU_AVAILABLE) {
+                /* v0.20.3: popup da entrada: versão atual -> nova, notas;
+                 * obrigatória = só "Atualizar agora" */
+                snprintf(upd_title, sizeof(upd_title), "%s%s", g_us.mandatory ? "Atualização obrigatória"
+                                                                             : "Nova versão disponível",
+                         strcmp(g_us.channel, "beta") ? "" : " (beta)");
+                st.title = upd_title;
+                st.text = g_us.notes[0] ? g_us.notes : "Versão nova do orbita.";
+                if (g_us.total)
+                    snprintf(upd_detail, sizeof(upd_detail), "v%.24s  »  v%.24s  ·  %u KB", g_us.current, g_us.latest,
+                             (unsigned)(g_us.total / 1024));
+                else
+                    snprintf(upd_detail, sizeof(upd_detail), "v%.24s  »  v%.24s", g_us.current, g_us.latest);
+                st.detail = upd_detail;
+                st.progress = 0;
+                st.hint = g_us.mandatory ? "A:Atualizar agora" : "A:Atualizar agora|B:Depois";
+            } else if (ph == XCU_DOWNLOADING || ph == XCU_VERIFYING) {
+                snprintf(upd_title, sizeof(upd_title), "%s a v%.24s", ph == XCU_DOWNLOADING ? "Baixando" : "Conferindo",
+                         g_us.latest);
+                st.title = upd_title;
+                snprintf(upd_detail, sizeof(upd_detail), "%u de %u KB", (unsigned)(g_us.done / 1024),
+                         (unsigned)(g_us.total / 1024));
+                st.detail = upd_detail;
+                st.progress = g_us.pct;
+                st.hint = (g_us.cancellable && !g_us.mandatory) ? "B:Cancelar" : NULL;
+            } else if (ph == XCU_INSTALLING) {
+                st.title = "Instalando — não desligue o Xbox";
+                st.progress = 100;
+            } else if (ph == XCU_DONE) {
+                st.kind = XUI_ST_STARTING;
+                st.progress = 100;
+                snprintf(upd_title, sizeof(upd_title), "Atualizado para v%.24s", g_us.latest);
+                st.title = upd_title;
+                st.text = "Reinicie o Xbox para usar a versão nova.";
+                st.hint = g_us.mandatory ? "A:Reiniciar" : "A:Reiniciar|B:Depois";
+            } else {   /* FAILED / CANCELLED */
+                st.kind = XUI_ST_ERROR;
+                st.title = ph == XCU_CANCELLED ? "Atualização cancelada" : "A atualização falhou";
+                st.text = g_us.err[0] ? g_us.err : (g_us.status[0] ? g_us.status : "Tente de novo.");
+                st.hint = (g_us.mandatory && g_us.latest[0]) ? "A:Tentar de novo" : "A:Tentar de novo|B:Voltar";
+            }
+            break;
+        }
+        case SCR_BCHECK: {
+            static char det[64];
+            snprintf(det, sizeof(det), "ID deste console: %s", xcb_console_short());
+            st.kind = XUI_ST_LOADING;
+            st.title = "Validando sua chave beta";
+            st.text = "Conferindo a chave deste console no servidor do orbita.";
+            st.detail = det;
+            break;
+        }
+        case SCR_BMSG: {
+            static char det[64];
+            snprintf(det, sizeof(det), "ID deste console: %s", xcb_console_short());
+            st.kind = XUI_ST_ERROR;
+            st.detail = det;
+            switch (g_bs.phase) {
+            case XCB_REVOKED:
+                st.title = "Chave revogada.";
+                st.text = "Fale com o administrador.";
+                st.hint = g_bchange ? "A:Digitar outra chave|B:Voltar" : "A:Digitar outra chave";
+                break;
+            case XCB_DUPLICATE:
+                st.title = "Chave bloqueada";
+                st.text = "Esta chave é exclusiva de um console e foi bloqueada por uso em outro aparelho. "
+                          "Fale com o administrador.";
+                st.hint = g_bchange ? "A:Digitar outra chave|B:Voltar" : "A:Digitar outra chave";
+                break;
+            case XCB_NOCONN:
+                st.title = "Não foi possível validar sua chave (sem conexão)";
+                st.text = "Confira o cabo de rede e tente de novo. Sem conexão o orbita só abre se a chave "
+                          "foi validada neste console nos últimos 7 dias.";
+                st.hint = g_bchange ? "A:Tentar de novo|Y:Outra chave|B:Voltar" : "A:Tentar de novo|Y:Outra chave";
+                break;
+            default:
+                st.title = "Não foi possível validar sua chave";
+                st.text = g_bs.msg[0] ? g_bs.msg : "Tente de novo daqui a pouco.";
+                st.hint = g_bchange ? "A:Tentar de novo|Y:Outra chave|B:Voltar" : "A:Tentar de novo|Y:Outra chave";
+                break;
+            }
+            break;
+        }
+        case SCR_BKEY: {
+            int busy = g_bs.busy || g_beta_pend;
+            xkp_text(&g_kp, g_kp_text);
+            memset(&g_kd, 0, sizeof(g_kd));
+            g_kd.title = g_bchange ? "Trocar a chave beta" : "Chave beta";
+            g_kd.text = "Pegue sua chave na área do testador em x360.pistatrack.com e digite aqui "
+                        "(ela fica presa a este console). Ou grave XC360/BETAKEY.TXT no pendrive pelo PC e aperte Y.";
+            g_kd.alphabet = XCB_ALPHABET;
+            g_kd.typed = g_kp_text;
+            g_kd.len = g_kp.n;
+            g_kd.row = g_kp.row;
+            g_kd.col = g_kp.col;
+            g_kd.console_id = xcb_console_short();
+            g_kd.error = g_kerr[0] ? g_kerr : NULL;
+            g_kd.busy = busy;
+            g_kd.status = g_beta_pend == 2 || (busy && g_bs.op == XCB_OP_FILE) ? "Lendo o pendrive e validando…"
+                                                                              : "Validando…";
+            g_kd.hint = busy ? NULL
+                      : (g_bchange && g_kp.n == 0) ? "A:Digitar|B:Voltar|Y:Ler do pendrive"
+                      : "A:Digitar|B:Apagar|Y:Ler do pendrive|Start:Confirmar";
+            break;
+        }
+        case SCR_BSET: {
+            memset(&g_sd, 0, sizeof(g_sd));
+            if (g_bs.last_ok > 0) {
+                char t[32];
+                fmt_brt(t, sizeof(t), g_bs.last_ok);
+                snprintf(g_key_status, sizeof(g_key_status), "%s em %s", g_bs.phase == XCB_OFFLINE_OK
+                         ? "última validação" : "validada", t);
+            } else {
+                snprintf(g_key_status, sizeof(g_key_status), "validada");
+            }
+            snprintf(g_ver_line, sizeof(g_ver_line), "orbita %s  ·  versão beta", XCLOUD360_APP_VERSION);
+            g_sd.console_short = xcb_console_short();
+            g_sd.console_full = xcb_console_id();
+            g_sd.key_masked = g_bs.key_masked;
+            g_sd.key_status = g_key_status;
+            g_sd.version = g_ver_line;
+            g_sd.note = "Para reportar um bug, envie um print desta tela junto.";
+            g_sd.notice = g_set_notice[0] ? g_set_notice : NULL;
+            g_sd.button = "Trocar chave";
+            g_sd.hint = "A:Trocar chave|B:Voltar";
+            break;
+        }
+        default:
+            break;
+        }
+        int anim = menu_present(screen, &st, (unsigned)(now / 1000));
+        /* animando: ~60 voltas/s; parado: ~12 ms (input + catálogo) */
+        xc_polite_udelay(anim ? 2000 : 12000);
     }
 }
 
-#ifdef XCLOUD360_NATIVE
 /* ---- stage 5: plataforma do xc_native no Xbox ---- */
 #ifndef XCLOUD360_NATIVE_KBPS
 #define XCLOUD360_NATIVE_KBPS 1500
@@ -2203,13 +2264,13 @@ static int menu_loop(int net_ok, const char *msg) {
 #define XCLOUD360_NATIVE_CONSENT_MS 0
 #endif
 
-/* thread de rede: AU -> o mesmo ring que o TCP :9000 enchia */
+/* thread de rede: AU -> o ring do decoder */
 static int native_inject(const uint8_t *au, size_t n, int idr, int params) {
     (void)idr; (void)params;
     return stream_inject_au(au, n);
 }
 
-/* thread de rede: Opus -> mesmo ring do :9004 (produtor único = hw1) */
+/* thread de rede: Opus -> ring do áudio (produtor único = hw1) */
 static void native_audio(uint16_t seq, uint32_t ts, const uint8_t *p, size_t n) {
 #ifdef XCLOUD360_AUDIO
     audio_rx_packet(seq, ts, p, (int)n);
@@ -2218,8 +2279,7 @@ static void native_audio(uint16_t seq, uint32_t ts, const uint8_t *p, size_t n) 
 #endif
 }
 
-/* Qualquer thread: LOG pro PC (UDP :9003). Na tela só os marcos (estado do
- * WebRTC e linhas [xn]); o resto (SDP, ICE, datachannels) só no PC. */
+/* Qualquer thread: log beta (xc_logup). Na UART só os marcos. */
 static void native_log(const char *line) {
     np_log_line(line);
     if (!strncmp(line, "[xcw] state", 11) || !strncmp(line, "[xn]", 4)) printf("%s\n", line);
@@ -2235,42 +2295,23 @@ static void native_lib_log(const char *line) {
 }
 
 static void native_before_session(void) { lt_clear_cancel(); }
-#endif
 
-/* Boot no modo menu: rede + thread de rede logo de cara (não espera vídeo),
- * depois menu <-> jogo pra sempre. */
+/* Boot: rede + thread de rede logo de cara, depois menu <-> jogo pra sempre. */
 static void menu_main(int gpu_on) {
     int net_thread_on = 0;
-#ifdef XCLOUD360_LOGIN
     int npr = -1;
-#endif
-#ifdef XCLOUD360_NATIVE
     int native_inited = 0;
-#endif
-    printf("[menu] rede: video %s:%d, controle :%d\n", XCLOUD360_STREAM_SERVER_IP,
-           XCLOUD360_STREAM_SERVER_PORT, XCLOUD360_CTRL_PORT);
-    /* network_init + 1º SYN do vídeo (recusado até haver jogo; ele tenta de
-     * novo a cada 500ms sozinho). */
-    BOOT_STEP("8 network_init + 1o SYN...");
-    stream_init(XCLOUD360_STREAM_SERVER_IP, XCLOUD360_STREAM_SERVER_PORT);
-    int net_ok = stream_net_up();
+    /* v0.20.1: log beta (junta em RAM; o worker da hw 3 lê a chave e envia) */
+    xlu_init(XCLOUD360_APP_VERSION);
+    BOOT_STEP("8 network_init...");
+    int net_ok = stream_init() == 0 && stream_net_up();
     BOOT_STEP(net_ok ? "9 rede ok" : "9 SEM rede");
     if (net_ok) {
-        stream_set_quiet(1);
-        /* UDP aqui é seguro: o bug da v0.8.2 era um 2º tcp_pcb, não udp. */
-        int ir = input_udp_init(XCLOUD360_STREAM_SERVER_IP, 9001);
-        printf("[input-udp] init r=%d\n", ir);
-        BOOT_STEP("10 input_udp ok, ctrl_init...");
-        ctrl_init(XCLOUD360_STREAM_SERVER_IP, XCLOUD360_CTRL_PORT, XCLOUD360_BUILD_VERSION);
-#ifdef XCLOUD360_LOGIN
-        /* v0.17: pcbs UDP (DNS, LOG :9003) ainda no main, antes da thread de rede */
-        npr = np_init(XCLOUD360_STREAM_SERVER_IP);
+        /* v0.17: pcb UDP do DNS ainda no main, antes da thread de rede */
+        npr = np_init();
         printf("[net] canos HTTPS/DNS r=%d\n", npr);
-#endif
-#ifdef XCLOUD360_NATIVE
         /* stage 5: WebRTC na thread de rede (antes dela subir: o xn_init roda
-         * no main, usrsctp/libsrtp sem threads). O vídeo nasce em modo
-         * inject (sem SYN pro :9000); o RT+A volta pro PC. */
+         * no main, usrsctp/libsrtp sem threads). */
         if (npr == 0) {
             static const xn_platform_t plat = { native_inject, native_audio, native_log, native_before_session, NULL };
             xn_cfg_t xc = { XCLOUD360_NATIVE_KBPS, XCLOUD360_SESSION_KEEPALIVE_MS, XCLOUD360_NATIVE_CONSENT_MS, 2 };
@@ -2279,28 +2320,21 @@ static void menu_main(int gpu_on) {
             if (xn_init(&plat, &xc) == XN_OK) {
                 xn_set_load_probe(stream_net_load);
                 stream_set_net_extra(xn_net_step);
-                stream_set_inject(1);
                 native_inited = 1;
             }
             printf("[native] sessao + WebRTC no Xbox: %s (sessao na hw %d, decoder %d threads no jogo)\n",
                    native_inited ? "pronto" : "FALHOU", XST_HW_THREAD, XCLOUD360_NATIVE_DEC_THREADS);
         }
-#endif
-        input_udp_set_deferred(1);
         g_pad_forward = 0;
         stream_set_idle_hook(net_hook);
-        /* Daqui em diante a thread de rede também dá printf ([ctrl], [stream]);
-         * console_putch de duas threads ao mesmo tempo embaralha o cursor do
-         * console. O hook de log (com lock) aguenta, e o menu mostra o fim
-         * dele no rodapé logo em seguida. */
-        ui_log_install();
+        /* Daqui em diante a thread de rede também dá printf: o console do
+         * libxenon não aguenta duas threads; stdout só pra UART. */
+        quiet_stdout_install();
         BOOT_STEP("11 thread de rede...");
         int nr = stream_start_thread(1);
         printf("[net] thread de rede hw=1 r=%d\n", nr);
         BOOT_STEP("12 thread de rede no ar");
-        if (nr != 0) {
-            input_udp_set_deferred(0);   /* main faz tudo via stream_poll */
-        } else {
+        if (nr == 0) {
             g_input_on_net = 1;
             if (!gpu_on) g_split_active = 1;
             net_thread_on = 1;
@@ -2308,55 +2342,92 @@ static void menu_main(int gpu_on) {
     } else {
         printf("[menu] sem rede\n");
     }
-#ifdef XCLOUD360_NATIVE
     g_native_ok = native_inited && net_thread_on;
-    if (native_inited && !net_thread_on) stream_set_inject(0);   /* sem rede própria: só o PC */
-#endif
-#ifdef XCLOUD360_LOGIN
-    /* v0.17: login + catálogo no próprio Xbox (precisa da thread de rede). */
+    /* v0.20.3: ID de hardware (fusíveis + MAC; nada disso vai pro log), o
+     * mesmo nos logs, no X-Console e na tela. Depois da rede: a config da
+     * NAND com o MAC já está em cache. */
+    {
+        uint64_t fuse[XCB_NFUSE];
+        uint8_t mac[6], hk[32];
+        char id[33];
+        xcbp_hw_material(fuse, mac);
+        xcb_hwid(fuse, mac, id, hk);
+        memset(fuse, 0, sizeof(fuse));
+        memset(mac, 0, sizeof(mac));
+        xcb_init(xcbp_ops(), id, hk);
+        memset(hk, 0, sizeof(hk));
+        xlu_set_console_id(id);
+        xcu_set_console_id(id);
+        xkp_init(&g_kp);
+        xc_log("[beta] console %s%s", xcb_console_short(), XCLOUD360_BETA ? " (build BETA: chave obrigatoria)" : "");
+    }
+    /* v0.20.0: catálogo/capas: ANTES do lt_start (registra os ganchos do login) */
+    xcc_init(NULL);
+    xcc_set_worker_extra(xlu_step, xlu_finish);   /* v0.20.1: log beta no worker */
+    /* v0.20.1: atualização; a versão tem que bater com a publicada (UPDATE.md) */
+    xcu_init(XCLOUD360_BUILD_VERSION, NULL);
     if (net_thread_on && npr == 0) {
-        printf("[login] thread do login hw=%d r=%d\n", LT_HW_THREAD, lt_start());
+        /* v0.20.3: o login sobe no menu_loop depois da chave beta (BETA=1) e
+         * da checagem de atualização da entrada */
+        g_login_deferred = 1;
+        g_boot_upd = 1;
+        g_beta_boot = XCLOUD360_BETA;
     } else {
         g_cat_src = -1;
-        snprintf(g_xbox_err, sizeof(g_xbox_err), "Xbox: sem thread de rede");
+        snprintf(g_xbox_err, sizeof(g_xbox_err), "Sem thread de rede: o login do Xbox não pode rodar.");
     }
-#endif
 
     avcodec_register_all();
     mm_init(&g_mm);
-    char msg[120] = "";
+    /* v0.20.0: menu novo (~16 MB de caches) */
+    g_xv = xui_view_new(FB_W, FB_H);
+    if (!g_xv) printf("[menu] xui_view_new: sem memoria (menu sem desenho)\n");
+    xui_cat_init(&g_xcat);
+    xui_cat_bind(&g_xcat, &g_xd);
+    g_xd.version = XCLOUD360_APP_VERSION;
+    char msg[160] = "";
     for (;;) {
         int go = menu_loop(net_ok, msg);
-#ifdef XCLOUD360_NATIVE
         int was_native = g_native_game;
-#endif
         int r = run_video(go == MENU_GO_STREAM, gpu_on, net_thread_on);
 #ifdef XCLOUD360_AUDIO
         char asum[100];
         audio_summary(asum, sizeof(asum));   /* + linha "[audio] sessao" no log */
 #endif
-#ifdef XCLOUD360_NATIVE
         if (was_native) {
             char ns[110];
             xn_summary(ns, sizeof(ns));
             xc_log("[native] fim do jogo (%d): %s", r, ns);
         }
-        if (was_native && r == EXIT_NATIVE_END)
-            snprintf(msg, sizeof(msg), "%.*s", (int)sizeof(msg) - 1, g_mm.state == MM_ST_ERROR && g_mm.state_text[0] ? g_mm.state_text
-                                                                                         : "A sessao do xCloud terminou");
-        else
-#endif
-        if (r < 0)                  snprintf(msg, sizeof(msg), "Falha ao abrir o decoder (ver log)");
-        else if (r == EXIT_PC_IDLE) snprintf(msg, sizeof(msg), "O PC encerrou o jogo");
+        if (was_native && r == EXIT_NATIVE_END) {
+            snprintf(msg, sizeof(msg), "%.*s", (int)sizeof(msg) - 1,
+                     g_mm.state == MM_ST_ERROR && g_mm.state_text[0] ? g_mm.state_text : "A sessão na nuvem terminou");
+            xlu_set_game("");
+        } else if (r < 0) {
+            snprintf(msg, sizeof(msg), "Falha ao abrir o decoder (ver log)");
+            xlu_set_game("");
+        } else if (r == EXIT_USER && go == MENU_GO_STREAM) {
+            /* v0.19.3 */
+            xc_game_session_t gs;
+            if (xc_game_session(&gs) == XC_GS_OPEN) {
+                const char *nm = game_name(gs.id);
+                snprintf(msg, sizeof(msg), "%.60s segue aberto: escolha de novo para voltar",
+                         nm ? nm : (gs.name[0] ? gs.name : gs.id));
+            } else {
+                msg[0] = '\0';
+                xlu_set_game("");
+            }
+        }
 #ifdef XCLOUD360_AUDIO
         else if (go == MENU_GO_TEST) snprintf(msg, sizeof(msg), "Teste ok | %s", asum);
 #else
         else if (go == MENU_GO_TEST) snprintf(msg, sizeof(msg), "Teste offline terminou");
 #endif
-        else                        msg[0] = '\0';
+        else {
+            msg[0] = '\0';
+        }
     }
 }
-#endif /* XCLOUD360_MENU */
 
 int main(void) {
     xenos_init(VIDEO_MODE_HDMI_720P);
@@ -2369,26 +2440,19 @@ int main(void) {
     usb_init();
     BOOT_STEP("4 usb_init ok");
     /* Warm-up drain: RF unit + wireless controller take ~500-2000ms to
-     * enumerate + sync. Without repeated usb_do_poll(), interrupt reports
-     * never arrive, ctrl[0] stays zero-init, and controls read as "all
-     * released". 200 iters * 10ms = 2s window. */
+     * enumerate + sync. 200 iters * 10ms = 2s window. */
     for (int i = 0; i < 200; i++) { usb_do_poll(); udelay(10000); }
     fb_direct_init();
     BOOT_STEP("5 usb warmup + fb ok");
 #ifdef XCLOUD360_AUDIO
-    /* v0.18: só memória (ring, índice do tom). O chip de som e o Opus sobem
-     * no 1o PLAY/X (audio_session_begin), não no boot. */
+    /* v0.18: só memória. O chip de som e o Opus sobem no 1o PLAY/X. */
     audio_init();
     BOOT_STEP("6 audio_init ok (sem hardware)");
 #endif
 
     int gpu_on = 0;
 #ifdef XCLOUD360_GPU
-    /* v0.15: YUV->RGB no Xenos. Tem que vir antes de qualquer thread de
-     * hardware (worker, rede, decoder): todas as chamadas Xe_* ficam no main.
-     * Se falhar, segue no caminho de CPU (worker + metade de baixo).
-     * v0.16 (menu): continua aqui, uma vez por boot; o console fica na tela
-     * até o 1º flip, então o menu desenha nele normalmente. */
+    /* v0.15: YUV->RGB no Xenos. Antes de qualquer thread de hardware. */
     printf("[gpu] init Xenos YUV->RGB backend %dx%d...\n", FB_W, FB_H);
     BOOT_STEP("7 gpu init...");
     if (gpu_present_init(FB_W, FB_H) == 0) {
@@ -2399,8 +2463,7 @@ int main(void) {
 #endif
 
     if (!gpu_on) {
-    /* P7.2 worker thread — core 1 primary (thread 2). Stack grows down so
-     * pass TOP-address. Leave 128B guard at very top for xenon prologue. */
+    /* P7.2 worker thread — core 1 primary (thread 2). */
     for (int i = 0; i < RING_SLOTS; i++) {
         g_ring[i].ready = 0; g_ring[i].done = 0; g_ring[i].cvt_us = 0;
         g_ring[i].bottom_done = 0;
@@ -2411,68 +2474,10 @@ int main(void) {
            worker_stack_top, spawn_r);
     }
 
-    printf("\n\n==== XCloud360 h264play v%s ====\n\n", XCLOUD360_BUILD_VERSION);
-    printf("[stream] embedded fallback %zu bytes\n", embedded_stream_len);
+    printf("\n\n==== orbita v%s (h264play) ====\n\n", XCLOUD360_BUILD_VERSION);   /* v0.20.1: marca */
+    printf("[stream] embedded test stream %zu bytes\n", embedded_stream_len);
     printf("[fb]     direct write @ %p stride=%d px\n", (void*)g_fb, g_fb_stride_pixels);
 
-#ifdef XCLOUD360_MENU
     menu_main(gpu_on);   /* não retorna */
-#else
-    /* Try TCP first — Aurora-safe (skip network_init if netif already up). */
-    printf("[stream] trying TCP %s:%d...\n",
-           XCLOUD360_STREAM_SERVER_IP, XCLOUD360_STREAM_SERVER_PORT);
-    int net_thread_on = 0;
-    int use_tcp = (stream_init(XCLOUD360_STREAM_SERVER_IP, XCLOUD360_STREAM_SERVER_PORT) == 0);
-    if (use_tcp) {
-        /* Wait up to 5s for first data. */
-        printf("[stream] TCP init OK, waiting for data (max 5s)...\n");
-        uint64_t deadline = now_us() + 5000000;
-        while (now_us() < deadline && stream_available() < 4) {
-            stream_poll();
-            udelay(10000);
-        }
-        if (stream_available() < 4) {
-            printf("[stream] TCP no data — fallback embedded\n");
-            use_tcp = 0;
-        } else {
-            printf("[stream] TCP live feed active (buf=%zuB)\n", stream_available());
-            /* P11: safe to open UDP now — netif is up, stream_client's
-             * tcp_active_pcbs settled, no risk of the double-tcp_new bug
-             * that killed v0.8.2. */
-            int ir = input_udp_init(XCLOUD360_STREAM_SERVER_IP, 9001);
-            printf("[input-udp] init r=%d\n", ir);
-            /* v0.14: daqui pra frente lwIP é só da thread de rede. v0.14.4:
-             * hw thread 1 (núcleo 0, irmã do main) em vez da 3 — ela também
-             * converte a metade de baixo da imagem, e assim as duas metades
-             * ficam em núcleos diferentes. O frame threading do decoder pula
-             * a 1 por estar ocupada e usa 4/5/3. */
-            input_udp_set_deferred(1);
-            /* v0.15: com GPU não há metade de baixo pra converter — sem hook,
-             * g_split_active fica 0 e a thread 1 só faz rede. */
-            /* v0.15.2: o hook também lê o controle a 1kHz (net_hook). */
-            stream_set_idle_hook(net_hook);
-            int nr = stream_start_thread(1);
-            printf("[net] thread de rede hw=1 r=%d\n", nr);
-            if (nr != 0) {
-                input_udp_set_deferred(0);
-            } else {
-                g_input_on_net = 1;
-                if (!gpu_on) g_split_active = 1;
-                net_thread_on = 1;
-            }
-        }
-    } else {
-        printf("[stream] TCP init failed — using embedded\n");
-    }
-
-    avcodec_register_all();
-    run_video(use_tcp, gpu_on, net_thread_on);
-
-    printf("\n[end] holding — power-cycle to return\n");
-    for (;;) {
-        if (!g_input_on_net) usb_do_poll();
-        udelay(50000);
-    }
-#endif
     return 0;
 }

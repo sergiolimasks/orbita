@@ -1,0 +1,50 @@
+# Stack Swarm do site da beta (xc360-site). Sem segredos aqui: todos são
+# "docker secret" externos (ver README). TAG vem do deploy.sh.
+version: "3.8"
+services:
+  web:
+    image: xc360-site:${TAG}
+    environment:
+      - BASE_URL=https://x360.pistatrack.com
+      - VIDEO_EMBED_URL=
+      - LOG_SYNC_INTERVAL=300
+    secrets:
+      - xc360_site_secret
+      - xc360_site_keyenc
+      - xc360_site_db
+      - xc360_site_r2
+      - xc360_bridge_token
+    networks:
+      - network_swarm_public
+      - xc360_internal        # a ponte chama POST /_bridge/check por aqui
+    deploy:
+      replicas: 1
+      update_config:
+        order: start-first
+      resources:
+        limits:
+          memory: 384M
+      labels:
+        - traefik.enable=true
+        # tudo do host, MENOS /v1/* e /health (ponte xc360-logs) e /_bridge (interno, nunca pela internet)
+        - traefik.http.routers.xc360-site.rule=Host(`x360.pistatrack.com`) && !PathPrefix(`/v1`) && !Path(`/health`) && !PathPrefix(`/_bridge`)
+        - traefik.docker.network=network_swarm_public
+        - traefik.http.routers.xc360-site.entrypoints=websecure
+        - traefik.http.routers.xc360-site.tls.certresolver=letsencryptresolver
+        - traefik.http.services.xc360-site.loadbalancer.server.port=8000
+secrets:
+  xc360_site_secret:
+    external: true
+  xc360_site_keyenc:
+    external: true
+  xc360_site_db:
+    external: true
+  xc360_site_r2:
+    external: true
+  xc360_bridge_token:
+    external: true
+networks:
+  network_swarm_public:
+    external: true
+  xc360_internal:
+    external: true

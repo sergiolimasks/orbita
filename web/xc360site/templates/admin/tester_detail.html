@@ -1,0 +1,100 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, avatar with context %}
+{% block title %}{{ t.name }} · {{ _('adm.testers') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.testers'), url_for('admin.testers')) }}{{ crumb(t.name) }}{% endblock %}
+{% block content %}
+{%- set blocked = key and key.dup_at -%}
+<div class="page-head">
+  <div class="row">{{ avatar(t.name) }}
+    <div><h1>{{ t.name }}{% if t.role == 'admin' %} <span class="badge outline">admin</span>{% endif %}</h1>
+      <p class="lead">{{ t.email }} · <span class="mono">{{ t.handle }}</span></p></div></div>
+  <div class="actions"><a class="btn secondary" href="{{ url_for('admin.testers') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a></div>
+</div>
+
+{% if new_key %}
+<dialog class="modal" data-autoopen aria-labelledby="nk-title">
+  <div class="modal-head"><span class="m-ico ok">{{ icon('key', 20) }}</span>
+    <div><h2 id="nk-title">{{ _('ui.key_for', n=new_key_for) }}</h2><p>{{ _('key.new_shown_to_tester') }}</p></div></div>
+  <div class="modal-body"><div class="betakey-box fresh"><code class="betakey" id="betakey">{{ new_key }}</code>
+    <button type="button" class="btn primary" data-copy="#betakey" data-done="{{ _('common.copied') }}">{{ icon('copy', 16) }}<span class="lbl">{{ _('common.copy') }}</span></button></div></div>
+  <div class="modal-foot"><button type="button" class="btn secondary" data-close>{{ _('ui.done') }}</button></div>
+</dialog>
+<div class="alert ok mb-4">{{ icon('key', 16) }}<div>{{ _('ui.key_for', n=new_key_for) }}: <code>{{ new_key }}</code> — {{ _('key.new_shown_to_tester') }}</div></div>
+{% endif %}
+
+{% if blocked %}
+<div class="alert error mb-4" role="alert" id="dup-alert">{{ icon('ban', 18) }}<div>
+  <b>{{ _('key.dup_title') }}</b> {{ _('key.dup_text', d=key.dup_at|dt) }}
+  <dl class="kv mt-2">
+    <dt>{{ _('key.console_a') }}</dt><dd><code>{{ key.console_id }}</code></dd>
+    <dt>{{ _('key.console_b') }}</dt><dd><code>{{ key.dup_console }}</code></dd>
+    <dt>{{ _('key.when') }}</dt><dd>{{ key.dup_at|when }}</dd>
+    <dt>{{ _('key.ip_h') }}</dt><dd><code>{{ key.dup_ip_h or '—' }}</code></dd>
+  </dl>
+</div></div>
+{% endif %}
+
+<div class="grid g-main">
+  <div class="stack">
+    <section class="card{{ ' hl' if blocked }}" id="key" aria-labelledby="key-title">
+      <div class="card-head"><h2 id="key-title">{{ icon('key', 18) }}{{ _('area.key_title') }}</h2>
+        {% if not t.active %}<span class="badge u-inactive"><span class="dot"></span>{{ _('ui.inactive') }}</span>
+        {% elif blocked %}<span class="badge red"><span class="dot"></span>{{ _('key.st_blocked') }}</span>
+        {% elif key %}<span class="badge green"><span class="dot"></span>{{ _('adm.active') }}</span>
+        {% else %}<span class="badge gray">{{ _('adm.no_key') }}</span>{% endif %}</div>
+      <div class="card-body stack">
+        {% if key %}
+        <dl class="kv">
+          <dt>{{ _('adm.key') }}</dt><dd><span class="mono">•••••-•••{{ key.key_hint }}</span> <span class="muted small">{{ _('ui.key_created', d=key.created_at|dt) }}</span></dd>
+          <dt>{{ _('key.console') }}</dt><dd>{% if key.console_id %}<a href="{{ url_for('admin.logs', console=key.console_id) }}"><code>{{ key.console_id }}</code></a>{% else %}<span class="muted">{{ _('key.not_bound') }}</span>{% endif %}</dd>
+          {% if key.bound_at %}<dt>{{ _('key.bound_at') }}</dt><dd>{{ key.bound_at|when }}</dd>{% endif %}
+          {% if key.last_used_at %}<dt>{{ _('key.last_used') }}</dt><dd>{{ key.last_used_at|ago }}</dd>{% endif %}
+          {% if key.pending %}<dt></dt><dd><span class="badge yellow">{{ _('key.pending') }}</span></dd>{% endif %}
+        </dl>
+        {% else %}<p class="muted">{{ _('area.key_none') }}</p>{% endif %}
+        <p class="small muted">{{ _('key.one_console_adm') }}</p>
+        {% if t.active %}
+        <div class="row wrap">
+          <form method="post" action="{{ url_for('admin.tester_key', uid=t.id) }}" data-confirm="{{ _('key.new_confirm', n=t.name) }}" data-confirm-title="{{ _('adm.regen_key') }}?" data-confirm-ok="{{ _('adm.regen_key') }}">
+            {{ csrf() }}<input type="hidden" name="back" value="detail"><button class="btn {{ 'primary' if blocked else 'secondary' }} sm" id="btn-newkey">{{ icon('key', 14) }}{{ _('adm.regen_key') }}</button></form>
+          {% if key and (key.console_id or blocked) %}
+          <form method="post" action="{{ url_for('admin.tester_unbind', uid=t.id) }}" data-confirm="{{ _('key.unbind_confirm', n=t.name) }}" data-confirm-title="{{ _('key.unbind') }}?" data-confirm-ok="{{ _('key.unbind') }}">
+            {{ csrf() }}<button class="btn secondary sm" id="btn-unbind">{{ icon('monitor', 14) }}{{ _('key.unbind') }}</button></form>
+          {% endif %}
+          {% if key %}
+          <form method="post" action="{{ url_for('admin.tester_key', uid=t.id) }}" data-confirm="{{ _('ui.revoke_key_confirm', n=t.name) }}" data-confirm-title="{{ _('adm.revoke_key') }}?" data-confirm-ok="{{ _('adm.revoke_key') }}" data-danger>
+            {{ csrf() }}<input type="hidden" name="op" value="revoke"><input type="hidden" name="back" value="detail"><button class="btn ghost sm">{{ icon('ban', 14) }}{{ _('adm.revoke_key') }}</button></form>
+          {% endif %}
+        </div>
+        <p class="help">{{ icon('info', 12) }} {{ _('key.actions_help') }}</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="ev-title">
+      <div class="card-head"><h2 id="ev-title">{{ icon('activity', 18) }}{{ _('key.events') }}</h2></div>
+      {% if events %}
+      <div class="table-wrap"><table class="table cards-sm">
+        <thead><tr><th>{{ _('common.date') }}</th><th>{{ _('key.event') }}</th><th>{{ _('key.console_a') }}</th><th>{{ _('key.console_b') }}</th><th>{{ _('key.ip_h') }}</th></tr></thead>
+        <tbody>{% for e in events %}
+        <tr><td class="lead-cell nowrap">{{ e.at|when }}</td>
+          <td data-label="{{ _('key.event') }}">{% if e.kind == 'duplicate' %}<span class="badge red">{{ _('key.ev_' ~ e.kind) }}</span>{% else %}{{ _('key.ev_' ~ e.kind) }}{% endif %}{% if e.by_name %} <span class="muted small">· {{ e.by_name }}</span>{% endif %}</td>
+          <td data-label="{{ _('key.console_a') }}" class="mono">{{ e.console_a or '—' }}</td>
+          <td data-label="{{ _('key.console_b') }}" class="mono">{{ e.console_b or '—' }}</td>
+          <td data-label="{{ _('key.ip_h') }}" class="mono">{{ e.ip_h or '—' }}</td></tr>
+        {% endfor %}</tbody></table></div>
+      {% else %}<div class="card-body"><p class="muted small">{{ _('key.no_events') }}</p></div>{% endif %}
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="card"><div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
+      <div class="card-body"><dl class="kv">
+        <dt>{{ _('rep.status') }}</dt><dd>{% if t.active %}<span class="badge u-active"><span class="dot"></span>{{ _('adm.active') }}</span>{% else %}<span class="badge u-inactive"><span class="dot"></span>{{ _('ui.inactive') }}</span>{% endif %}</dd>
+        <dt>{{ _('adm.country') }}</dt><dd>{% if t.country %}{{ flag(t.country) }} {{ country_name(t.country) }}{% else %}—{% endif %}</dd>
+        <dt>{{ _('adm.reports') }}</dt><dd>{% if stats.nrep %}<a href="{{ url_for('admin.reports', tester=t.id) }}">{{ stats.nrep }}</a>{% else %}0{% endif %}</dd>
+        <dt>{{ _('adm.logs') }}</dt><dd><a href="{{ url_for('admin.logs', tester=t.handle) }}">{{ stats.nlogs }}</a>{% if stats.last_log %} <span class="muted small">· {{ stats.last_log|ago }}</span>{% endif %}</dd>
+        <dt>{{ _('ui.last_activity') }}</dt><dd>{{ t.last_login_at|ago }}</dd>
+      </dl></div></section>
+  </div>
+</div>
+{% endblock %}

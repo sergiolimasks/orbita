@@ -1,0 +1,49 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb, empty with context %}
+{% block title %}{{ _('ft.title') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('ft.title')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('ft.title') }}</h1><p class="lead">{{ _('ft.lead') }}</p></div>
+  <div class="actions">
+    <a class="btn secondary" href="{{ url_for('public.status') }}" target="_blank" rel="noopener">{{ icon('external', 16) }}{{ _('ft.view_public') }}</a>
+    <a class="btn primary" href="{{ url_for('admin.feature_edit', group=grp or None) }}">{{ icon('plus', 16) }}{{ _('ft.new') }}</a>
+  </div>
+</div>
+<div class="card">
+  <nav class="tabs" aria-label="{{ _('ft.status') }}">
+    <a class="tab" href="{{ url_for('admin.features', group=grp or None) }}"{% if not st %} aria-current="page"{% endif %}>{{ _('st.all') }} <span class="count">{{ counts.all }}</span></a>
+    {% for s in statuses %}<a class="tab" href="{{ url_for('admin.features', status=s, group=grp or None) }}"{% if st == s %} aria-current="page"{% endif %}><span class="badge fs-{{ s }}"><span class="dot"></span>{{ _('st.s_' ~ s) }}</span> <span class="count">{{ counts[s] }}</span></a>{% endfor %}
+  </nav>
+  <div class="toolbar">
+    <div class="chips">
+      <a class="chip" href="{{ url_for('admin.features', status=st or None) }}"{% if not grp %} aria-current="true"{% endif %}>{{ _('st.all') }}</a>
+      {% for g_ in group_keys %}<a class="chip" href="{{ url_for('admin.features', group=g_, status=st or None) }}"{% if grp == g_ %} aria-current="true"{% endif %}>{{ icon(GROUP_ICON[g_], 14) }}{{ _('st.g_' ~ g_) }}</a>{% endfor %}
+    </div>
+  </div>
+  {% if groups %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('ft.name') }}</th><th>{{ _('ft.status') }}</th><th>{{ _('ft.since') }}</th><th>EN / ES</th><th class="r">{{ _('ft.sort') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    {% for g_, feats in groups %}
+    <tbody>
+      <tr class="group-row"><th colspan="6" scope="colgroup">{{ icon(GROUP_ICON[g_], 14) }} {{ _('st.g_' ~ g_) }} <span class="muted">· {{ feats|length }}</span></th></tr>
+      {% for f in feats %}
+      <tr>
+        <td class="lead-cell"><a class="row-link" href="{{ url_for('admin.feature_edit', fid=f.id) }}">{{ f.name_pt }}</a>
+          {% if f.desc_pt %}<div class="xs muted clamp2">{{ f.desc_pt }}</div>{% endif %}</td>
+        <td data-label="{{ _('ft.status') }}"><span class="badge fs-{{ f.status }}"><span class="dot"></span>{{ _('st.s_' ~ f.status) }}</span></td>
+        <td data-label="{{ _('ft.since') }}" class="mono">{{ f.since_version or '—' }}</td>
+        <td data-label="EN / ES" class="nowrap">{% for l in ('en', 'es') %}<span class="badge {{ 'green' if f['name_' ~ l] else 'gray' }}">{{ l|upper }}</span> {% endfor %}{% if f.nnotes %}<span class="xs muted">{{ _('ft.in_notes', n=f.nnotes) }}</span>{% endif %}</td>
+        <td data-label="{{ _('ft.sort') }}" class="r num muted">{{ f.sort }}</td>
+        <td class="actions"><a class="btn ghost sm" href="{{ url_for('admin.feature_edit', fid=f.id) }}">{{ icon('settings', 14) }}{{ _('ft.edit') }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+    {% call empty(_('st.empty'), '', 'search') %}<a class="btn primary" href="{{ url_for('admin.feature_edit') }}">{{ icon('plus', 16) }}{{ _('ft.new') }}</a>{% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

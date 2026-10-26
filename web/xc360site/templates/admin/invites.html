@@ -1,0 +1,76 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, pager, empty, inv_state, avatar with context %}
+{% block title %}{{ _('adm.invites') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('adm.invites')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('adm.invites') }}</h1><p class="lead">{{ _('ui.invites_lead') }}</p></div>
+  <div class="actions"><button type="button" class="btn primary" data-open="#new-invite">{{ icon('plus', 16) }}{{ _('adm.invite_new') }}</button></div>
+</div>
+
+{% if link %}
+<section class="card hl mb-4" aria-labelledby="inv-ok">
+  <div class="card-body stack-sm">
+    <div class="row"><span class="badge green"><span class="dot"></span>{{ _('ui.invite_created') }}</span><h2 id="inv-ok" class="small muted">{{ _('adm.invite_link') }}</h2></div>
+    <div class="copy-line"><code id="invlink">{{ link }}</code><button type="button" class="btn primary sm" data-copy="#invlink" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('ui.copy_link') }}</span></button></div>
+  </div>
+</section>
+<dialog class="modal wide" data-autoopen aria-labelledby="inv-ok-t">
+  <div class="modal-head"><span class="m-ico ok">{{ icon('check-circle', 20) }}</span>
+    <div><h2 id="inv-ok-t">{{ _('ui.invite_created') }}</h2><p>{{ _('adm.invite_link') }}</p></div></div>
+  <div class="modal-body"><div class="copy-line"><code id="invlink2">{{ link }}</code><button type="button" class="btn primary sm" data-copy="#invlink2" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('ui.copy_link') }}</span></button></div>
+    <p class="help mt-3">{{ icon('lock', 12) }} {{ _('ui.invite_once') }}</p></div>
+  <div class="modal-foot"><button type="button" class="btn secondary" data-close>{{ _('ui.done') }}</button></div>
+</dialog>
+{% endif %}
+
+<dialog class="modal" id="new-invite" aria-labelledby="ni-title"{% if request.args.get('new') %} data-autoopen{% endif %}>
+  <form method="post" action="{{ url_for('admin.invites') }}">
+    {{ csrf() }}<input type="hidden" name="unit" value="days">
+    <div class="modal-head"><span class="m-ico">{{ icon('mail', 20) }}</span>
+      <div><h2 id="ni-title">{{ _('adm.invite_new') }}</h2><p>{{ _('ui.invite_modal_lead') }}</p></div>
+      <button type="button" class="btn ghost sm icon-only" data-close aria-label="{{ _('ui.close') }}">{{ icon('x', 16) }}</button></div>
+    <div class="modal-body stack">
+      <div class="field"><label for="f-note">{{ _('adm.invite_note') }}</label>
+        <input id="f-note" name="note" maxlength="120" placeholder="{{ _('ui.invite_note_ph') }}" autofocus>
+        <span class="help">{{ _('ui.invite_note_help') }}</span></div>
+      <div class="field"><label for="f-amount">{{ _('adm.invite_valid') }}</label>
+        <div class="range-row"><input id="f-amount" type="range" name="amount" min="1" max="{{ max_days }}" value="7" step="1" data-out="#amount-out" data-one="{{ _('ui.n_day', n='{n}') }}" data-many="{{ _('ui.n_days', n='{n}') }}">
+          <output id="amount-out" class="range-out" for="f-amount">7 {{ _('adm.days') }}</output></div>
+        <span class="help">{{ _('adm.invite_max') }}</span></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" data-close>{{ _('common.cancel') }}</button>
+      <button class="btn primary">{{ icon('link', 16) }}{{ _('adm.invite_create') }}</button></div>
+  </form>
+</dialog>
+
+<div class="card">
+  <nav class="tabs" aria-label="{{ _('common.filter') }}">
+    {% for k, lbl in [('', _('common.all')), ('pending', _('ui.inv_pending')), ('used', _('ui.inv_used')), ('expired', _('ui.inv_expired')), ('revoked', _('ui.inv_revoked'))] %}
+    <a class="tab" href="{{ url_for('admin.invites', state=k) if k else url_for('admin.invites') }}"{% if st == k %} aria-current="page"{% endif %}>{{ lbl }} <span class="count">{{ counts.get(k or 'all', 0) }}</span></a>
+    {% endfor %}
+  </nav>
+  {% if invites %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>#</th><th>{{ _('ui.invite_for') }}</th><th>{{ _('adm.state') }}</th><th>{{ _('ui.created') }}</th><th>{{ _('adm.expires') }}</th><th>{{ _('ui.used_by') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    <tbody>
+    {% for i in invites %}
+    <tr class="{{ 'is-off' if i.state in ('expired', 'revoked') }}">
+      <td data-label="#" class="mono">#{{ i.id }}</td>
+      <td class="lead-cell"><b>{{ i.note or '—' }}</b>{% if i.by_name %}<div class="xs muted">{{ _('ui.by', n=i.by_name) }}</div>{% endif %}</td>
+      <td data-label="{{ _('adm.state') }}">{{ inv_state(i.state) }}</td>
+      <td data-label="{{ _('ui.created') }}" class="nowrap">{{ i.created_at|when }}</td>
+      <td data-label="{{ _('adm.expires') }}" class="nowrap">{% if i.state == 'pending' %}{{ i.expires_at|when }}{% else %}<span class="muted">{{ i.expires_at|dt }}</span>{% endif %}</td>
+      <td data-label="{{ _('ui.used_by') }}">{% if i.used_name %}<span class="row">{{ avatar(i.used_name, 'sm') }}{{ i.used_name }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="actions"><div class="row-actions">{% if i.state == 'pending' %}<form method="post" action="{{ url_for('admin.invite_revoke', iid=i.id) }}" data-confirm="{{ _('ui.revoke_inv_confirm') }}" data-confirm-title="{{ _('adm.revoke') }} #{{ i.id }}?" data-confirm-ok="{{ _('adm.revoke') }}" data-danger>{{ csrf() }}<button class="btn danger-ghost sm">{{ icon('ban', 14) }}{{ _('adm.revoke') }}</button></form>{% endif %}</div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ pager(page, 'admin.invites') }}
+  {% else %}
+    {% call empty(_('ui.no_invites'), _('ui.no_invites_text'), 'mail') %}<button type="button" class="btn primary" data-open="#new-invite">{{ icon('plus', 16) }}{{ _('adm.invite_new') }}</button>{% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

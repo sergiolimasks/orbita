@@ -1,0 +1,16 @@
+{% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf, field, pw_field with context %}
+{% block title %}{{ _('login.title') }}{% endblock %}
+{% block content %}
+<div class="a-ico"><img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="30" height="30"></div>
+<h1>{{ _('ui.login_title') }}</h1>
+<p class="a-lead">{{ _('ui.login_lead') }}</p>
+{{ errs([error] if error else []) }}
+<form method="post" action="{{ url_for('auth.login') }}" novalidate>
+  {{ csrf() }}
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  {{ field('email', _('login.email'), email, 'email', attrs='autocomplete="username" required maxlength="254" autofocus') }}
+  {{ pw_field('password', _('login.password'), attrs='autocomplete="current-password" required maxlength="128"') }}
+  <button class="btn primary lg block">{{ _('login.submit') }}</button>
+</form>
+<p class="auth-foot">{{ _('login.invite_only') }} <a href="{{ url_for('public.home') }}">{{ _('ui.how_join') }}</a></p>
+{% endblock %}

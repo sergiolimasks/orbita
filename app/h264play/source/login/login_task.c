@@ -21,7 +21,15 @@ static volatile int  g_cancel = 0;
 
 static inline void lwsync(void) { __asm__ __volatile__("lwsync" ::: "memory"); }
 
-int xcn_cancelled(void) { return g_cancel; }
+/* Gancho extra (xc_catalog: parar a thread das capas no meio de um pedido).
+ * Só é consultado; quem registra garante que ele volta 0 fora da sua thread. */
+static int (*volatile g_cancel_hook)(void) = 0;
+void xcn_set_cancel_hook(int (*fn)(void)) { g_cancel_hook = fn; lwsync(); }
+
+int xcn_cancelled(void) {
+    int (*h)(void) = g_cancel_hook;
+    return g_cancel || (h && h());
+}
 
 static void ui_status(const char *t) {
     lock(&g_lock);
@@ -107,6 +115,8 @@ int lt_start(void) {
 }
 
 int  lt_running(void) { return g_running || xenon_is_thread_task_running(LT_HW_THREAD); }
+/* v0.20.2: só o login (lt_running também é verdade com o worker das capas na hw 3). */
+int  lt_login_running(void) { return g_running; }
 void lt_cancel(void) { g_cancel = 1; }
 /* stage 5: xcn_cancelled() also gates the session thread's HTTPS (https.c);
  * a login skipped with B left g_cancel = 1, which would cancel every

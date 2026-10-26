@@ -41,7 +41,7 @@ if [ "$WHAT" = xenon ] || [ "$WHAT" = all ]; then
     MBEDTLS_DIR=${MBEDTLS_DIR:-$HOME/mbedtls-xenon}
     # = Makefile: MACHDEP do $(DEVKITXENON)/rules + CFLAGS base + LOGIN_CFLAGS
     MACHDEP="-DXENON -m32 -maltivec -fno-pic -mpowerpc64 -mhard-float"
-    XCF="-g -O2 -Wall $MACHDEP -I$DEVKITXENON/usr/include -DXCLOUD360_MENU=1 -DXCLOUD360_LOGIN=1 \
+    XCF="-g -O2 -Wall $MACHDEP -I$DEVKITXENON/usr/include -DXCLOUD360_LOGIN=1 \
          -I$MBEDTLS_DIR/include -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_config.h\" -DXC_BUILD_EPOCH=$(date +%s)LL"
     : > "$OUT/xenon.log"
     for f in xc_session xs_machine xs_task xs_port_xenon; do

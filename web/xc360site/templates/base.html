@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ brand.name }}{% endblock %}</title>
+<meta name="description" content="{{ _('home.lead')|truncate(160) }}">
+<meta name="theme-color" content="{{ brand.colors.bg }}">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_ico) }}" sizes="any">
+<link rel="icon" href="{{ url_for('static', filename=brand.favicon_svg) }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename=brand.favicon_png) }}">
+<link rel="stylesheet" href="{{ url_for('public.brand_css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/site.css') }}?v=3">
+<script src="{{ url_for('static', filename='js/site.js') }}?v=3" defer></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}?v={{ asset_v }}">
+{% block head %}{% endblock %}
+</head>
+<body class="{% block bodyclass %}{% endblock %}">
+<header class="top">
+  <a class="logo" href="{{ url_for('public.home') }}"><img src="{{ url_for('static', filename=brand.logo) }}" alt="{{ brand.logo_alt }}" height="30"></a>
+  <span class="pill-beta">{{ _('common.beta') }}</span>
+  <nav class="topnav">
+    <span class="langs">{% for l in LANGS %}<a href="?lang={{ l }}" class="{{ 'on' if l == lang }}" hreflang="{{ l }}">{{ LANG_LABEL[l] }}</a>{% endfor %}</span>
+    <a class="navlink{{ ' on' if request.endpoint in ('public.status', 'public.release_note') }}" href="{{ url_for('public.status') }}">{{ _('st.nav') }}</a>
+    {% if user %}
+      {% if user.role == 'admin' %}<a class="btn ghost sm" href="{{ url_for('admin.overview') }}">{{ _('nav.admin') }}</a>{% endif %}
+      <a class="btn ghost sm" href="{{ url_for('tester.area') }}">{{ _('nav.area') }}</a>
+      <form method="post" action="{{ url_for('auth.logout') }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn sm">{{ _('nav.logout') }}</button></form>
+    {% else %}
+      <a class="btn sm" href="{{ url_for('auth.login') }}">{{ _('nav.login') }}</a>
+    {% endif %}
+  </nav>
+</header>
+{% with msgs = get_flashed_messages() %}{% if msgs %}<div class="wrap flashes">{% for m in msgs %}<div class="flash">{{ m }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+<main>{% block main %}{% endblock %}</main>
+<footer class="foot wrap">
+  <img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="28" height="28">
+  <p>{{ _('footer.text') }}</p>
+</footer>
+</body>
+</html>

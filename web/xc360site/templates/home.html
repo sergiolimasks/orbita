@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}{{ brand.name }} — {{ _('home.title') }}{% endblock %}
+{% block bodyclass %}home{% endblock %}
+{% block main %}
+<section class="hero">
+  <img class="hero-bg" src="{{ url_for('static', filename=brand.hero) }}" alt="">
+  <div class="hero-veil"></div>
+  <div class="wrap hero-in">
+    <h1>{{ _('home.title') }}</h1>
+    <p class="lead">{{ _('home.lead') }}</p>
+    <div class="cta">
+      {% if stable %}
+        <a class="btn primary lg" href="{{ url_for('public.download_stable') }}" download>{{ _('home.download') }}</a>
+        <span class="muted">{{ _('home.version', v=stable.version) }}</span>
+      {% else %}
+        <span class="btn lg disabled" aria-disabled="true">{{ _('home.soon') }}</span>
+      {% endif %}
+      <a class="btn ghost lg" href="{{ url_for('tester.area') if user else url_for('auth.login') }}">{{ _('home.tester') }}</a>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>{{ _('home.screens') }}</h2>
+  <div class="row-scroll">
+    {% for s in brand.screens %}<figure class="shot"><img src="{{ url_for('static', filename=s) }}" alt="" loading="lazy" width="640" height="360"></figure>{% endfor %}
+  </div>
+  <p class="muted small">{{ _('home.screens_note') }}</p>
+</section>
+
+<section class="wrap grid2">
+  <div class="card">
+    <h2>{{ _('home.req_title') }}</h2>
+    <ul class="checks">{% for r in _('home.req') %}<li>{{ r }}</li>{% endfor %}</ul>
+  </div>
+  <div class="card">
+    <h2>{{ _('home.install_title') }}</h2>
+    <ol class="steps">{% for s in _('home.install') %}<li>{{ s }}</li>{% endfor %}</ol>
+  </div>
+</section>
+
+{% if soon_groups %}
+<section class="wrap soon" id="em-breve" aria-labelledby="soon-t">
+  <div class="soon-head">
+    <div><span class="eyebrow">{{ icon('sparkles', 14) }}{{ _('st.soon_title') }}</span><h2 id="soon-t">{{ _('st.soon_title') }}</h2><p>{{ _('st.soon_lead') }}</p></div>
+    <a class="btn ghost" href="{{ url_for('public.status') }}">{{ _('st.see_status') }} →</a>
+  </div>
+  <div class="soon-grid">
+    {% for g_, feats in soon_groups %}
+    <article class="soon-card">
+      <header><span class="g-ico">{{ icon(GROUP_ICON[g_], 17) }}</span><h3>{{ _('st.g_' ~ g_) }}</h3></header>
+      <ul>{% for f in feats %}<li><b>{{ loc(f, 'name') }} <span class="fpill fs-soon">{{ _('st.s_soon') }}</span></b>{% if loc(f, 'desc') %}<span>{{ loc(f, 'desc') }}</span>{% endif %}</li>{% endfor %}</ul>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="wrap">
+  <h2>{{ _('home.video_title') }}</h2>
+  {% if video %}
+    <div class="video"><iframe src="{{ video }}" title="{{ brand.name }}" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
+  {% else %}
+    <div class="video empty"><img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="64" height="64"><p>{{ _('home.video_soon') }}</p></div>
+  {% endif %}
+</section>
+
+<section class="wrap">
+  <h2>{{ _('home.faq_title') }}</h2>
+  <div class="faq">{% for q, a in _('home.faq') %}<details class="card"><summary>{{ q }}</summary><p>{{ a }}</p></details>{% endfor %}</div>
+</section>
+
+<section class="wrap">
+  <div class="card risk" id="risk">
+    <h2>{{ _('home.risk_title') }}</h2>
+    <p>{{ _('home.risk') }}</p>
+  </div>
+</section>
+{% endblock %}

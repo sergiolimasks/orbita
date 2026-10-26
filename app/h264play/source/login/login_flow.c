@@ -8,6 +8,12 @@
 
 #define TOKEN_MAX (16 * 1024)
 
+static lf_hooks_t g_hooks;   /* zerado = sem ganchos */
+void lf_set_hooks(const lf_hooks_t *h) {
+    if (h) g_hooks = *h;
+    else memset(&g_hooks, 0, sizeof(g_hooks));
+}
+
 static void ui_status(const lf_ui_t *ui, const char *t) {
     xc_log("[login] %s", t);
     if (ui && ui->status) ui->status(t);
@@ -107,6 +113,7 @@ int lf_run(const lf_ui_t *ui, xa_title_t **games, int *ngames, xc_err_t *e) {
     *ngames = 0;
     memset(e, 0, sizeof(*e));
     if (https_init(e) != 0) return -1;
+    if (g_hooks.on_start) g_hooks.on_start();
     {   /* seed nova pro próximo boot (entra na personalização do DRBG) */
         unsigned char s[32];
         if (https_random(s, sizeof(s)) == 0) xc_store_save(LF_SEED_FILE, s, sizeof(s));
@@ -166,6 +173,7 @@ int lf_run(const lf_ui_t *ui, xa_title_t **games, int *ngames, xc_err_t *e) {
     xa_title_t *t = NULL;
     int n = 0;
     r = xa_fetch_titles(&cloud, &t, &n, e);
+    if (r == XA_OK && g_hooks.on_cloud) g_hooks.on_cloud(&cloud);
     xa_endpoint_free(&cloud);
     if (r != XA_OK) { if (have_f2p) xa_endpoint_free(&f2p); return -1; }
     if (have_f2p) {
@@ -201,6 +209,7 @@ int lf_run(const lf_ui_t *ui, xa_title_t **games, int *ngames, xc_err_t *e) {
         }
     }
     n = xa_finalize(t, n);
+    if (g_hooks.on_titles) g_hooks.on_titles(t, n);
     *games = t;
     *ngames = n;
     return 0;
