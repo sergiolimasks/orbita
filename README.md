@@ -16,7 +16,8 @@ Site, downloads and feature status: <https://x360.pistatrack.com>
 
 - Xbox 360 with RGH/JTAG
 - XeLL Reloaded v0.993 or newer, launched from Aurora via the *XeLL Launcher* app
-- Wired or Wi-Fi network; up to 4 Xbox 360 or Xbox Series controllers
+- Wired network (Wi-Fi is not supported)
+- Up to 4 Xbox 360 controllers (Xbox Series controllers are in testing)
 
 ## What works
 

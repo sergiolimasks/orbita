@@ -8,7 +8,12 @@
   "favicon_png": "brand/orbita-favicon-180.png",
   "favicon_ico": "brand/orbita-favicon.ico",
   "hero": "img/hero.jpg",
-  "screens": ["img/screen-1.jpg", "img/screen-2.jpg", "img/screen-3.jpg", "img/screen-4.jpg"],
+  "screens": [
+    "img/screen-1.jpg",
+    "img/screen-2.jpg",
+    "img/screen-3.jpg",
+    "img/screen-4.jpg"
+  ],
   "colors": {
     "bg": "#1B1C1E",
     "surface": "#26282C",
@@ -21,5 +26,6 @@
     "accent": "#FF6B3D",
     "danger": "#FF5A5F",
     "ok": "#4CD07D"
-  }
+  },
+  "repo": "https://github.com/sergiolimasks/orbita"
 }

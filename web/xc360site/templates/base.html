@@ -22,6 +22,7 @@
   <nav class="topnav">
     <span class="langs">{% for l in LANGS %}<a href="?lang={{ l }}" class="{{ 'on' if l == lang }}" hreflang="{{ l }}">{{ LANG_LABEL[l] }}</a>{% endfor %}</span>
     <a class="navlink{{ ' on' if request.endpoint in ('public.status', 'public.release_note') }}" href="{{ url_for('public.status') }}">{{ _('st.nav') }}</a>
+    <a class="navlink" href="{{ brand.repo }}" target="_blank" rel="noopener">{{ icon('github', 15) }}<span>GitHub</span></a>
     {% if user %}
       {% if user.role == 'admin' %}<a class="btn ghost sm" href="{{ url_for('admin.overview') }}">{{ _('nav.admin') }}</a>{% endif %}
       <a class="btn ghost sm" href="{{ url_for('tester.area') }}">{{ _('nav.area') }}</a>
@@ -35,7 +36,8 @@
 <main>{% block main %}{% endblock %}</main>
 <footer class="foot wrap">
   <img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="28" height="28">
-  <p>{{ _('footer.text') }}</p>
+  <div><p>{{ _('footer.text') }}</p>
+  <p><a href="{{ brand.repo }}" target="_blank" rel="noopener">{{ _('footer.source') }}</a> · GPL-3.0</p></div>
 </footer>
 </body>
 </html>

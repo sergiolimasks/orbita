@@ -65,6 +65,20 @@
   {% endif %}
 </section>
 
+<section class="wrap" id="codigo">
+  <div class="card oss">
+    <div>
+      <span class="eyebrow">{{ icon('github', 14) }}{{ _('home.oss_eyebrow') }}</span>
+      <h2>{{ _('home.oss_title') }}</h2>
+      <p>{{ _('home.oss_text') }}</p>
+    </div>
+    <div class="oss-cta">
+      <a class="btn primary" href="{{ brand.repo }}" target="_blank" rel="noopener">{{ icon('github', 16) }} {{ _('home.oss_btn') }}</a>
+      <a class="btn ghost" href="{{ brand.repo }}/blob/main/LICENSE" target="_blank" rel="noopener">{{ _('home.oss_license') }}</a>
+    </div>
+  </div>
+</section>
+
 <section class="wrap">
   <h2>{{ _('home.faq_title') }}</h2>
   <div class="faq">{% for q, a in _('home.faq') %}<details class="card"><summary>{{ q }}</summary><p>{{ a }}</p></details>{% endfor %}</div>

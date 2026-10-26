@@ -9,7 +9,7 @@ from . import config, countries, db, i18n, icons, logindex, security, seed, ui
 from .storage import R2Storage
 
 HERE = os.path.dirname(__file__)
-ASSET_V = "6"   # sobe quando app.css/app.js mudam (cache do navegador)
+ASSET_V = "7"   # sobe quando app.css/app.js mudam (cache do navegador)
 
 
 def _query_with(**kw):

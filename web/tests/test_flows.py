@@ -24,6 +24,7 @@ def test_home_public_and_soon(client):
     assert "Versão estável em breve" in html
     assert "orbita-horizontal-white.svg" in html and "Aviso de risco" in html
     assert "30 segundos" in html                      # FAQ tela vermelha
+    assert "github.com/sergiolimasks/orbita" in html and "Todo o código é público" in html
     assert "Game Pass Ultimate" in html               # só como requisito, em texto
 
 

@@ -97,3 +97,13 @@
 .st-count .fpill,.legend .fpill{align-self:flex-start}
 .st-feat .side{grid-row:1 / span 2;grid-column:2}
 @media(max-width:520px){.st-feat .side{grid-row:2;grid-column:1}}
+
+/* código aberto (home) */
+.card.oss{display:flex;gap:24px;align-items:center;justify-content:space-between;flex-wrap:wrap;border:1px solid var(--line)}
+.card.oss>div:first-child{flex:1 1 380px}
+.card.oss p{color:var(--muted);margin:0;max-width:62ch}
+.oss-cta{display:flex;gap:10px;flex-wrap:wrap}
+.oss-cta .btn{display:inline-flex;align-items:center;gap:8px}
+.topnav .navlink{display:inline-flex;align-items:center;gap:6px}
+@media(max-width:560px){.topnav .navlink span{display:none}}
+.foot a{color:var(--text)}
