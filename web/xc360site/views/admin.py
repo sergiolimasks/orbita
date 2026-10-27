@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request,
                    url_for)
 
-from .. import bridgekeys, db, logindex, releases, security as sec, ui
+from .. import bridgekeys, db, logindex, plays, releases, security as sec, ui
 from ..i18n import OPEN_STATUSES, STATUSES, gettext as _
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
@@ -713,3 +713,36 @@ def note_item_delete(nid, iid):
     db.run("DELETE FROM release_note_items WHERE id=%s AND note_id=%s", iid, nid)
     flash(_("rn.item_deleted"))
     return redirect(url_for("admin.note_edit", nid=nid) + "#items")
+
+
+# ------------------------------------------------------------------ /jogos (página pública): esconder jogo / relato
+@bp.get("/games")
+def games():
+    from .public import game_stats
+    gs, summary = game_stats()
+    pending = db.row("SELECT count(*) AS n FROM log_index WHERE play_v < %s", plays.PARSER_V)["n"]
+    return render_template("admin/games.html", games=gs, summary=summary, pending=pending)
+
+
+@bp.post("/games/visibility")
+def game_visibility():
+    gkey = (request.form.get("gkey") or "").strip()[:120]
+    if not gkey:
+        abort(400)
+    hidden = request.form.get("hidden") == "1"
+    db.run("INSERT INTO game_flags(gkey, hidden) VALUES (%s,%s) "
+           "ON CONFLICT (gkey) DO UPDATE SET hidden=excluded.hidden, updated_at=now()", gkey, hidden)
+    sec.audit("game.hide" if hidden else "game.show", gkey)
+    name = (request.form.get("name") or gkey)[:80]
+    flash(_("gm.hidden_saved" if hidden else "gm.shown_saved", n=name))
+    return redirect(url_for("admin.games"))
+
+
+@bp.post("/reports/<int:rid>/public")
+def report_public(rid):
+    hidden = request.form.get("hidden") == "1"
+    if not db.run("UPDATE reports SET public_hidden=%s WHERE id=%s", hidden, rid):
+        abort(404)
+    sec.audit("report.public", "%d %s" % (rid, "hide" if hidden else "show"))
+    flash(_("gm.rep_hidden" if hidden else "gm.rep_visible"))
+    return redirect(url_for("admin.report_detail", rid=rid))

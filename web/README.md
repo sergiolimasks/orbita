@@ -60,5 +60,16 @@ Thread de sync (advisory lock) indexa `logs/AAAA-MM-DD/<console>/*.json.gz` em `
 (1ª vez: tudo; depois: ontem+hoje). Números e filtros saem do índice; o lote completo é
 lido do R2 ao abrir.
 
+## Jogos (/jogos) — progresso dos testes
+`plays.py` lê cada lote de log (no sync e no backfill) e grava um trecho por `[xn] PLAY <ID> (<nome>)` em
+`play_sessions` (+ um trecho de continuação quando o lote começa no meio de um jogo): FPS das linhas `STAT`
+(sem os ~4 s iniciais de cada sessão/reconexão), quadros pulados, kbps e o desfecho (`ok`, `drop` = queda de vídeo,
+`error` = `STATE ERROR` que não seja login, `hang` = `[wdog] TRAVOU/CRASH`, `nostream` = não chegou a rodar, fica fora).
+Console e testador só como hash com sal (`kv.play_salt`); a página pública mostra só contagens.
+`log_index.play_v` < `plays.PARSER_V` = lote ainda não lido por este parser: o sync relê aos poucos; de uma vez:
+`python -m xc360site.cli backfill-plays`. Selo: ver `plays.badge` (limites também descritos na página).
+Bugs na página: só jogo (se for um jogo conhecido dos logs), versão, status, data e a `admin_note` (sem e-mail/telefone);
+nunca a descrição, fotos, console ou nome. O admin esconde jogo em `/admin/games` e relato no detalhe do relato.
+
 ## Testes
 `sh web/deploy/deploy.sh --test-only` (pytest no container, Postgres 16 descartável).

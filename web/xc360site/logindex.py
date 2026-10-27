@@ -5,11 +5,14 @@ Objetos: logs/AAAA-MM-DD/<console>/<hhmmss>-<rand>.json.gz com JSON
 guarda só metadados, pra filtrar por testador/console/dia e tirar números
 sem baixar tudo de novo. Sincroniza numa thread (um worker por vez, via
 advisory lock): na 1ª vez varre logs/ inteiro; depois só ontem e hoje (UTC).
+Junto, as sessões de jogo de cada lote vão pra play_sessions (plays.py); lotes
+lidos por um parser mais velho (log_index.play_v < plays.PARSER_V) são relidos
+aos poucos (backfill_plays), um lote por vez.
 """
-import gzip, io, json, re, threading, time
+import gzip, io, json, re, threading, time, zlib
 from datetime import datetime, timedelta, timezone
 
-from . import db
+from . import db, plays
 
 KEY_RE = re.compile(r"^logs/(\d{4}-\d{2}-\d{2})/([0-9a-f]{16,64})/(\d{6})-[0-9a-f]{1,32}\.json\.gz$")
 PLAY_RE = re.compile(r"\[xn\] PLAY \S+ \((.+?)\)")
@@ -59,8 +62,10 @@ def sync(storage, max_fetch=300):
                 "SELECT r2_key FROM log_index WHERE r2_key = ANY(%s)", (keys,)).fetchall()}
             todo = [k for k in keys if k not in have]
             n = 0
+            psalt = plays.salt(c)
             for k in todo[:max_fetch]:
                 day, console, _ = KEY_RE.match(k).groups()
+                doc = None
                 try:
                     doc, size = read_batch(storage, k)
                     lines = doc.get("lines") or []
@@ -76,10 +81,12 @@ def sync(storage, max_fetch=300):
                     rec = (k, day, console, _s(doc.get("tester"), 64), _s(doc.get("app"), 32),
                            _s(game, 80), _rx(doc.get("rx")), len(lines), size)
                 except Exception:
-                    rec = (k, day, console, "", "?", "?", None, 0, 0)
+                    doc, rec = None, (k, day, console, "", "?", "?", None, 0, 0)
                 c.execute("INSERT INTO log_index(r2_key, day, console, tester, app, game, rx, nlines, size) "
                           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", rec)
+                _store_plays(c, k, day, rec[6], doc, psalt)
                 n += 1
+            backfill_plays(c, storage, max(0, max_fetch - n), psalt)
             if not backfilled and len(todo) <= max_fetch:
                 c.execute("INSERT INTO kv(k, v) VALUES ('logs_backfill', '1') ON CONFLICT DO NOTHING")
             c.execute("INSERT INTO kv(k, v) VALUES ('logs_synced_at', %s) ON CONFLICT (k) DO UPDATE SET v=excluded.v",
@@ -89,6 +96,56 @@ def sync(storage, max_fetch=300):
             return n
         finally:
             c.execute("SELECT pg_advisory_unlock(%s)", (LOCK_ID,))
+
+
+def _store_plays(c, key, day, rx, doc, psalt):
+    try:
+        with c.transaction():        # savepoint: um lote ruim não derruba o sync
+            plays.store(c, key, day, rx, doc if isinstance(doc, dict) else {}, psalt)
+    except Exception:
+        c.execute("UPDATE log_index SET play_v=%s WHERE r2_key=%s", (plays.PARSER_V, key))
+
+
+def backfill_plays(c, storage, limit, psalt=None):
+    """Relê do R2 os lotes ainda não processados pelo parser atual. Devolve quantos leu."""
+    if limit <= 0:
+        return 0
+    psalt = psalt or plays.salt(c)
+    todo = c.execute("SELECT r2_key, day, rx FROM log_index WHERE play_v < %s ORDER BY day DESC, r2_key DESC LIMIT %s",
+                     (plays.PARSER_V, limit)).fetchall()
+    done = 0
+    for r in todo:
+        try:
+            got = read_batch(storage, r["r2_key"])
+        except (gzip.BadGzipFile, EOFError, zlib.error, ValueError):
+            got = None               # lote corrompido: marca como lido (sem sessões)
+        except OSError:
+            continue                 # R2 fora: tenta de novo no próximo ciclo
+        except Exception:
+            got = None               # lote corrompido: marca como lido (sem sessões)
+        _store_plays(c, r["r2_key"], r["day"], r["rx"], got[0] if got else None, psalt)
+        done += 1
+    return done
+
+
+def backfill_all(storage, chunk=200):
+    """Backfill único (CLI): processa todos os lotes pendentes, em blocos."""
+    total = 0
+    while True:
+        with db.conn() as c:
+            if not c.execute("SELECT pg_try_advisory_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
+                return -1
+            try:
+                left = c.execute("SELECT count(*) AS n FROM log_index WHERE play_v < %s",
+                                 (plays.PARSER_V,)).fetchone()["n"]
+                if not left:
+                    return total
+                n = backfill_plays(c, storage, chunk)
+                total += n
+            finally:
+                c.execute("SELECT pg_advisory_unlock(%s)", (LOCK_ID,))
+        if n == 0:
+            return total
 
 
 def start_thread(app):

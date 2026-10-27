@@ -44,6 +44,7 @@
         <div class="sb-section">{{ _('ui.sec_public') }}</div>
         {{ sb_link('admin.features', 'layers', _('ft.nav'), ep.startswith('admin.feature')) }}
         {{ sb_link('admin.notes', 'file', _('rn.nav'), ep.startswith('admin.note')) }}
+        {{ sb_link('admin.games', 'gamepad', _('gm.nav'), ep.startswith('admin.game')) }}
         <div class="sb-section">{{ _('ui.sec_tester') }}</div>
         {{ sb_link('tester.area', 'home', _('ui.tester_home'), ep == 'tester.area') }}
       {% else %}
@@ -54,6 +55,7 @@
       {% endif %}
       <div class="sb-section">{{ _('ui.sec_more') }}</div>
       {{ sb_link('public.status', 'activity', _('st.nav'), False) }}
+      {{ sb_link('public.games', 'gamepad', _('gm.title'), False) }}
       {{ sb_link('public.home', 'globe', _('ui.public_site'), False) }}
     </nav>
     <div class="sb-foot">

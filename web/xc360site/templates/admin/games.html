@@ -1,0 +1,42 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, empty with context %}
+{% block title %}{{ _('gm.adm_title') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('gm.adm_title')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('gm.adm_title') }}</h1><p class="lead">{{ _('gm.adm_lead') }}</p></div>
+  <div class="actions"><a class="btn secondary" href="{{ url_for('public.games') }}" target="_blank" rel="noopener">{{ icon('external', 16) }}{{ _('gm.view_public') }}</a></div>
+</div>
+{% if pending %}<p class="muted small mb-2">{{ icon('clock', 14) }} {{ _('gm.pending', n=pending) }}</p>{% endif %}
+<div class="card">
+  {% if games %}
+  <div class="table-wrap">
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('gm.game') }}</th><th>{{ _('gm.status') }}</th><th class="r">{{ _('gm.sessions') }}</th><th class="r">{{ _('gm.testers') }}</th>
+      <th class="r">{{ _('gm.fps') }}</th><th class="r">{{ _('gm.pct55') }}</th><th>{{ _('gm.last_version') }}</th><th>{{ _('gm.problems') }}</th><th class="r"><span class="sr-only">{{ _('common.actions') }}</span></th></tr></thead>
+    <tbody>
+    {% for g_ in games %}
+    <tr data-admin-game>
+      <td class="lead-cell">{{ g_.name }}{% if g_.title_id %}<div class="xs muted mono">{{ g_.title_id }}</div>{% endif %}</td>
+      <td data-label="{{ _('gm.status') }}">{% if g_.hidden %}<span class="badge gray"><span class="dot"></span>{{ _('gm.hidden') }}</span>{% else %}<span class="badge {{ {'good': 'green', 'unstable': 'yellow', 'bad': 'red'}[g_.status] }}"><span class="dot"></span>{{ _('gm.s_' ~ g_.status) }}</span>{% endif %}</td>
+      <td data-label="{{ _('gm.sessions') }}" class="r num">{{ g_.sessions }}</td>
+      <td data-label="{{ _('gm.testers') }}" class="r num">{{ g_.testers }}</td>
+      <td data-label="{{ _('gm.fps') }}" class="r num">{{ g_.fps_med if g_.fps_med is not none else '—' }}</td>
+      <td data-label="{{ _('gm.pct55') }}" class="r num">{{ (g_.pct55 ~ '%') if g_.pct55 is not none else '—' }}</td>
+      <td data-label="{{ _('gm.last_version') }}" class="mono">{{ g_.last_version or '—' }}</td>
+      <td data-label="{{ _('gm.problems') }}" class="small">{{ _('gm.drops', n=g_.drops) }} · {{ _('gm.errors', n=g_.errors) }} · {{ _('gm.hangs', n=g_.hangs) }}</td>
+      <td class="actions">
+        <form method="post" action="{{ url_for('admin.game_visibility') }}" class="inline">{{ csrf() }}
+          <input type="hidden" name="gkey" value="{{ g_.key }}"><input type="hidden" name="name" value="{{ g_.name }}">
+          <input type="hidden" name="hidden" value="{{ '0' if g_.hidden else '1' }}">
+          <button class="btn ghost sm">{{ icon('eye', 14) }}{{ _('gm.show') if g_.hidden else _('gm.hide') }}</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    {% call empty(_('gm.empty'), '', 'inbox') %}{% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

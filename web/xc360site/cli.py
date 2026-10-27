@@ -4,6 +4,9 @@
       gera um LINK de configuração de administrador, de uso único. Quem abrir
       define nome, e-mail, senha e o 2FA (TOTP, obrigatório).
   python -m xc360site.cli sync-logs     indexa agora os lotes de log do R2
+  python -m xc360site.cli backfill-plays
+      (re)lê todos os lotes que ainda não passaram pelo parser de sessões de jogo
+      (página /jogos). O sync normal já faz isso aos poucos; isto faz de uma vez.
 """
 import argparse, sys
 
@@ -17,6 +20,7 @@ def main(argv=None):
     p = sub.add_parser("admin-link")
     p.add_argument("--hours", type=int, default=None)
     sub.add_parser("sync-logs")
+    sub.add_parser("backfill-plays")
     a = ap.parse_args(argv)
     cfg = config.load()
     db.init(cfg["DATABASE_URL"], max_size=2)
@@ -32,6 +36,8 @@ def main(argv=None):
         print("(uso único, expira em %d h)" % hours, file=sys.stderr)
     elif a.cmd == "sync-logs":
         print(logindex.sync(R2Storage.from_env_text(cfg["R2_ENV"]), max_fetch=5000))
+    elif a.cmd == "backfill-plays":
+        print(logindex.backfill_all(R2Storage.from_env_text(cfg["R2_ENV"])))
 
 
 if __name__ == "__main__":

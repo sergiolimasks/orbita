@@ -1,8 +1,9 @@
 import re
 
-from flask import Blueprint, Response, abort, current_app, g, redirect, render_template, request
+from flask import Blueprint, Response, abort, current_app, g, redirect, render_template, request, url_for
 
-from .. import db, releases, ui
+from .. import db, plays, releases, ui
+from ..i18n import OPEN_STATUSES
 
 bp = Blueprint("public", __name__)
 COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -56,6 +57,37 @@ def release_note(version):
     others = db.rows("SELECT version, channel, released_on FROM release_notes WHERE published AND id<>%s "
                      "ORDER BY released_on DESC NULLS LAST, id DESC LIMIT 8", n["id"])
     return render_template("public/release.html", n=n, items=items, others=others, kinds=ui.NOTE_KINDS)
+
+
+# ------------------------------------------------------------------ /jogos: progresso dos testes
+PLAY_COLS = ("r2_key, day, rx, app, tester_h, title_id, game, continued, outcome, n_drops, n_errors, n_hangs, "
+             "samples, ge55, hist")
+
+
+def game_stats():
+    """(jogos, resumo) com os escondidos marcados (`hidden`). Nada de console/testador sai daqui, só contagens."""
+    rows = db.rows("SELECT " + PLAY_COLS + " FROM play_sessions")
+    hidden = {r["gkey"] for r in db.rows("SELECT gkey FROM game_flags WHERE hidden")}
+    return plays.games(rows, hidden)
+
+
+@bp.get("/jogos")
+def games():
+    gs, summary = game_stats()
+    gs = [x for x in gs if not x["hidden"]]
+    known = {plays.norm_name(x["name"]): x["name"] for x in gs}
+    reps = db.rows("SELECT id, game, version, status, admin_note, created_at, updated_at FROM reports "
+                   "WHERE NOT public_hidden AND status<>'duplicate' ORDER BY updated_at DESC, id DESC LIMIT 60")
+    bugs = [plays.public_report(r, known) for r in reps]
+    bc = db.row("SELECT count(*) FILTER (WHERE status = ANY(%s)) AS open, count(*) FILTER (WHERE status='fixed') AS fixed, "
+                "count(*) AS total FROM reports WHERE NOT public_hidden AND status<>'duplicate'", list(OPEN_STATUSES))
+    return render_template("public/games.html", games=gs, summary=summary, bugs=bugs, bc=bc,
+                           badges=plays.BADGES)
+
+
+@bp.get("/games")
+def games_alias():
+    return redirect(url_for("public.games"), 301)
 
 
 @bp.get("/download/stable")

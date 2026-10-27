@@ -209,3 +209,40 @@ CREATE TABLE IF NOT EXISTS release_note_items (
     sort       integer NOT NULL DEFAULT 100
 );
 CREATE INDEX IF NOT EXISTS release_note_items_note ON release_note_items(note_id, sort, id);
+
+-- página pública /jogos: sessões de jogo tiradas dos lotes de log (plays.py). Console e testador só como hash.
+ALTER TABLE log_index ADD COLUMN IF NOT EXISTS play_v smallint NOT NULL DEFAULT 0;   -- versão do parser que já leu o lote
+CREATE INDEX IF NOT EXISTS log_index_play_v ON log_index(play_v);
+CREATE TABLE IF NOT EXISTS play_sessions (
+    r2_key    text NOT NULL REFERENCES log_index(r2_key) ON DELETE CASCADE,
+    seq       smallint NOT NULL,                 -- trecho dentro do lote (um por "[xn] PLAY")
+    day       date NOT NULL,
+    rx        timestamptz,
+    app       text NOT NULL DEFAULT '',
+    console_h text NOT NULL DEFAULT '',          -- hash com sal (kv.play_salt), nunca o id
+    tester_h  text NOT NULL DEFAULT '',          -- hash do testador (ou do console se não tiver)
+    title_id  text NOT NULL DEFAULT '',
+    game      text NOT NULL,
+    continued boolean NOT NULL DEFAULT false,    -- lote começou no meio de um jogo (não conta como sessão nova)
+    outcome   text NOT NULL CHECK (outcome IN ('ok', 'drop', 'error', 'hang', 'nostream')),
+    n_drops   integer NOT NULL DEFAULT 0,
+    n_errors  integer NOT NULL DEFAULT 0,
+    n_hangs   integer NOT NULL DEFAULT 0,
+    samples   integer NOT NULL DEFAULT 0,        -- linhas STAT usadas (2 s cada)
+    ge55      integer NOT NULL DEFAULT 0,
+    fps_avg   real,
+    fps_min   real,
+    fps_med   real,
+    hist      text NOT NULL DEFAULT '{}',        -- {"59": n, ...} fps arredondado -> amostras
+    skipped   integer NOT NULL DEFAULT 0,
+    kbps_avg  real,
+    loss_avg  real,
+    PRIMARY KEY (r2_key, seq)
+);
+CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions(title_id, game);
+CREATE TABLE IF NOT EXISTS game_flags (
+    gkey       text PRIMARY KEY,                 -- title id (ou nome em minúsculas)
+    hidden     boolean NOT NULL DEFAULT false,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS public_hidden boolean NOT NULL DEFAULT false;

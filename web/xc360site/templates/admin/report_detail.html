@@ -46,6 +46,14 @@
       </form>
     </section>
 
+    <section class="card" aria-labelledby="pub-t"><div class="card-head"><h2 id="pub-t">{{ icon('globe', 18) }}{{ _('gm.public_card') }}</h2></div>
+      <form method="post" action="{{ url_for('admin.report_public', rid=r.id) }}" class="card-body stack">{{ csrf() }}
+        <p class="small">{% if r.public_hidden %}{{ _('gm.rep_hidden') }}{% elif r.status == 'duplicate' %}{{ _('gm.rep_dup_note') }}{% else %}{{ _('gm.rep_visible') }}{% endif %}</p>
+        <p class="help small muted">{{ _('gm.rep_public_help') }}</p>
+        <input type="hidden" name="hidden" value="{{ '0' if r.public_hidden else '1' }}">
+        <div class="form-actions"><button class="btn secondary sm" data-public-toggle>{{ icon('eye', 14) }}{{ _('gm.rep_show') if r.public_hidden else _('gm.rep_hide') }}</button></div>
+      </form></section>
+
     <section class="card"><div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
       <div class="card-body"><dl class="kv">
         <dt>{{ _('adm.tester') }}</dt><dd><span class="row">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.testers', q=r.email) }}">{{ r.uname }}</a></span></dd>

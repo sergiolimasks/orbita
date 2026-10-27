@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ _('gm.title') }} — {{ brand.name }}{% endblock %}
+{% block main %}
+<section class="wrap pg-head">
+  <span class="eyebrow">{{ icon('gamepad', 14) }}{{ _('gm.nav') }}</span>
+  <h1>{{ _('gm.title') }}</h1>
+  <p class="lead">{{ _('gm.lead') }}</p>
+</section>
+
+<section class="wrap" aria-labelledby="gm-sum">
+  <h2 id="gm-sum" class="sr-only">{{ _('gm.title') }}</h2>
+  <div class="st-counts gm-sum">
+    <div class="st-count"><small>{{ _('gm.games') }}</small><b>{{ summary.games }}</b></div>
+    <div class="st-count"><small>{{ _('gm.sessions') }}</small><b>{{ summary.sessions }}</b></div>
+    <div class="st-count"><small>{{ _('gm.testers') }}</small><b>{{ summary.testers }}</b></div>
+    <div class="st-count"><small>{{ _('gm.top_version') }}</small>
+      <b class="mono-b">{{ summary.top_version or '—' }}</b>
+      {% if summary.top_version %}<small>{{ _('gm.top_version_n', n=summary.top_version_n) }}</small>{% endif %}</div>
+  </div>
+  {% if summary.minutes %}<p class="muted small gm-time">{{ icon('clock', 14) }}
+    {{ _('gm.hours', n=(summary.minutes / 60)|round(1)) if summary.minutes >= 120 else _('gm.minutes', n=summary.minutes) }}</p>{% endif %}
+</section>
+
+<section class="wrap" aria-labelledby="gm-list">
+  <h2 id="gm-list">{{ _('gm.list') }}</h2>
+  {% if games %}
+  <div class="gm-table" role="table" aria-label="{{ _('gm.list') }}">
+    <div class="gm-row gm-th" role="row">
+      <span role="columnheader">{{ _('gm.game') }}</span>
+      <span role="columnheader">{{ _('gm.status') }}</span>
+      <span role="columnheader" class="r">{{ _('gm.sessions') }}</span>
+      <span role="columnheader" class="r">{{ _('gm.testers') }}</span>
+      <span role="columnheader" class="r">{{ _('gm.fps') }}</span>
+      <span role="columnheader">{{ _('gm.pct55') }}</span>
+      <span role="columnheader">{{ _('gm.last_version') }}</span>
+      <span role="columnheader">{{ _('gm.problems') }}</span>
+    </div>
+    {% for g_ in games %}
+    <div class="gm-row" role="row" data-game-row>
+      <span role="cell" class="gm-name"><b>{{ g_.name }}</b>{% if g_.few %}<small class="muted">{{ _('gm.few') }}</small>{% endif %}</span>
+      <span role="cell" data-label="{{ _('gm.status') }}"><span class="fpill gs-{{ g_.status }}">{{ _('gm.s_' ~ g_.status) }}</span></span>
+      <span role="cell" class="r num" data-label="{{ _('gm.sessions') }}">{{ g_.sessions }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gm.testers') }}">{{ g_.testers }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gm.fps') }}">{% if g_.fps_med is not none %}<b>{{ g_.fps_med }}</b>{% if g_.target == 30 %}<small class="muted gm-30">{{ _('gm.fps30') }}</small>{% endif %}{% else %}<span class="muted small">{{ _('gm.no_fps') }}</span>{% endif %}</span>
+      <span role="cell" data-label="{{ _('gm.pct55') }}">{% set pc = g_.pct_ok if g_.target == 30 else g_.pct55 %}{% if pc is not none %}
+        <svg class="gm-bar" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bg" width="100" height="6" rx="3"/><rect class="fill {{ 'hi' if pc >= 90 else ('mid' if pc >= 40 else 'lo') }}" width="{{ pc }}" height="6" rx="3"/></svg><span class="num small">{{ pc }}%</span>{% if g_.target == 30 %}<small class="muted"> (≥ 28)</small>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}</span>
+      <span role="cell" class="mono-s" data-label="{{ _('gm.last_version') }}">{{ g_.last_version or '—' }}</span>
+      <span role="cell" data-label="{{ _('gm.problems') }}" class="gm-probs">
+        {% if g_.drops %}<span class="fpill k-known">{{ _('gm.drops', n=g_.drops) }}</span>{% endif %}
+        {% if g_.errors %}<span class="fpill gs-bad">{{ _('gm.errors', n=g_.errors) }}</span>{% endif %}
+        {% if g_.hangs %}<span class="fpill gs-bad">{{ _('gm.hangs', n=g_.hangs) }}</span>{% endif %}
+        {% if not (g_.drops or g_.errors or g_.hangs) %}<span class="muted small">{{ _('gm.no_problems') }}</span>{% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card"><p class="muted">{{ _('gm.empty') }}</p></div>
+  {% endif %}
+
+  <div class="legend" aria-label="{{ _('st.legend') }}">
+    {% for b in badges %}<div><span class="fpill gs-{{ b }}">{{ _('gm.s_' ~ b) }}</span>{{ _('gm.d_' ~ b) }}</div>{% endfor %}
+  </div>
+  <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gm.how_text') }}</p></details>
+</section>
+
+<section class="wrap" aria-labelledby="gm-bugs">
+  <h2 id="gm-bugs">{{ _('gm.bugs') }}</h2>
+  <p class="muted gm-bugs-lead">{{ _('gm.bugs_lead') }}</p>
+  <div class="gm-bc">
+    <span><b>{{ bc.total }}</b> {{ _('gm.bugs_total') }}</span>
+    <span><b>{{ bc.open }}</b> {{ _('gm.bugs_open') }}</span>
+    <span><b>{{ bc.fixed }}</b> {{ _('gm.bugs_fixed') }}</span>
+  </div>
+  {% if bugs %}
+  <div class="rn-list">
+    {% for b in bugs %}
+    <article class="rn-card gm-bug" data-bug-row>
+      <header>
+        <span class="fpill rs-{{ b.status }}">{{ _('status.' ~ b.status) }}</span>
+        <h3>{{ b.game or _('gm.general') }}</h3>
+        {% if b.version %}<span class="mono-s muted">v{{ b.version }}</span>{% endif %}
+        <span class="date">#{{ b.id }} · {{ _('gm.reported', d=b.created_at|date) }}</span>
+      </header>
+      {% if b.note %}<div class="gm-reply"><small>{{ _('gm.reply') }}</small><p>{{ b.note }}</p></div>
+      {% else %}<p class="muted small">{{ _('gm.no_reply') }}</p>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card"><p class="muted">{{ _('gm.no_bugs') }}</p></div>
+  {% endif %}
+</section>
+{% endblock %}
