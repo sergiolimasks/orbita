@@ -13,7 +13,7 @@ banco (kv.play_salt); nada disso sai na página pública, só contagens.
 import hashlib, json, re, secrets, statistics
 from datetime import timedelta
 
-PARSER_V = 2                   # sobe quando o parser muda -> o backfill reprocessa os lotes
+PARSER_V = 4                   # sobe quando o parser muda -> o backfill reprocessa os lotes
 WARMUP_S = 4                   # ignora STAT dos primeiros ~4 s de cada sessão/reconexão
 FPS_OK = 55                    # "% do tempo >= 55 fps"
 
@@ -24,7 +24,7 @@ KV_RE = re.compile(r"\b([a-z_]+)=(-?\d+(?:\.\d+)?)\b")
 RECONN_RE = re.compile(r"\[sess\] STATE RECONNECTING")
 DROP_RE = re.compile(r"\[menu\] v[ií]deo perdido|\[sess\] queda no meio do jogo")
 ERROR_RE = re.compile(r"\[sess\] STATE ERROR\b(.*)")
-NOT_GAME_ERR_RE = re.compile(r"login", re.I)       # "Faca o login no Xbox primeiro": não é problema do jogo
+NOT_GAME_ERR_RE = re.compile(r"login|OfferingDoesNotContainTitle", re.I)   # sem acesso ao jogo por esse caminho: não é problema do jogo       # "Faca o login no Xbox primeiro": não é problema do jogo
 HANG_RE = re.compile(r"\[wdog\] (?:TRAVOU|CRASH)\b|Segmentation fault|\bkernel panic\b")
 TITLE_RE = re.compile(r"^[A-Z0-9_]{2,64}$")
 # v2: motivo de fim que o servidor manda ({"reason":"KickFor..."} no canal de mensagens)
@@ -169,10 +169,15 @@ def parse(lines, doc_game=""):
         if HANG_RE.search(ln):
             cur.hangs += 1
     out = []
+    # v3: o "game" do lote é o jogo do FIM do lote. Se o lote abriu outro jogo
+    # (PLAY), o trecho do começo é de um jogo anterior e não herda esse nome
+    # (antes 2,5 min de Crash viravam "Genshin rodando bem").
+    opened = any(not s.continued for s in segs)
+    doc_game = "" if (doc_game or "").strip() in ("", "?") else doc_game
     for s in segs:
         if not s.useful():
             continue
-        res = s.result(doc_game if s.continued else "")
+        res = s.result(doc_game if (s.continued and not opened) else "")
         if res["game"]:
             out.append(res)
     return out

@@ -50,10 +50,13 @@ def test_parse_multiple_sessions_and_continuation():
              "[xn] PLAY GENSHINIMPACT (Genshin Impact): sessao no Xbox", stat(1), stat(3), stat(5, 40.0),
              "[xn] PLAY MORTALKOMBAT1 (Mortal Kombat 1): sessao no Xbox", "[sess] STATE IDLE Sessao encerrada"]
     segs = plays.parse(lines, "Fortnite")
+    # v3: o lote abriu outros jogos depois, então o trecho do começo (de um jogo anterior) não herda o nome
     assert [(s["game"], s["continued"], s["outcome"]) for s in segs] == [
-        ("Fortnite", True, "error"), ("Genshin Impact", False, "ok"), ("Mortal Kombat 1", False, "nostream")]
-    assert segs[0]["samples"] == 2            # continuação: sem aquecimento pra pular
-    assert segs[1]["samples"] == 1 and segs[1]["fps_min"] == 40.0
+        ("Genshin Impact", False, "ok"), ("Mortal Kombat 1", False, "nostream")]
+    assert segs[0]["samples"] == 1 and segs[0]["fps_min"] == 40.0
+    # sem PLAY no lote, a continuação herda o nome e não pula aquecimento
+    cont = plays.parse([stat(3000, 58.0), stat(3002, 59.0), "[sess] STATE ERROR Sem resposta do xCloud: HTTP 403"], "Fortnite")
+    assert [(s["game"], s["continued"], s["outcome"], s["samples"]) for s in cont] == [("Fortnite", True, "error", 2)]
     # continuação sem nome de jogo nenhum: descartada
     assert plays.parse([stat(10), stat(12)], "") == []
     # nome pela linha STATE STREAMING quando o lote não tem "game"
@@ -147,6 +150,15 @@ def test_server_kicks_are_not_drops():
                  kick="KickForClosedGame") for i in range(3)]
     g = plays.games(rows, current="0.21.30")[0][0]
     assert g["status"] == "noopen" and g["drops"] == 0
+
+
+def test_continuation_does_not_take_next_game_name():
+    lines = [stat(t) for t in range(1, 30, 2)] + ["[xn] PLAY GENSHINIMPACT (Genshin Impact): sessao no Xbox", stat(40)]
+    segs = plays.parse(lines, "Genshin Impact")
+    assert [s["game"] for s in segs] == ["Genshin Impact"] and not segs[0]["continued"]
+    # sem PLAY no lote, a continuação herda o nome do lote; "?" não é nome
+    assert plays.parse([stat(t) for t in range(1, 9, 2)], "Fortnite")[0]["game"] == "Fortnite"
+    assert plays.parse([stat(t) for t in range(1, 9, 2)], "?") == []
 
 
 def test_scrub_and_public_report():

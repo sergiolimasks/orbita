@@ -46,7 +46,7 @@ def _s(v, n):
 def sync(storage, max_fetch=300):
     """Indexa lotes novos. Devolve quantos indexou (ou -1 se outro worker está sincronizando)."""
     with db.conn() as c:
-        if not c.execute("SELECT pg_try_advisory_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
+        if not c.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
             return -1
         try:
             backfilled = c.execute("SELECT v FROM kv WHERE k='logs_backfill'").fetchone()
@@ -95,7 +95,7 @@ def sync(storage, max_fetch=300):
             c.execute("DELETE FROM sessions WHERE expires_at < now()")
             return n
         finally:
-            c.execute("SELECT pg_advisory_unlock(%s)", (LOCK_ID,))
+            pass   # trava de transação: solta no fim do bloco (antes ficava presa se algo abortasse)
 
 
 def _store_plays(c, key, day, rx, doc, psalt):
@@ -133,7 +133,7 @@ def backfill_all(storage, chunk=200):
     total = 0
     while True:
         with db.conn() as c:
-            if not c.execute("SELECT pg_try_advisory_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
+            if not c.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (LOCK_ID,)).fetchone()["ok"]:
                 return -1
             try:
                 left = c.execute("SELECT count(*) AS n FROM log_index WHERE play_v < %s",
@@ -143,7 +143,7 @@ def backfill_all(storage, chunk=200):
                 n = backfill_plays(c, storage, chunk)
                 total += n
             finally:
-                c.execute("SELECT pg_advisory_unlock(%s)", (LOCK_ID,))
+                pass   # trava de transação: solta no fim do bloco (antes ficava presa se algo abortasse)
         if n == 0:
             return total
 
