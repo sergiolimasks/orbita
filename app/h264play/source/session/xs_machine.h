@@ -86,6 +86,7 @@ typedef struct {
     int  dtls_wait_s;         /* 12 (dead-media window) */
     int  media_deadline_s;    /* 17 (DTLS_WAIT_SECS + 5, depois do answer) */
     int  first_video_s;       /* 30 (DTLS ok mas sem vídeo -> sessão nova) */
+    int  video_total_s;       /* v0.21.10: 75 do PROVISIONED até o answer/ICE (offer+SDP+pre-SRD) */
     int  cooldown_ms;         /* 3000 (libera o slot da conta) */
     int  waittime;            /* 1 = GET /v1/waittime na fila (ETA pra tela) */
     int  max_resignals;       /* 3 em 2 min (engine.cpp #61) */
@@ -112,6 +113,7 @@ typedef struct {
     int          connected;        /* /connect já mandado nesta sessão */
     xs_sstate_t  last_ss;
     uint64_t     t_phase, t_state, t_next_ka, t_next_wt, t_media, t_ice_up, t_video;
+    uint64_t     t_vid0;           /* v0.21.10: PROVISIONED desta tentativa (0 = fora) */
     int          net_errs;
     int          eta_s;            /* do /v1/waittime (-1) */
     int          resignals;

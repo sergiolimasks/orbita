@@ -22,6 +22,7 @@
 #ifndef XC360_NET_PIPE_H
 #define XC360_NET_PIPE_H
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ int  np_init(void);
 void np_step(void);
 /* Só a thread de rede: -1 se nenhum cano tem SYN pendente, senão há quantos ms. */
 int  np_connecting_ms(void);
+/* v0.21.0, só a thread de rede: DNS de novo pelo DHCP do Wi-Fi + gateway gw. */
+void np_dns_reload(uint32_t gw);
 /* Qualquer thread: uma linha de log (sem "\n") pro buffer do xc_logup. */
 void np_log_line(const char *text);
 

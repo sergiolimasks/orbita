@@ -694,6 +694,21 @@ static void test_timeouts(void) {
     CHECK(s.rtc_pcs == 2 && s.n_sdp == 2, "um PC/offer por tentativa (pcs=%d sdp=%d)", s.rtc_pcs, s.n_sdp);
     xsm_free(&m);
 
+    printf("[fluxo] v0.21.10: prazo total do Conectando video (75 s)\n");
+    setup(&s, &m, &cfg);
+    s.states[0][0] = ST_READY; s.states[0][1] = ST_DONE; s.nstates[0] = 2;
+    s.sdp_204s = -1;
+    cfg.sdp_timeout_s = 600;   /* so o prazo total vale */
+    cfg.max_attempts = 1;
+    xsm_init(&m, &cfg, NULL);
+    t0 = g_now_ms;
+    p = run(&m, &s, 900000);
+    CHECK(p == XSM_P_ERROR && g_nlines > 0 &&
+          !strncmp(g_lines[g_nlines - 1], "STATE\tERROR\tTempo esgotado conectando o video (SDP", 47),
+          "linha: %s", g_nlines ? g_lines[g_nlines - 1] : "");
+    CHECK(g_now_ms - t0 < 120000, "desistiu em %llus", (unsigned long long)(g_now_ms - t0) / 1000);
+    xsm_free(&m);
+
     printf("[fluxo] timeout de rede no /state\n");
     setup(&s, &m, &cfg);
     s.states[0][0] = ST_PROV; s.nstates[0] = 1;

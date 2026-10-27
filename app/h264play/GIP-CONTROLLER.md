@@ -224,3 +224,78 @@ Suggested THIRD_PARTY.md rows:
 - v5 (bisect build, `variants/gip.elf32`, v0.18.1 base): v4.2 failed the same way (OUT 0x02 ACKed, IN 0x82 never completes, LED blinking, self-disconnect ~15 s). v5 cycles one variant per plug-in (no-setcfg, setif0.0, alt1, in32, in512, 2in, seq1; shown as `v=` in every summary and dump) and, for the first 60 s after each attach, dumps the raw OHCI state every 250 ms: IN ED dword0/HeadP/TailP/NextED, vis = HCCA slots that reach the ED, the head TD (CC/EC/T/DI/R, CBP/BE); every 1 s also HcControl/FmNumber/PeriodCurrentED/PeriodicStart/IntStatus/IntEnable/HCCA[0]/DoneHead/root-hub ports, the OUT ED, and the 360 RF unit IN ED + its completion count (rfrx). Watchdog print sign bug fixed.
 - v5.1: ROOT-CAUSE CANDIDATE FIXED IN LIBXENON OHCI. libxenon maps RAM cached at 0x80000000 and cache-inhibited at 0xA0000000 (drivers/ppc/vm.c), but ohci.c (via cfe.h UNCADDR = x|0x80000000) put its ED/TD/HCCA pools on the CACHED alias while the OHCI DMA does not snoop the CPU cache. CPU writes to descriptors (TD queueing, TailP, the ed_next_ed link that inserts an ED into the periodic list) could stay in L2 and the HC kept reading stale memory: v5 showed the IN ED linked (CPU walk vis8) but never executed (CC=F, even against an unconfigured device where OUT got CC=5). Fix: pools on phys|0xA0000000, VTOP = x & 0x1FFFFFFF, pools rounded to 128-byte lines. Likely also explains the v5 silence after plug #2 (a synchronous SET_INTERFACE whose control TD the HC never saw: usb_wait_request spins forever on the network thread). Logger: sum#N + hb heartbeat. Variant cycle: base, setif0.0, alt1, in32, in512, 2in, seq1.
 - v5.2 / production: `GIP_DEBUG` switch (production default), installed into `~/devkitxenon`, shared tree rebuilt as v0.18.2 → `variants/v0182-prod.elf32`. Works on hardware.
+
+## v0.21.23: every USB controller gets its own DMA box
+
+**Background.** The app's Wi-Fi driver hung core 0 (both SMT threads) on a plain uncached load of one of its own qTD tokens (v0.21.15..18).
+
+- Its descriptors came from heap blocks used through the uncached alias (`0xA0000000`), while the same physical pages were ordinary heap through the cached alias (`0x80000000`).
+- Neighbours, memcpy or prefetch could pull such a line into L2, and a cache-inhibited load of a line that is valid in L2 is undefined on PowerPC.
+- The fix there (v0.21.19) was a static pool of its own for descriptors, plus cached-only data buffers with explicit flush and invalidate.
+- The patched OHCI had the same exposure (EDs, TDs and HCCA in heap blocks used through `0xA...`), only at a lower rate.
+
+**Changes in `gip/libxenon-gip.patch`.** The patch was regenerated against the pristine tree; `patch -p1` on a clean checkout reproduces `~/libxenon-gip-src/libxenon` byte for byte.
+
+- **OHCI descriptors (`ohci.c`):**
+  - `_ohci_dma_alloc` carves EDs, TDs and HCCA from `ohci_dmapool_mem`. This is a static 32 KB pool, 4 KB aligned, with a 4 KB guard on each side, and the heap never hands it out.
+  - It is flushed from the cache (`memdcbf`) once on first use and afterwards only reached through `UNCADDR`.
+  - If the pool is ever full, the old heap path is used and counted (`ohci_dmapool_fallbacks`).
+- **OHCI `DoneHead` (written by the HC):** it only becomes a pointer if it lies inside the TD pool on a TD boundary, and the same holds for every `td_next_td` in the done chain. Otherwise the queue is dropped and counted (`ohci_bad_doneq`, `bc ohci:` log line), instead of an arbitrary address being loaded through the uncached alias.
+- **OHCI data buffers (`usbd.c`, `usbctrl.c`, `usbhub.c`, `usbhid.c`; `usbgip.c` already was):** `usb_dma_alloc` now aligns to 128 and rounds the size up to 128. A buffer, accessed cached with flush and invalidate around the DMA, never shares an L2 line with heap data.
+- **tinyehci (`tinyehci/usb_os.c`):**
+  - Audit: tinyehci uses only the cached alias of its private static pool (`heapspace`), with `dcbst` before and `dcbf` after each synchronous transfer, and never touches it uncached. It reads descriptors only after the transfer.
+  - Change: `heapspace` is now 4 KB aligned, and `ehci_maligned` gives every piece whole 128-byte lines, so a QH or qTD never shares a line with another descriptor or with neighbouring `.bss`.
+- **Unchanged:** the app keeps tinyehci off the Wi-Fi's EHCI (v0.21.20 port watch) and keeps its own pool for the Wi-Fi rings (v0.21.19).
+
+**Tests:**
+
+- **`gip/ohcitest/test_ohci.c`** (the real `ohci.c`, with the pool placed inside the double-mapped arena through `OHCI_DMAPOOL_ADDR()`): 92 checks, 0 failures. New checks:
+  - EDs, TDs and HCCA lie inside the static pool, 128 or 256 aligned, with no heap fallback;
+  - a `DoneHead` outside the pool, and one in the pool but past the TD region, are both dropped (no completion, counter +2).
+- **`gip/hosttest/run_all.sh ~/libxenon-gip-src/libxenon`:** 1219 checks (diagnostic) and 128 checks (production), 0 failures.
+- **Wired pad hotplug (full speed → OHCI) while the Wi-Fi streams:** covered on the EHCI side by the app's stress model (`hosttest/wifi/stress`, v0.21.20). OHCI enumeration of the pad itself is not modelled on the host.
+
+**Build and install** (side prefix; the shared `~/devkitxenon` is untouched):
+
+```sh
+cd ~/libxenon-gip-src/libxenon/ports/xenon && source <repo>/scripts/env.sh
+rm -f ../../drivers/usb/{ohci,usbd,usbctrl,usbhub,usbhid}.o ../../drivers/usb/tinyehci/{tinyehci,usb_os}.o
+make libxenon.a && make install DEVKITXENON=$HOME/libxenon-gip
+cd <repo>/app/h264play && make VERSION=0.21.23 LIBXENON_LIB=$HOME/libxenon-gip/usr/lib LIBXENON_INC=$HOME/libxenon-gip/usr/include
+```
+
+- The previous side prefix and source are backed up in `~/libxenon-gip-backup-pre-v02123.tgz`.
+- `variants/v02123.elf32` was linked against this `~/libxenon-gip`.
+- A plain `make` still links `~/devkitxenon`, which has the GIP patch without these pools, until this libxenon is also installed there.
+
+## v0.21.28: tinyehci NULL deref on a failed write (testers' "Segmentation fault!")
+
+**Report.** Two testers (Corona Super Slim, v0.20.7) got a red "Segmentation fault!" right after confirming the beta key, with `dar=0x3c`. Symbolized: `ehci_do_urb` → `qh_end_transfer` (tinyehci `ehci.c`), called from `disk_write` ← `sync_window` ← `f_mkdir` ← `xc_store_save`. That is the first save on a fresh pendrive, creating `XC360`. Both testers had unusual mass-storage IDs (`8107:8355`, `8107:6755`).
+
+**Root cause** (upstream tinyehci, present in every libxenon build until now):
+
+```c
+for (qtd = qh->qtd_head; qtd; qtd = qtd->next) { ... error = -1; }
+if (error) qtd->urb->actual_length = error;   /* qtd == NULL here */
+```
+
+The loop leaves `qtd == NULL`, so any halted qTD dereferences `NULL + offsetof(struct ehci_qtd, urb)`. That offset is 13 hardware words + `qtd_dma` + `next` = `0x3c`, exactly the `dar`. A halted qTD is a STALL or transaction error, such as a pendrive refusing that write. Our own sticks never STALLed, and `XC360` already existed on them.
+
+**Fix (`tinyehci/ehci.c`).**
+
+- `qh_end_transfer` remembers the transfer's `urb` while walking the qTDs and reports the error on it.
+- `ehci_do_urb` returns it, the mass-storage layer fails the write, and FatFs returns `FR_DISK_ERR`.
+- Also, a qTD without a `urb` is never dereferenced.
+- The v0.21.23 pool changes did not cover this: it is a logic bug, not memory placement.
+
+**App side (`source/login/xc_port_xenon.c`).**
+
+- After 3 consecutive disk errors, saves and appends stop for the session, with one log line.
+- The beta flow already keeps the key in RAM when the save fails (`[beta] nao gravei ...`).
+
+**Host test** (`hosttest/fatfs/run_fatfs.sh`). It runs the real FatFs plus the app's real `fat_diskio.c` over a fresh `mkfs.fat` FAT32 image behind a fake `usb2mass_ops_0`:
+
+- `f_mkdir("XC360")` and a file inside it, read back identically;
+- with the stick refusing writes, `f_mkdir` returns `FR_DISK_ERR` with no crash and the volume stays readable.
+
+**Installed.** The fix went into `~/libxenon-gip-src`, installed to `~/libxenon-gip`, and the patch was regenerated. The shared `~/devkitxenon` (`~/libxenon/libxenon`) still has the bug until this libxenon is installed there.

@@ -37,6 +37,7 @@ void xsm_cfg_defaults(xsm_cfg_t *c, const char *title_id, const char *name) {
     c->dtls_wait_s = 12;
     c->media_deadline_s = 17;
     c->first_video_s = 30;
+    c->video_total_s = 75;
     c->cooldown_ms = 3000;
     c->waittime = 1;
     c->max_resignals = 3;
@@ -477,6 +478,7 @@ static int st_poll(xsm_t *m) {
         xs_lock();
         m->want_offer = 1;
         xs_unlock();
+        m->t_vid0 = xcn_now_ms();
         go(m, XSM_P_WAIT_OFFER);
         return 0;
     case XS_SS_FAILED:
@@ -703,6 +705,19 @@ int xsm_step(xsm_t *m) {
     if (stop && m->phase != XSM_P_DONE && m->phase != XSM_P_ERROR && m->phase != XSM_P_STOPPING)
         go(m, XSM_P_STOPPING);
 
+    /* v0.21.10: offer + SDP + ICE com prazo TOTAL (cada fase tinha o seu, e
+     * somados davam minutos em "Conectando video" parecendo travado) */
+    if (m->t_vid0 && (m->phase == XSM_P_WAIT_OFFER || m->phase == XSM_P_SDP || m->phase == XSM_P_ICE_BRIDGE)) {
+        uint64_t el = xcn_now_ms() - m->t_vid0;
+        if (m->cfg.video_total_s > 0 && el >= (uint64_t)m->cfg.video_total_s * 1000) {
+            const char *ph = xsm_phase_name(m->phase);
+            m->t_vid0 = 0;
+            attempt_fail(m, "Tempo esgotado conectando o video (%s, %us)", ph, (unsigned)(el / 1000));
+            return 0;
+        }
+    } else if (m->phase != XSM_P_WAIT_OFFER && m->phase != XSM_P_SDP && m->phase != XSM_P_ICE_BRIDGE) {
+        m->t_vid0 = 0;
+    }
     switch (m->phase) {
     case XSM_P_IDLE:        go(m, XSM_P_AUTH); return 0;
     case XSM_P_AUTH:        st_auth(m); return 0;

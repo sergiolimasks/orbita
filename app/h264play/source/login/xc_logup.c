@@ -9,17 +9,14 @@
 #include <string.h>
 
 /* ---- lock: qualquer thread escreve, ninguém espera nada com ele ---- */
-#ifdef XENON
-#include <ppc/atomic.h>
-static unsigned int g_lk = 0;
-static void lk(void) { lock(&g_lk); }
-static void ulk(void) { unlock(&g_lk); }
-#else
-#include <pthread.h>
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-static void lk(void) { pthread_mutex_lock(&g_mu); }
-static void ulk(void) { pthread_mutex_unlock(&g_mu); }
-#endif
+/* v0.21.14: lock instrumentado (folha: nada é pego com ele seguro). As
+ * linhas (xlu_line) só TENTAM: quem loga nunca espera o envio/snapshot. */
+#include "../xc_lock.h"
+static xlk_t g_lk = XLK_INIT("log beta (xlu)");
+static void lk(void) { xlk_lock(&g_lk, "xlu"); }
+static void ulk(void) { xlk_unlock(&g_lk); }
+static unsigned g_line_drops = 0;
+unsigned xlu_line_drops(void) { return g_line_drops; }
 
 #define NSECRETS 8
 
@@ -165,7 +162,7 @@ void xlu_line(const char *text) {
     l[n] = 0;
     xlu_redact(l, sizeof(l));
     n = strlen(l);
-    lk();
+    if (!xlk_try(&g_lk, "xlu_line", 2000)) { g_line_drops++; return; }
     size_t cap = cap_now();
     if (g_len + n + 1 > cap) {
         /* cheio: descarta um quarto de uma vez (não move 200 KB por linha) */

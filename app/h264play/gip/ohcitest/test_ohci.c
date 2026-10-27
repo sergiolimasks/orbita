@@ -41,6 +41,9 @@ static int n_complete, last_status;
 struct usbreq_s;
 void usb_complete_request(struct usbreq_s *ur, int status);
 
+/* v0.21.23: the static descriptor pool lives inside the arena (the Xbox build
+ * uses a static array in .bss); 4 MB in, far from the kmalloc'ed blocks */
+#define OHCI_DMAPOOL_ADDR() (arena + (4u << 20))
 #include "ohci.c"     /* the real thing, statics included */
 
 void usb_delay_ms(usbbus_t *bus, int ms) { (void)bus; (void)ms; }
@@ -251,6 +254,23 @@ int main(void)
     CHECK(freelist_len() == free0);                  /* no ED leaked */
     visits(0, &cyc);
     CHECK(!cyc);
+
+    /* v0.21.23: descriptors come from the static pool (never the heap), every
+     * piece on whole 128-byte lines, and a DoneHead outside the TD pool is
+     * dropped instead of being dereferenced */
+    {
+        uintptr_t lo = (uintptr_t)OHCI_DMAPOOL_ADDR() + OHCI_DMAPOOL_GUARD, hi = lo + OHCI_DMAPOOL_BYTES;
+        uintptr_t td = PHYSADDR((uintptr_t)softc->ohci_hwtdpool) | ARENA_LO, ed = PHYSADDR((uintptr_t)softc->ohci_hwedpool) | ARENA_LO;
+        uintptr_t hc = PHYSADDR((uintptr_t)softc->ohci_hcca) | ARENA_LO;
+        CHECK(td >= lo && td < hi && ed >= lo && ed < hi && hc >= lo && hc < hi);
+        CHECK((td & 127) == 0 && (ed & 127) == 0 && (hc & 255) == 0);
+        CHECK(ohci_dmapool_fallbacks == 0);
+        unsigned bad0 = ohci_bad_doneq;
+        int nc0 = n_complete;
+        ohci_intr_procdoneq(softc, BSWAP32(0x00000040u));                         /* outside the pool */
+        ohci_intr_procdoneq(softc, BSWAP32(OHCI_VTOP(softc->ohci_hwtdpool) + OHCI_TDPOOL_SIZE * sizeof(ohci_td_t)));  /* in the DMA pool, past the TDs */
+        CHECK(ohci_bad_doneq == bad0 + 2 && n_complete == nc0);
+    }
 
     printf("ohci model: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

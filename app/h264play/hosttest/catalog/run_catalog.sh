@@ -19,11 +19,11 @@ if [ ! -f "$MBED/libmbedtls-xc360.a" ]; then
     HOST=1 OUT="$MBED" "$REPO/deps/build-mbedtls-xenon.sh" >/dev/null
 fi
 EPOCH=$(date +%s)
-CF="-O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -I$SRC -I$MBED/include \
+CF="-DXWD_HOSTTEST -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -I$SRC -I$MBED/include \
     -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_config.h\" -DXC_BUILD_EPOCH=${EPOCH}LL -DXCC_NO_LOGIN_HOOKS=1"
 COMMON="$SRC/http_parse.c $SRC/dns_msg.c $SRC/xbox_auth.c $SRC/cjson/cJSON.c $SRC/https.c $SRC/ca_roots.c \
     $HERE/../login/port_posix.c $HERE/xcc_port_posix.c \
-    $CAT/xc_catalog.c $CAT/xcc_parse.c $CAT/xcc_image.c $CAT/xcc_net.c"
+    $CAT/xc_catalog.c $CAT/xcc_parse.c $CAT/xcc_image.c $CAT/xcc_net.c $APP/source/xc_wdog.c"
 
 rc=0
 if [ "$WHAT" = unit ] || [ "$WHAT" = all ]; then

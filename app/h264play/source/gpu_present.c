@@ -32,6 +32,7 @@
 #include <xenos/xe.h>
 #include <xenos/xe_internal.h>   /* rput32(), Xe_pSyncFromDevice() */
 #include <xenos/edram.h>
+#include <altivec.h>   /* v0.21.25: gp_copy_row_vmx (lvx/stvx) */
 #include <ppc/timebase.h>
 
 #include "gpu_present.h"
@@ -214,10 +215,32 @@ void gpu_present_poll(void) {
 
 /* ---- per frame ---- */
 
+/* v0.21.25: cópia de linha com VMX (lvx/stvx: instruções do Xenon) e dcbz
+ * nas linhas de cache de 128 B que a linha de destino cobre inteiras (o
+ * memcpy lia cada linha do destino antes de escrever). dst/src/w múltiplos
+ * de 16. DIAG.TXT copy=memcpy volta pro caminho antigo. */
+volatile int gpu_present_copy_vmx = 0;
+static void gp_copy_row_vmx(uint8_t *dst, const uint8_t *src, int w) {
+    int x = 0;
+    for (; x + 128 <= w; x += 128) {
+        uint8_t *d = dst + x;
+        const uint8_t *s = src + x;
+        __asm__ __volatile__("dcbt 0,%0" : : "r"(s + 256));
+        if (((uintptr_t)d & 127) == 0) __asm__ __volatile__("dcbz 0,%0" : : "r"(d) : "memory");
+        vector unsigned char v0 = vec_ld(0, s), v1 = vec_ld(16, s), v2 = vec_ld(32, s), v3 = vec_ld(48, s);
+        vector unsigned char v4 = vec_ld(64, s), v5 = vec_ld(80, s), v6 = vec_ld(96, s), v7 = vec_ld(112, s);
+        vec_st(v0, 0, d); vec_st(v1, 16, d); vec_st(v2, 32, d); vec_st(v3, 48, d);
+        vec_st(v4, 64, d); vec_st(v5, 80, d); vec_st(v6, 96, d); vec_st(v7, 112, d);
+    }
+    for (; x < w; x += 16) vec_st(vec_ld(x, src), x, dst);
+}
+
 static void gp_copy_plane(struct XenosSurface *s, const uint8_t *src, int stride, int w, int h) {
     uint8_t *dst = Xe_Surface_LockRect(g_xe, s, 0, 0, 0, 0, XE_LOCK_WRITE);
     const int pitch = s->wpitch;              /* bytes per row (XE_FMT_8: 1 B/texel) */
-    if (stride == pitch && w == pitch) {
+    if (gpu_present_copy_vmx && (((uintptr_t)dst | (uintptr_t)src | (unsigned)pitch | (unsigned)stride | (unsigned)w) & 15) == 0) {
+        for (int y = 0; y < h; y++) gp_copy_row_vmx(dst + y * pitch, src + y * stride, w);
+    } else if (stride == pitch && w == pitch) {
         memcpy(dst, src, (size_t)pitch * h);
     } else {
         for (int y = 0; y < h; y++)

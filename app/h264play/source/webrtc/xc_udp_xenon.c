@@ -297,7 +297,10 @@ int xcw_udp_recv(int h, uint32_t *ip, uint16_t *port, void *buf, int cap) {
 }
 
 int xcw_local_ipv4(uint32_t *ip) {
-    uint32_t v = u32_from_ipa(&netif.ip_addr);
+    /* v0.21.10: o IP da rota padrão. Sem cabo o enet fica com o 192.168.1.99
+     * de reserva e o candidato host do WebRTC saía com esse IP, não o do Wi-Fi. */
+    uint32_t v = netif_default ? u32_from_ipa(&netif_default->ip_addr) : 0;
+    if (!v) v = u32_from_ipa(&netif.ip_addr);
     if (!v) return -1;
     *ip = v;
     return 0;

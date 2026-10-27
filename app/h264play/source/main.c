@@ -72,11 +72,22 @@
 #include "update/xc_update.h"   /* v0.20.1: atualização pelo próprio Xbox */
 #include "beta/xc_beta.h"       /* v0.20.3: chave beta presa ao console */
 #include "beta/xc_keypad.h"
+#include "wifi/xw_xenon.h"      /* v0.21.0: Wi-Fi interno do 360 S/E (WIFI.md) */
+#include "wifi/xw_ehs_xenon.h"
+#include "xc_lock.h"            /* v0.21.14 */  /* v0.21.9: xhs_peek no vigia */
+#include "wifi/xw_wpa.h"
+#include "xc_wdog.h"          /* v0.21.7: vigia de travamento */
+#include "wifi/xw_boot.h"     /* v0.21.5: rede no boot (cabo / Wi-Fi) */
 #include "native/xc_native.h"   /* stage 5: sessão + WebRTC no próprio Xbox */
 #include "webrtc/xc_udp_xenon.h"
 #include "login/xc_port.h"
+#include "video/xc_video.h"     /* HDMI 1080p (VIDEO-1080P.md) */
+#include "dec/xc_decdiag.h"      /* v0.21.25: DIAG.TXT do decoder + [dec] prof + [cpu] (DECODE-PERF.md) */
+extern volatile int xpt_park_new, xpt_parked;   /* deps/xenon-pthread (v0.21.26) */
+static int g_avpack = -1;   /* v0.20.6: cabo de vídeo (ver orbita_video_mode) */
 #ifdef XCLOUD360_AUDIO
 #include "audio/audio.h"        /* v0.18: áudio do jogo (Opus) */
+
 /* v0.18: o teste offline (X) dura pelo menos 2 voltas do tom embutido. */
 #define AUDIO_TEST_US 9000000ULL
 #endif
@@ -518,26 +529,141 @@ static volatile int g_pad_forward = 0;
 static volatile int g_usb_hold_req = 0, g_usb_hold_ack = 0;
 int xc_usb_hold(int on) {
     if (!on) {
+        xwd_set_usb_holder(-1);
         __asm__ __volatile__("sync" ::: "memory");
         g_usb_hold_req = 0;
         __asm__ __volatile__("sync" ::: "memory");
         for (int i = 0; i < 2000 && g_input_on_net && g_usb_hold_ack; i++) udelay(100);
         return 0;
     }
+    xwd_beat("pendrive: esperando a hw1 liberar o USB");
     g_usb_hold_req = 1;
     __asm__ __volatile__("sync" ::: "memory");
-    if (!g_input_on_net) return 0;   /* sem thread de rede: o login nem roda */
+    /* v0.21.7: uma escrita direta do vigia (HANG.TXT) em curso termina antes */
+    for (int i = 0; i < 2000 && xc_hang_busy(); i++) udelay(100);
+    if (!g_input_on_net) { xwd_set_usb_holder(xwd_slot_of_pir()); return 0; }   /* sem thread de rede: o login nem roda */
     for (int i = 0; i < 20000 && !g_usb_hold_ack; i++) udelay(100);
-    if (g_usb_hold_ack) return 0;
+    if (g_usb_hold_ack) { xwd_set_usb_holder(xwd_slot_of_pir()); return 0; }
     g_usb_hold_req = 0;
     __asm__ __volatile__("sync" ::: "memory");
     return -1;
 }
+static volatile unsigned g_usb_held_polls = 0;
+
+/* ---- v0.21.7: plataforma do vigia (xc_wdog.h) ---- */
+uint64_t xwd_now_ms(void) { return mftb() / (PPC_TIMEBASE_FREQ / 1000ULL); }
+void xwd_report(const char *line, int raw_ok) {
+    /* v0.21.8: o setor do HANG.TXT primeiro (escrita direta, sem lock); o log
+     * normal + WIFILOG.TXT depois, porque pode depender de quem parou */
+    if (raw_ok) xc_hang_write(line);
+    xc_log("%s", line);
+    /* v0.21.9: hw1 parada: o adaptador continuou mandando? (só leitura dos qTDs) */
+    if (strstr(line, "rede (hw1) parada")) {
+        char o[300];
+        xhs_peek(o, sizeof(o));
+        xc_log("[wdog] Wi-Fi durante a parada da hw1: %s", o);
+    }
+}
+
 /* v0.17.1: hora do último usb_do_poll e o maior buraco entre dois polls. */
 static volatile uint64_t g_usb_poll_us = 0;
 static volatile uint32_t g_ugap_max_us = 0, g_ugaps = 0;
 #define UGAP_SLOW_US 25000
+/* ---- v0.21.12: tripwire (travamento duro de main e/ou rede) ----
+ * Escreve 1 setor no HANG.TXT só se ninguém está no USB do pendrive e a rede
+ * não parou dentro do USB; sempre põe o texto na tela (o fb do console, o
+ * mesmo do menu: com o main parado ninguém apaga) e na UART. Nada de
+ * xc_log: o anel e o log beta têm locks que a thread parada pode segurar. */
+extern void console_set_colors(unsigned int background, unsigned int foreground);
+extern void console_set_cursor(int x, int y);
+extern void console_putch(const char c);
+extern void putch(unsigned char c);
+static volatile int g_trip_screen = 0;
+void xwd_trip_report(const char *line, int slot) {
+    const char *lb = xwd_label(XWD_NET), *cr = xwd_crumb_of(XWD_NET);
+    int usb_hw1 = (lb && (strstr(lb, "usb_do_poll") || strstr(lb, "USB sem o pendrive"))) ||
+                  (cr && strstr(cr, "NETLOG"));
+    int raw_ok = !xc_hang_busy() && (xwd_usb_holder() < 0 || xwd_usb_holder() == slot) &&
+                 !(slot == XWD_NET && usb_hw1);
+    int r = raw_ok ? xc_hang_write(line) : -2;
+    /* v0.21.14: lock que a thread parada espera, dono e lugar; locks seguros
+     * há >= 1 s; ordem invertida vista */
+    {
+        char l3[300], held[220];
+        xlk_waiting_text(slot == XWD_NET ? 1 : 0, l3, sizeof(l3));
+        xlk_held_text(held, sizeof(held), 1000);
+        char l4[480];
+        snprintf(l4, sizeof(l4), "[wdog] locks: %s | seguros: %s | ordem invertida: %s", l3, held, xlk_inversion_text());
+        if (raw_ok && !xc_hang_busy()) xc_hang_write(l4);
+        for (const char *p = l4; *p; p++) putch((unsigned char)*p);
+        putch('\n');
+        console_set_colors(0xC0000000u, 0xFFFFFF00u);
+        console_set_cursor(1, 4);
+        for (const char *p = l4; *p && p - l4 < 200; p++) console_putch(*p);
+    }
+    /* v0.21.13: segunda linha: o RX ainda anda (laço vivo) ou parou de vez?
+     * pilha da hw1 e reentradas. Só leitura de contadores. */
+    if (slot == XWD_NET) {
+        char l2[340];
+        unsigned a = xhs_rx_count();
+        xc_polite_udelay(50000);
+        unsigned b = xhs_rx_count();
+        char la[120];
+        xhs_last_access(la, sizeof(la));
+        snprintf(l2, sizeof(l2), "[wdog] hw1 parada: RX colhido +%u em 50 ms (>0 = laço vivo); pilha pico %u KB de %u%s; "
+                 "reentradas poll %u, orçamento %u; %s", b - a, stream_net_stack_peak() / 1024, stream_net_stack_size() / 1024,
+                 stream_net_stack_canary_ok() ? "" : " ESTOUROU", xhs_poll_reenters(), xhs_poll_budget_hits(), la);
+        if (raw_ok && !xc_hang_busy()) xc_hang_write(l2);
+        for (const char *p = l2; *p; p++) putch((unsigned char)*p);
+        putch('\n');
+    }
+    for (const char *p = line; *p; p++) putch((unsigned char)*p);
+    putch('\n');
+    /* tela: duas linhas no alto, vermelho */
+    console_set_colors(0xC0000000u, 0xFFFFFF00u);
+    console_set_cursor(1, 1);
+    const char *hdr = r == 0 ? "orbita TRAVOU (gravado em XC360/HANG.TXT): " : "orbita TRAVOU (HANG.TXT indisponivel): ";
+    for (const char *p = hdr; *p; p++) console_putch(*p);
+    for (const char *p = line; *p && p - line < 150; p++) console_putch(*p);
+    g_trip_screen = 1;
+}
+
+extern void (*volatile xpt_idle_hook)(void);
+static volatile int g_wdt_stop = 0;
+static uint8_t g_wdt_stack[16 * 1024] __attribute__((aligned(128)));
+static void wdt_task(void) {
+    while (!g_wdt_stop) {
+        xwd_tripwire();
+        xc_polite_udelay(250000);
+    }
+}
+#define WDT_HW 5
+/* menu e começo da sessão: a hw 5 fica com o vigia; antes do decoder abrir
+ * ela é devolvida (o decoder usa hw 4,2,5,3) e no jogo o tripwire roda nas
+ * esperas ociosas das threads dele (xpt_idle_hook) */
+static void wdt_start(void) {
+    if (xenon_is_thread_task_running(WDT_HW)) return;
+    g_wdt_stop = 0;
+    __asm__ __volatile__("sync" ::: "memory");
+    xenon_run_thread_task(WDT_HW, g_wdt_stack + sizeof(g_wdt_stack) - 0x100, (void *)wdt_task);
+}
+static void wdt_stop(void) {
+    g_wdt_stop = 1;
+    __asm__ __volatile__("sync" ::: "memory");
+    for (int i = 0; i < 600 && xenon_is_thread_task_running(WDT_HW); i++) xc_polite_udelay(1000);
+}
+
+/* v0.21.10: o Wi-Fi dentro da bomba do xcw_idle (mesma thread, hw1) */
+static void pump_wifi(void) {
+    if (g_usb_hold_req) xw_sys_step_held();
+    else xw_sys_step();
+}
+
 static int net_hook(void) {
+    if (stream_diag_prio) __asm__ __volatile__("or 2,2,2");   /* v0.21.16: DIAG.TXT prio=1 */
+    /* v0.21.9: sub-passos com nome pro vigia (o rótulo do batimento ficava
+     * "rede: wifi" até a próxima volta, mesmo parado no áudio ou no controle) */
+    xwd_crumb("rede: hook (convert)");
     int worked = g_split_active ? convert_bottom_step() : 0;
 #ifdef XCLOUD360_AUDIO
     {
@@ -546,13 +672,39 @@ static int net_hook(void) {
         uint64_t ta = now_us();
         if (ta - last_a >= 1000) {
             last_a = ta;
+            xwd_crumb("rede: áudio");
+            uint64_t a0 = mftb();
             worked |= audio_service();
+            xdd_tb_audio += mftb() - a0;   /* v0.21.25: [cpu] */
+            xdd_n_audio++;
         }
     }
 #endif
     if (g_usb_hold_req) {
-        g_usb_hold_ack = 1;
-        __asm__ __volatile__("sync" ::: "memory");
+        if (!g_usb_hold_ack) {
+            g_usb_hold_ack = 1;
+            __asm__ __volatile__("sync" ::: "memory");
+        }
+        /* v0.21.7: o hold existe pra a hw1 não chamar o USBStorage_Init
+         * (tinyehci) enquanto outra thread usa o pendrive. O resto do
+         * usb_do_poll (OHCI: controles, receptor) e o Wi-Fi (nossos QHs no
+         * EHCI) seguem: antes, cada leitura/gravação de capa parava controle,
+         * menu e rede juntos, e uma tarefa presa segurando o pendrive travava
+         * o app inteiro. */
+        if (g_input_on_net) {
+            static uint64_t last_h = 0;
+            uint64_t t = now_us();
+            if (t - last_h >= 1000) {
+                last_h = t;
+                xwd_beat("rede: USB sem o pendrive (hold)");
+                xw_usb_poll_no_storage();
+                xw_sys_step_held();
+                g_usb_poll_us = t;
+                g_usb_held_polls++;
+                if (g_pad_forward) poll_and_send_gamepad();
+            }
+        }
+        if (g_pad_neutral_req) { g_pad_neutral_req = 0; xn_pad_neutral(); }
         return worked;
     }
     if (g_usb_hold_ack) { g_usb_hold_ack = 0; __asm__ __volatile__("sync" ::: "memory"); }
@@ -561,7 +713,14 @@ static int net_hook(void) {
         uint64_t t = now_us();
         if (t - last_us >= 1000) {
             last_us = t;
+            xwd_beat("rede: usb_do_poll");
+            uint64_t u0 = mftb();
             usb_do_poll();
+            xw_sys_step();   /* v0.21.0: Wi-Fi (OHCI + lwIP), só aqui */
+            xwd_crumb("rede: NETLOG");
+            xw_logfile_raw_step();   /* v0.21.10: log da sessão direto no disco (a hw1 é a dona do USB aqui) */
+            xdd_tb_usbwifi += mftb() - u0;   /* v0.21.25: [cpu] */
+            xwd_crumb("rede: depois do Wi-Fi");
             uint64_t prev = g_usb_poll_us;
             g_usb_poll_us = t;
             if (prev) {
@@ -569,7 +728,14 @@ static int net_hook(void) {
                 if (gap > g_ugap_max_us) g_ugap_max_us = gap;
                 if (gap > UGAP_SLOW_US) g_ugaps++;
             }
-            if (g_pad_forward) poll_and_send_gamepad();
+            if (g_pad_forward) {
+                xwd_crumb("rede: controle pro xCloud");
+                uint64_t p0 = mftb();
+                poll_and_send_gamepad();
+                xdd_tb_pad += mftb() - p0;   /* v0.21.25: [cpu] */
+                xdd_n_pad++;
+            }
+            xwd_crumb("rede: hook (fim)");
         }
     }
     if (g_pad_neutral_req) {   /* saindo do jogo: solta tudo no xCloud */
@@ -581,7 +747,32 @@ static int net_hook(void) {
 
 /* v0.20.0: com o menu novo o console do libxenon não pode desenhar no fb
  * (é o mesmo que o XUI usa): o stdout vai só pra UART (putch). */
-static void quiet_stdout(const char *buf, int len) { (void)buf; (void)len; }
+static volatile int g_crash_seen = 0;
+static void quiet_stdout(const char *buf, int len) {
+    /* v0.21.14: o lwIP do libxenon faz "printf("\fline N in FILE"); while(1);"
+     * num LWIP_ASSERT; o newlib escreve "assertion ... failed" antes do
+     * abort; o libxenon "[Exit] with code". Qualquer um desses, de qualquer
+     * thread, vira um setor no HANG.TXT (sem lock nenhum). */
+    if (len <= 0 || g_crash_seen > 4) return;
+    int hit = 0;
+    for (int i = 0; i + 6 <= len && !hit; i++)
+        if ((buf[i] == '\f' && buf[i + 1] == 'l' && !memcmp(buf + i, "\fline ", 6)) ||
+            (buf[i] == 'a' && i + 9 <= len && !memcmp(buf + i, "assertion", 9)) ||
+            (buf[i] == '[' && i + 6 <= len && !memcmp(buf + i, "[Exit]", 6)))
+            hit = 1;
+    if (!hit) return;
+    g_crash_seen++;
+    char l[300];
+    unsigned v;
+    __asm__ __volatile__("mfspr %0, 1023" : "=r"(v));
+    int n = snprintf(l, sizeof(l), "[wdog] CRASH na hw%u: ", v);
+    for (int i = 0; i < len && n < (int)sizeof(l) - 2; i++) l[n++] = (buf[i] >= 32 && buf[i] < 127) ? buf[i] : ' ';
+    l[n] = 0;
+    if (!xc_hang_busy()) xc_hang_write(l);
+    console_set_colors(0xC0000000u, 0xFFFFFF00u);
+    console_set_cursor(1, 7);
+    for (const char *p = l; *p && p - l < 200; p++) console_putch(*p);
+}
 extern void (*stdout_hook)(const char *buf, int len);
 static void quiet_stdout_install(void) { stdout_hook = quiet_stdout; }
 
@@ -623,11 +814,8 @@ static AVCodecContext *dec_open_threads(AVCodec *codec, int threads) {
     if (!ctx) return NULL;
     ctx->thread_count = threads;
     ctx->thread_type  = FF_THREAD_FRAME;
-    ctx->flags2 |= CODEC_FLAG2_FAST;
-#if XCLOUD360_SKIP_DEBLOCK
-    ctx->skip_loop_filter = AVDISCARD_ALL;
-#endif
-    if (avcodec_open2(ctx, codec, NULL) < 0) {
+    xdd_apply_ctx(ctx);   /* v0.21.25: FAST + DIAG.TXT deblock= */
+    if (xdd_open_pinned(ctx, codec, g_dec_hw3) < 0) {   /* v0.21.26: hw 4,2,5(,3) */
         av_free(ctx);
         return NULL;
     }
@@ -725,6 +913,7 @@ static int pull_next_au(uint8_t **out, int *out_size) {
 #define EXIT_STREAM_END 0    /* stream embutido acabou / erro de decode */
 #define EXIT_USER       1    /* Back+Start 2s */
 #define EXIT_NATIVE_END 3    /* stage 5: a sessão do Xbox acabou (ERROR/IDLE) */
+#define EXIT_NATIVE_LOST 4   /* v0.21.11: vídeo perdido (WebRTC morto / sessão sem a hw 3) */
 
 static menu_model_t g_mm;
 static uint64_t     g_hold_since = 0;     /* Back+Start apertados desde */
@@ -782,6 +971,10 @@ static void video_session_reset(void) {
 static int ingame_check(uint64_t now) {
     static uint64_t last_st = 0;
     struct controller_data_s d;
+    xwd_beat("jogo");
+    xw_sys_set_session(1);   /* v0.21.10 */
+    xwd_set_hw3_active(g_native_ok && xn_session_thread_busy());   /* no jogo a hw 3 é do decoder */
+    xwd_check(XWD_MAIN, 1u << XWD_NET);
     if (!g_input_on_net) usb_do_poll();   /* sem thread de rede o USB é do main */
     get_any_pad(&d);
     if (d.back && d.start) {
@@ -796,6 +989,14 @@ static int ingame_check(uint64_t now) {
          * congela e volta sozinho. ERROR / IDLE = acabou. */
         if (native_poll_state() && (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE))
             return EXIT_NATIVE_END;
+        /* v0.21.11: o WebRTC morreu (ou a sessão quer a hw 3, que é do
+         * decoder) há 5 s: dentro do jogo nada traz de volta. Sai com erro
+         * em vez de ficar na última imagem parada. */
+        int lost = xn_video_lost_ms();
+        if (lost >= 5000) {
+            xc_log("[menu] vídeo perdido há %d ms no jogo (WebRTC morto ou sessão sem a hw3): saindo pro menu", lost);
+            return EXIT_NATIVE_LOST;
+        }
     }
     return 0;
 }
@@ -859,6 +1060,7 @@ static void video_teardown(AVCodecContext *ctx, AVCodecParserContext *parser,
  * live = 1: jogo nativo (AUs do WebRTC no ring); 0: teste offline (stream
  * embutido + tom). Retorna EXIT_*; -1 = não abriu o decoder. */
 static int run_video(int live, int gpu_on, int net_thread_on) {
+    wdt_stop();   /* v0.21.12: a hw 5 volta pro decoder; no jogo o tripwire roda nas esperas dele */
     int exit_reason = 0;
     (void)net_thread_on;
     uint64_t t_last_chk = 0;
@@ -896,7 +1098,8 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         for (int id = 1; id < 6; id++)
             if (!xenon_is_thread_task_running(id)) free_hw++;
         int want = ctx->thread_count;
-        if (g_native_game && want > XCLOUD360_NATIVE_DEC_THREADS) want = XCLOUD360_NATIVE_DEC_THREADS;
+        if (g_native_game && want > xdd_max_threads(XCLOUD360_NATIVE_DEC_THREADS))
+            want = xdd_max_threads(XCLOUD360_NATIVE_DEC_THREADS);   /* v0.21.25: DIAG decthreads= */
         g_dec_hw3 = 0;
         if (want >= XC_DEC_HW3_AT) {
             if (xn_dec_claim_hw3()) g_dec_hw3 = 1;
@@ -916,11 +1119,8 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
     ctx->thread_count = 1;
     ctx->flags  |= CODEC_FLAG_LOW_DELAY;
 #endif
-    ctx->flags2 |= CODEC_FLAG2_FAST;
-#if XCLOUD360_SKIP_DEBLOCK
-    ctx->skip_loop_filter = AVDISCARD_ALL;
-#endif
-    if (avcodec_open2(ctx, codec, NULL) < 0) {
+    xdd_apply_ctx(ctx);   /* v0.21.25: FAST + DIAG.TXT deblock= */
+    if (xdd_open_pinned(ctx, codec, g_dec_hw3) < 0) {   /* v0.21.26: hw 4,2,5(,3) */
         printf("[err] avcodec_open2 failed\n");
         video_teardown(ctx, NULL, NULL, gpu_on, 0);
         return -1;
@@ -979,7 +1179,7 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
                 /* v0.19.2: a sessão precisa da hw 3 no meio do jogo:
                  * empresta (decoder com 3) e pega de volta (4). */
                 if (g_native_game && live) {
-                    int w = xn_dec_threads_wanted(ctx->thread_count, XCLOUD360_NATIVE_DEC_THREADS);
+                    int w = xn_dec_threads_wanted(ctx->thread_count, xdd_max_threads(XCLOUD360_NATIVE_DEC_THREADS));
                     if (w != ctx->thread_count) {
                         AVCodecContext *nc = dec_reopen(codec, ctx, w);
                         ctx = nc;
@@ -998,7 +1198,9 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         if (live) {
             int pulled = pull_next_au(&out_data, &out_size);
             if (pulled <= 0) {
+                uint64_t i0 = mftb();
                 udelay(1000);
+                xdd_tb_main_idle += mftb() - i0;   /* v0.21.25: [cpu] hw0 */
                 continue;
             }
 #ifdef XCLOUD360_TRACE_LATENCY
@@ -1195,7 +1397,7 @@ report:
                     prod_ms, wcvt_ms, bot_ms, (unsigned)ring_bytes,
                     g_skipped_aus, g_backlog_events, g_decode_errors);
 #ifdef XCLOUD360_GPU
-                if (gpu_on && n > 0 && n < (int)sizeof(stat)) {
+                if (gpu_on && !xdd.lite && n > 0 && n < (int)sizeof(stat)) {
                     int m = snprintf(stat + n, sizeof(stat) - n,
                         " gpu=1 gwait_ms=%.2f flip_ms=%.1f flips=%u sup=%u gto=%u",
                         gwait_ms, flip_lag_ms, gflips, gsuper, gtimeouts);
@@ -1203,7 +1405,7 @@ report:
                     if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
                 }
 #endif
-                if (g_input_on_net && n > 0 && n < (int)sizeof(stat)) {
+                if (g_input_on_net && !xdd.lite && n > 0 && n < (int)sizeof(stat)) {
                     uint32_t ug = g_ugap_max_us;
                     g_ugap_max_us = 0;
                     int m = snprintf(stat + n, sizeof(stat) - n,
@@ -1221,6 +1423,17 @@ report:
                     if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
                 }
                 if (n > 0) np_log_line(stat);
+                {   /* v0.21.25: [dec] prof (2 s) e [cpu] (5 s) */
+                    unsigned gw = 0;
+#ifdef XCLOUD360_GPU
+                    if (gpu_on) {
+                        gpu_present_stats_t g2;
+                        gpu_present_get_stats(&g2);
+                        gw = (unsigned)g2.wait_us;
+                    }
+#endif
+                    xdd_tick(t_d, ctx->thread_count, gw);
+                }
             }
             acc_dec = acc_cvt = 0; frames_since_report = 0;
             t_next_report = t_d + REPORT_PERIOD_US;
@@ -1292,7 +1505,8 @@ report:
 #define MENU_GO_TEST   2
 
 enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET, SCR_LOADING, SCR_FAIL, SCR_UPDATE,
-       SCR_BCHECK, SCR_BKEY, SCR_BMSG, SCR_BSET };   /* v0.20.3: chave beta */
+       SCR_BCHECK, SCR_BKEY, SCR_BMSG, SCR_BSET,    /* v0.20.3: chave beta */
+       SCR_WIFI, SCR_WKEY, SCR_NETWAIT };             /* v0.21.0: Wi-Fi */
 
 /* v0.20.0: estado do XUI (MENU-UI.md). */
 static xui_view_t     *g_xv;
@@ -1373,10 +1587,91 @@ static unsigned xbox_title_flags(const char *id) {
 
 /* Lista do Xbox -> menu_model, pelas linhas GAME/END. v0.20.0: nomes em
  * UTF-8 (o menu novo desenha acentos). */
+/* ---- v0.21.7: lista do catálogo no pendrive (XC360/CATLIST.TXT) ----
+ * Boot: a lista da sessão anterior aparece na hora (g_cat_src = 2) e o login
+ * baixa a nova em segundo plano; ela troca a lista quando chega. Gravada pelo
+ * main só com a hw 3 livre (FatFs não é reentrante). Formato: "XCCAT1" e uma
+ * linha "id<TAB>nome<TAB>flags" por jogo. */
+#define CATLIST_FILE "CATLIST.TXT"
+#define CATLIST_CAP  (256 * 1024)
+static char  *volatile g_catsave = NULL;   /* texto (NUL no fim) esperando quem pode usar o pendrive */
+static char  *g_catboot = NULL;       /* lido no boot, aplicado depois do mm_init */
+static int    g_catboot_len = 0;
+static int    g_cat_warm = 0;         /* 0 nada, 1 worker só-cache rodando, 2 feito */
+static uint64_t g_cat_warm_until = 0;
+
+static void catlist_clean(char *d, size_t cap, const char *s) {
+    size_t o = 0;
+    for (; s && *s && o + 1 < cap; s++) d[o++] = (*s == '\t' || *s == '\n' || *s == '\r') ? ' ' : *s;
+    d[o] = 0;
+}
+
+static void catlist_build(const xa_title_t *t, int n) {
+    size_t cap = 16 + (size_t)n * (MM_ID_LEN + MM_NAME_LEN + 16);
+    char *b = (char *)malloc(cap);
+    if (!b) return;
+    size_t o = (size_t)snprintf(b, cap, "XCCAT1\n");
+    for (int i = 0; i < n && o + MM_ID_LEN + MM_NAME_LEN + 16 < cap; i++) {
+        char id[MM_ID_LEN], nm[MM_NAME_LEN];
+        catlist_clean(id, sizeof(id), t[i].id);
+        catlist_clean(nm, sizeof(nm), t[i].name[0] ? t[i].name : t[i].id);
+        if (!id[0]) continue;
+        o += (size_t)snprintf(b + o, cap - o, "%s\t%s\t%u\n", id, nm, t[i].flags);
+    }
+    char *old = __sync_lock_test_and_set(&g_catsave, b);
+    free(old);
+}
+
+/* quem pode usar o pendrive agora (main com a hw 3 livre, ou o worker) */
+static void catlist_save_pending(void) {
+    char *b = __sync_lock_test_and_set(&g_catsave, NULL);
+    if (!b) return;
+    size_t n = strlen(b);
+    int r = xc_store_save(CATLIST_FILE, b, n);
+    xc_log("[cat] lista salva no pendrive (%u bytes): %s", (unsigned)n, r == 0 ? "ok" : "falhou");
+    free(b);
+}
+
+/* boot: aplica a lista do pendrive no menu (antes do login) */
+static void catlist_apply_boot(void) {
+    if (!g_catboot || g_catboot_len < 7 || strncmp(g_catboot, "XCCAT1", 6) != 0) return;
+    char line[16 + MM_ID_LEN + MM_NAME_LEN];
+    int n = 0;
+    g_nxflags = 0;
+    char *p = g_catboot + 7, *end = g_catboot + g_catboot_len;
+    while (p < end) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        if (!nl) break;
+        *nl = 0;
+        char *t1 = strchr(p, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+        if (t1 && t2) {
+            *t1 = 0;
+            *t2 = 0;
+            snprintf(line, sizeof(line), "GAME\t%s\t%s\t0", p, t1 + 1);
+            mm_handle_line(&g_mm, line);
+            if (g_nxflags < MM_MAX_GAMES) {
+                snprintf(g_xflags[g_nxflags].id, MM_ID_LEN, "%.*s", MM_ID_LEN - 1, p);
+                g_xflags[g_nxflags++].flags = (unsigned)strtoul(t2 + 1, NULL, 10);
+            }
+            n++;
+        }
+        p = nl + 1;
+    }
+    if (n > 0) {
+        snprintf(line, sizeof(line), "END");
+        mm_handle_line(&g_mm, line);
+        g_cat_src = 2;
+        xc_log("[cat] lista do pendrive: %d jogos (o login atualiza em segundo plano)", n);
+    }
+    free(g_catboot);
+    g_catboot = NULL;
+}
+
 static void xbox_catalog_commit(void) {
     xa_title_t *t = NULL;
     int n = 0;
     if (lt_take_games(&t, &n) != 0) return;
+    catlist_build(t, n);   /* v0.21.7: vai pro pendrive quando a hw 3 largar */
     char line[16 + MM_ID_LEN + MM_NAME_LEN];
     g_nxflags = 0;
     for (int i = 0; i < n; i++) {
@@ -1450,6 +1745,270 @@ static const char *game_name(const char *id) {
     return NULL;
 }
 
+
+/* ---- v0.21.0: Wi-Fi interno do Xbox 360 S/E (source/wifi, WIFI.md) ----
+ * Tela aberta pelas Configurações (botão "Wi-Fi") ou, sem conexão na chave
+ * beta, pelo X. g_wui: 0 fechada, 1 lista de redes, 2 senha (teclado). */
+static int         g_wui = 0;
+static int         g_wfocus = -2;          /* -2 Procurar, -1 Esquecer, 0.. rede */
+static unsigned    g_wscan_seen = 0;
+static xw_status_t g_ws;
+static xtk_t       g_tk;
+static char        g_wtarget[MWX_SSID_MAX + 1];
+static int         g_wtarget_len = 0;
+static char        g_wmsg[160];            /* aviso curto da tela (não suportada etc.) */
+static xui_wifi_net_t g_wnets[XW_MAX_BSS];
+static char        g_wtitle[96], g_wtext[200], g_wsaved[48], g_wnote[64], g_wtk_text[160], g_wtk_err[96];
+static xui_wifi_t  g_wd;
+static xui_textkey_t g_wtk;
+static int         g_set_focus = 0;        /* Configurações: 0 Trocar chave, 1 Wi-Fi */
+static int         g_netwait = 0, g_netwait_done = 0;   /* esperando o Wi-Fi salvo no boot */
+/* v0.21.5: decisão de rede do boot (wifi/xw_boot.h) */
+static int         g_bootnet = XWB_GO, g_bootnet_last = -1;
+static int         g_wforced = 0, g_wforced_shown = 0;  /* tela do Wi-Fi aberta pelo boot (B = seguir sem internet) */
+static int         g_bskip = 0;                         /* "Seguir sem internet" */
+static uint64_t    g_cable_retry_until = 0;
+static uint64_t    g_wlog_flush_at = 0;
+
+static int wifi_screen_p(int scr) { return scr == SCR_WIFI || scr == SCR_WKEY || scr == SCR_NETWAIT; }
+
+static int wifi_bars(int rssi) {
+    return rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+}
+
+static const char *wifi_quality(int rssi) {
+    return rssi >= -55 ? "ótimo" : rssi >= -65 ? "bom" : rssi >= -75 ? "fraco" : "muito fraco";
+}
+
+static int wifi_supported(int sec) { return sec == MWX_SEC_OPEN || sec == MWX_SEC_WPA2; }
+
+static void wifi_open(void) {
+    g_wui = 1;
+    g_wfocus = -2;
+    g_wmsg[0] = 0;
+    xw_sys_status(&g_ws);
+    g_wscan_seen = g_ws.scan_seq;
+    if (g_ws.present != XW_PRESENT_NO) xw_sys_scan();
+    printf("[wifi] tela aberta\n");
+}
+
+static void wifi_close(void) {
+    xtk_wipe(&g_tk);
+    g_wui = 0;
+    g_wmsg[0] = 0;
+}
+
+/* "Wi-Fi: Casa" etc., pra nota do botão das Configurações */
+static const char *wifi_summary(void) {
+    if (g_ws.link == XW_LINK_UP && g_ws.dhcp_ok) snprintf(g_wnote, sizeof(g_wnote), "Wi-Fi: %.40s", g_ws.ssid);
+    else if (g_ws.present == XW_PRESENT_NO) snprintf(g_wnote, sizeof(g_wnote), "%s", g_ws.cable ? "Cabo de rede" : "Sem Wi-Fi interno");
+    else if (g_ws.dev == XW_DEV_FAILED) snprintf(g_wnote, sizeof(g_wnote), "Wi-Fi com problema");
+    else if (g_ws.cable) snprintf(g_wnote, sizeof(g_wnote), "Cabo de rede");
+    else if (g_ws.link >= XW_LINK_SCAN && g_ws.link <= XW_LINK_UP) snprintf(g_wnote, sizeof(g_wnote), "Conectando…");
+    else snprintf(g_wnote, sizeof(g_wnote), "Desconectado");
+    return g_wnote;
+}
+
+/* A numa rede da lista */
+static void wifi_pick(int i) {
+    if (i < 0 || i >= g_ws.nnets) return;
+    const xw_net_t *n = &g_ws.nets[i];
+    g_wmsg[0] = 0;
+    if (!wifi_supported(n->sec)) {
+        snprintf(g_wmsg, sizeof(g_wmsg), "%s: segurança %s não suportada (só aberta ou WPA2).",
+                 n->ssid, mwx_sec_name(n->sec));
+        return;
+    }
+    if (g_ws.saved && !strcmp(g_ws.saved_ssid, n->ssid) &&
+        (g_ws.saved_secure == (n->sec == MWX_SEC_WPA2))) {
+        xw_sys_connect_saved();
+        printf("[wifi] conectar na rede salva\n");
+        return;
+    }
+    if (n->sec == MWX_SEC_OPEN) {
+        xw_sys_connect(n->ssid, n->ssid_len, NULL);
+        printf("[wifi] conectar (aberta)\n");
+        return;
+    }
+    memcpy(g_wtarget, n->ssid, sizeof(g_wtarget));
+    g_wtarget_len = n->ssid_len;
+    xtk_init(&g_tk, 8, 63);
+    g_wtk_err[0] = 0;
+    g_wui = 2;
+}
+
+/* Conectar no teclado: PBKDF2 aqui (main, ~4096x2 HMAC-SHA1) e só a PMK vai
+ * pra thread de rede; a senha é apagada na hora. */
+static void wifi_submit_password(void) {
+    if (!xtk_ready(&g_tk)) {
+        snprintf(g_wtk_err, sizeof(g_wtk_err), "A senha do WPA2 tem de 8 a 63 caracteres.");
+        return;
+    }
+    uint8_t pmk[32];
+    {   /* v0.21.4: só contagens (nunca os caracteres): um erro de mapeamento do teclado apareceria aqui */
+        int lo = 0, up = 0, dg = 0, sp = 0, sy = 0;
+        for (int i = 0; i < g_tk.n; i++) {
+            char ch = g_tk.text[i];
+            if (ch >= 'a' && ch <= 'z') lo++;
+            else if (ch >= 'A' && ch <= 'Z') up++;
+            else if (ch >= '0' && ch <= '9') dg++;
+            else if (ch == ' ') sp++;
+            else sy++;
+        }
+        xc_log("[wifi] senha digitada: %d caracteres (minúsculas %d, maiúsculas %d, dígitos %d, espaços %d, símbolos %d), "
+               "rede \"%s\" (%d B de SSID)", g_tk.n, lo, up, dg, sp, sy, g_wtarget, g_wtarget_len);
+    }
+    uint64_t t0 = now_us();
+    int r = xw_pmk_from_passphrase(g_tk.text, (const uint8_t *)g_wtarget, (size_t)g_wtarget_len, pmk);
+    xtk_wipe(&g_tk);
+    if (r != 0) {
+        snprintf(g_wtk_err, sizeof(g_wtk_err), "Senha inválida (use só caracteres do teclado).");
+        return;
+    }
+    xc_log("[wifi] chave WPA2 derivada em %u ms; conectando", (unsigned)((now_us() - t0) / 1000));
+    xw_sys_connect(g_wtarget, g_wtarget_len, pmk);
+    memset(pmk, 0, sizeof(pmk));
+    g_wui = 1;
+    g_wfocus = -2;
+}
+
+/* status (esquerda da tela) */
+static void wifi_fill_status(void) {
+    const xw_status_t *s = &g_ws;
+    int kind = XUI_WS_NEUTRAL;
+    char ipb[32] = "";
+    if (s->ip) snprintf(ipb, sizeof(ipb), "%u.%u.%u.%u", s->ip >> 24, s->ip >> 16 & 255, s->ip >> 8 & 255, s->ip & 255);
+    g_wtext[0] = 0;
+    if (s->present == XW_PRESENT_NO) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "%s", s->cable ? "Cabo de rede" : "Sem Wi-Fi");
+        snprintf(g_wtext, sizeof(g_wtext), "Wi-Fi não encontrado neste console (só Xbox 360 S/E com Wi-Fi interno).");
+    } else if (s->present == XW_PRESENT_UNKNOWN || (s->dev >= XW_DEV_OFF && s->dev < XW_DEV_READY && s->dev != XW_DEV_FAILED)) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Ligando o Wi-Fi");
+        if (s->stage[0])   /* v0.21.1: etapa e tempo (nunca "ligando" sem dizer o quê) */
+            snprintf(g_wtext, sizeof(g_wtext), "Etapa: %s (%u s). Se passar de 30 s, aparece o erro.", s->stage,
+                     s->stage_ms / 1000);
+        else
+            snprintf(g_wtext, sizeof(g_wtext), "Subindo o adaptador interno…");
+        kind = XUI_WS_BUSY;
+    } else if (s->dev == XW_DEV_FAILED) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Wi-Fi com problema");
+        if (s->why[0])
+            snprintf(g_wtext, sizeof(g_wtext), "%s. Reinicie o Xbox; se continuar, o log já foi enviado.", s->why);
+        else
+            snprintf(g_wtext, sizeof(g_wtext), "O adaptador não respondeu. Reinicie o Xbox; se continuar, mande o log.");
+        kind = XUI_WS_ERROR;
+    } else if (s->link == XW_LINK_UP) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Wi-Fi: %.60s", s->ssid);
+        if (s->dhcp_ok) {
+            snprintf(g_wtext, sizeof(g_wtext), "Conectado · IP %s · sinal %s (%d dBm)%s", ipb, wifi_quality(s->rssi),
+                     s->rssi, s->is_default ? "" : " · o app segue no cabo");
+            kind = XUI_WS_OK;
+        } else {
+            snprintf(g_wtext, sizeof(g_wtext), "Conectado, pedindo endereço IP (DHCP)…");
+            kind = XUI_WS_BUSY;
+        }
+    } else if (s->link >= XW_LINK_SCAN && s->link <= XW_LINK_KEYS) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Conectando a %.60s", s->ssid);
+        snprintf(g_wtext, sizeof(g_wtext), "%s", s->link == XW_LINK_SCAN ? "Procurando a rede…"
+                                                : s->link == XW_LINK_ASSOC ? "Associando ao roteador…"
+                                                : s->link == XW_LINK_AUTH ? "Conferindo a senha (WPA2)…"
+                                                : "Instalando as chaves…");
+        kind = XUI_WS_BUSY;
+    } else if (s->err != XW_E_NONE) {
+        if (s->want) {
+            snprintf(g_wtitle, sizeof(g_wtitle), "Reconectando a %.60s", s->ssid);
+            snprintf(g_wtext, sizeof(g_wtext), "%s. Tentando de novo…", xw_err_text(s->err));
+            kind = XUI_WS_BUSY;
+        } else {
+            snprintf(g_wtitle, sizeof(g_wtitle), "Não conectou");
+            if (s->err == XW_E_ASSOC)
+                snprintf(g_wtext, sizeof(g_wtext), "%s (código %d).", xw_err_text(s->err), s->err_code);
+            else if (s->err == XW_E_AUTH)
+                snprintf(g_wtext, sizeof(g_wtext), "%s. Escolha a rede e digite de novo.", xw_err_text(s->err));
+            else if (s->err == XW_E_HANDSHAKE)   /* v0.21.4: sem prova de senha errada: o motivo real */
+                snprintf(g_wtext, sizeof(g_wtext), "%s: %.120s. Tente de novo.", xw_err_text(s->err),
+                         s->err_detail[0] ? s->err_detail : "sem resposta do roteador");
+            else
+                snprintf(g_wtext, sizeof(g_wtext), "%s.", xw_err_text(s->err));
+            kind = XUI_WS_ERROR;
+        }
+    } else if (s->cable) {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Cabo de rede");
+        snprintf(g_wtext, sizeof(g_wtext), "O cabo pegou rede no boot e continua sendo usado.");
+    } else {
+        snprintf(g_wtitle, sizeof(g_wtitle), "Desconectado");
+        snprintf(g_wtext, sizeof(g_wtext), "Escolha uma rede para conectar.");
+    }
+    if (g_wmsg[0]) {
+        snprintf(g_wtext, sizeof(g_wtext), "%s", g_wmsg);
+        if (kind != XUI_WS_BUSY) kind = XUI_WS_ERROR;
+    }
+    memset(&g_wd, 0, sizeof(g_wd));
+    g_wd.status_title = g_wtitle;
+    g_wd.status_text = g_wtext;
+    g_wd.status_kind = kind;
+    if (s->saved) {
+        snprintf(g_wsaved, sizeof(g_wsaved), "%.40s", s->saved_ssid);
+        g_wd.saved = g_wsaved;
+    }
+    g_wd.can_forget = s->saved || s->want;
+    int n = s->nnets > XW_MAX_BSS ? XW_MAX_BSS : s->nnets;
+    for (int i = 0; i < n; i++) {
+        const xw_net_t *e = &s->nets[i];
+        xui_wifi_net_t *o = &g_wnets[i];
+        o->ssid = e->ssid;
+        o->bars = wifi_bars(e->rssi);
+        o->lock = e->sec != MWX_SEC_OPEN;
+        o->dim = !wifi_supported(e->sec);
+        o->tag = o->dim ? "Não suportada"
+               : (s->link == XW_LINK_UP && !strcmp(s->ssid, e->ssid)) ? "Conectada"
+               : (s->saved && !strcmp(s->saved_ssid, e->ssid)) ? "Salva" : NULL;
+    }
+    g_wd.nets = g_wnets;
+    g_wd.nnets = s->present == XW_PRESENT_YES ? n : 0;
+    g_wd.scanning = s->scanning;
+    if (s->present == XW_PRESENT_NO)
+        g_wd.empty = "Wi-Fi não encontrado neste console (só Xbox 360 S/E com Wi-Fi interno).";
+    else if (s->dev == XW_DEV_FAILED)
+        g_wd.empty = "O Wi-Fi não ligou (motivo à esquerda).";
+    else if (s->present == XW_PRESENT_UNKNOWN || s->dev < XW_DEV_READY)
+        g_wd.empty = "Esperando o adaptador…";
+    if (g_wfocus >= g_wd.nnets) g_wfocus = g_wd.nnets - 1;
+    if (g_wfocus < -2) g_wfocus = -2;
+    g_wd.focus = g_wfocus;
+    g_wd.hint = (g_wforced && !g_netwait_done)
+              ? (g_wfocus >= 0 ? "A:Conectar|Y:Procurar|B:Seguir sem internet" : "A:Procurar|B:Seguir sem internet")
+              : s->present == XW_PRESENT_NO ? "B:Voltar"
+              : g_wfocus >= 0 ? "A:Conectar|Y:Procurar|B:Voltar"
+              : g_wfocus == -1 ? "A:Esquecer|Y:Procurar|B:Voltar" : "A:Procurar|B:Voltar";
+}
+
+static void wifi_fill_textkey(void) {
+    static char rows[XTK_ROWS][XTK_COLS + 1];
+    memset(&g_wtk, 0, sizeof(g_wtk));
+    for (int r = 0; r < XTK_ROWS; r++) {
+        for (int c = 0; c < XTK_COLS; c++) rows[r][c] = xtk_char_at(g_tk.page, r, c);
+        rows[r][XTK_COLS] = 0;
+        g_wtk.rows[r] = rows[r];
+    }
+    snprintf(g_wtk_text, sizeof(g_wtk_text), "Rede: %.40s. A senha não é gravada: o pendrive guarda só a chave "
+             "derivada (WPA2).", g_wtarget);
+    g_wtk.title = "Senha do Wi-Fi";
+    g_wtk.text = g_wtk_text;
+    g_wtk.shift_label = g_tk.page == XTK_UPPER ? "abc" : "ABC";
+    g_wtk.sym_label = g_tk.page == XTK_SYM ? "abc" : "#+=";
+    g_wtk.typed = g_tk.text;
+    g_wtk.len = g_tk.n;
+    g_wtk.minlen = g_tk.minlen;
+    g_wtk.maxlen = g_tk.maxlen;
+    g_wtk.show = g_tk.show;
+    g_wtk.row = g_tk.row;
+    g_wtk.col = g_tk.col;
+    g_wtk.error = g_wtk_err[0] ? g_wtk_err : NULL;
+    g_wtk.hint = g_tk.n ? "A:Digitar|B:Apagar|Y:Maiúsculas|X:Mostrar|Start:Conectar"
+                        : "A:Digitar|B:Voltar|Y:Maiúsculas|X:Mostrar";
+}
+
 /* Desenha um quadro (home ou tela de estado) e copia o sujo pro fb. */
 static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
     xui_canvas_t *cv = xui_fb_canvas();
@@ -1462,6 +2021,10 @@ static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
         r = xui_key_frame(g_xv, cv, &g_kd, &g_xd, ms, &anim);   /* v0.20.3 */
     } else if (screen == SCR_BSET) {
         r = xui_settings_frame(g_xv, cv, &g_sd, &g_xd, ms, &anim);
+    } else if (screen == SCR_WIFI) {
+        r = xui_wifi_frame(g_xv, cv, &g_wd, &g_xd, ms, &anim);       /* v0.21.0 */
+    } else if (screen == SCR_WKEY) {
+        r = xui_textkey_frame(g_xv, cv, &g_wtk, &g_xd, ms, &anim);
     } else {
         r = xui_status_frame(g_xv, cv, st, &g_xd, ms, &anim);
     }
@@ -1510,6 +2073,7 @@ static void pw_draw(void) {
 
 static void pw_wait(void *u) {
     (void)u;
+    xwd_beat("energia: encerrando a sessão");
 #ifdef XCLOUD360_AUDIO
     if (!g_input_on_net) audio_service();
 #endif
@@ -1557,7 +2121,7 @@ __attribute__((unused)) static int beta_hw3_free(void) {
 static void beta_poll(int *pend_upd) {
     (void)pend_upd;
 #if XCLOUD360_BETA
-    if (g_beta_boot && beta_hw3_free() && xcb_boot_start() == 0) g_beta_boot = 0;
+    if (g_beta_boot && !g_netwait && beta_hw3_free() && xcb_boot_start() == 0) g_beta_boot = 0;
     if (g_beta_pend && !xcb_running()) {
         if (xcc_bg_running()) xcc_bg_stop();   /* regra da hw 3 */
         else if (beta_hw3_free()) {
@@ -1676,14 +2240,91 @@ static int menu_loop(int net_ok, const char *msg) {
 
     for (;;) {
         uint64_t now = now_us();
+        /* v0.21.10: sessão abrindo/jogo aberto -> Wi-Fi em modo sessão (log a
+         * cada 5 s, tudo no NETLOG.TXT direto no disco) */
+        xw_sys_set_session(waiting || g_native_game);
+        wdt_start();   /* v0.21.12: tripwire na hw 5 enquanto não há decoder */
+        /* v0.21.7: vigia. A hw 3 só conta com uma tarefa nossa nela. */
+        xwd_beat("menu");
+        xwd_set_hw3_active(lt_running() || xcc_bg_running() || xcu_running() || xcb_running() ||
+                           (g_native_ok && xn_session_thread_busy()));
+        xwd_check(XWD_MAIN, 1u << XWD_NET);
+        xc_log_uart_drain();   /* v0.21.9: o que a hw1 logou vai pra UART daqui */
 #ifdef XCLOUD360_AUDIO
         if (!g_input_on_net) audio_service();   /* termina o fade do jogo */
 #endif
+        /* v0.21.0: Wi-Fi. Rede salva e sem cabo: o boot (chave, atualização,
+         * login, capas) espera o Wi-Fi conectar (até 25 s, B pula). */
+        xw_sys_status(&g_ws);
+        /* v0.21.5: pendrive só com a hw 3 livre (FatFs não é reentrante): WIFI.TXT
+         * e XC360/WIFILOG.TXT (as linhas [wifi], pra ler pelo FTP sem internet) */
+        if (beta_hw3_free()) {
+            catlist_save_pending();   /* v0.21.7: CATLIST.TXT */
+            xcv_save_pending();       /* v0.21.21: XC360/VIDEO.TXT (X nas Configurações) */
+            xw_sys_main_poll();
+            if (now >= g_wlog_flush_at && xw_logfile_pending()) {
+                g_wlog_flush_at = now + 5000000;
+                xw_logfile_flush();
+            }
+        }
+        /* v0.21.5: rede no boot (wifi/xw_boot.h): cabo -> segue; senão Wi-Fi
+         * salvo com progresso; senão a tela do Wi-Fi; sem adaptador e sem cabo
+         * -> "Sem internet". A chave beta, a atualização, o login e as capas
+         * esperam até dar GO. */
+        if (!g_netwait_done && net_ok && g_input_on_net) {
+            xwb_in_t bi;
+            memset(&bi, 0, sizeof(bi));
+            bi.cable = stream_net_cable();
+            bi.adapter = g_ws.present;
+            bi.adapter_failed = g_ws.dev == XW_DEV_FAILED;
+            bi.saved = g_ws.saved;
+            bi.wifi_ok = g_ws.dhcp_ok && g_ws.is_default;
+            bi.auto_gave_up = g_ws.dev == XW_DEV_READY && !g_ws.want && g_ws.link != XW_LINK_UP && g_ws.err != XW_E_NONE;
+            bi.auto_ms = g_ws.stage_ms;
+            bi.skipped = g_bskip;
+            int d = xwb_decide(&bi);
+            if (d != g_bootnet_last) {
+                xc_log("[wifi] boot: %s (cabo %s, link %s, adaptador %d, rede salva %s, %u ms)", xwb_name(d),
+                       bi.cable ? "com DHCP" : "sem DHCP", stream_net_link() ? "sim" : "não", bi.adapter,
+                       bi.saved ? "sim" : "não", bi.auto_ms);
+                g_bootnet_last = d;
+                g_wlog_flush_at = 0;   /* a decisão nova vai pro pendrive logo */
+            }
+            g_bootnet = d;
+            if (d == XWB_GO) {
+                g_netwait_done = 1;
+                if (g_wforced) { g_wforced = 0; wifi_close(); }
+                printf("[wifi] boot segue (%s)\n", bi.cable ? "cabo" : bi.wifi_ok ? "Wi-Fi" : "sem internet");
+            } else if (d == XWB_PICK && !g_wui && !g_wforced_shown) {
+                wifi_open();
+                g_wforced = 1;
+                g_wforced_shown = 1;
+            }
+        }
+        g_netwait = !g_netwait_done && net_ok && g_input_on_net;
         xbox_login_poll();
         beta_poll(&pend_upd);   /* v0.20.3 */
         /* v0.20.3: login só depois da chave (BETA) e da checagem de atualização */
-        if (g_login_deferred && beta_ok() && !g_boot_upd && !xcu_running() && !pend_upd && !xcb_running() &&
-            !g_upd_screen && !lt_running() && !xcc_bg_running()) {
+        /* v0.21.7: com a lista do pendrive na tela, as capas do cache aparecem
+         * antes do login: o worker roda ~3 s só com o pendrive e para; o login
+         * (que também usa a hw 3) vem logo depois */
+        if (g_cat_warm == 0 && g_cat_src == 2 && g_login_deferred && !g_netwait && beta_ok() && !g_boot_upd &&
+            !xcu_running() && !pend_upd && !xcb_running() && !g_upd_screen && !lt_running() && !xcc_bg_running()) {
+            xcc_offline_for(4000);
+            if (xcc_bg_start() == 0) {
+                g_cat_warm = 1;
+                g_cat_warm_until = now + 3000000;
+                xc_log("[capas] capas do pendrive antes do login (3 s, sem rede)");
+            } else {
+                g_cat_warm = 2;
+            }
+        }
+        if (g_cat_warm == 1 && now >= g_cat_warm_until) {
+            if (xcc_bg_running()) xcc_bg_stop();
+            else g_cat_warm = 2;
+        }
+        if (g_cat_warm != 1 && g_login_deferred && !g_netwait && beta_ok() && !g_boot_upd && !xcu_running() && !pend_upd &&
+            !xcb_running() && !g_upd_screen && !lt_running() && !xcc_bg_running()) {
             g_login_deferred = 0;
             printf("[login] thread do login hw=%d r=%d\n", LT_HW_THREAD, lt_start());
         }
@@ -1738,7 +2379,7 @@ static int menu_loop(int net_ok, const char *msg) {
         /* v0.20.1: atualização. Regra da hw 3: só sem login, sem worker do
          * catálogo, sem sessão e fora do jogo (UPDATE.md). */
         xcu_snapshot(&g_us);
-        int hw3_ok = !waiting && !g_next_on && !lt_running() && (!g_native_ok || xn_can_play()) && net_ok &&
+        int hw3_ok = !waiting && !g_next_on && !lt_running() && (!g_native_ok || xn_can_play()) && net_ok && !g_netwait &&
                      g_input_on_net && !xcb_running() && !g_beta_pend && beta_ok();
         /* v0.20.3: procura na entrada (antes do login) e de novo depois de uma
          * falha de rede; versão nova abre o popup sozinha */
@@ -1773,13 +2414,17 @@ static int menu_loop(int net_ok, const char *msg) {
         /* worker do catálogo (+ upload do log) só com a hw 3 livre */
         if (!waiting && !g_next_on && !pend_relogin && !pend_test && !pend_upd && !xcu_running() && !lt_running() &&
             (!g_native_ok || xn_can_play()) && !xcc_bg_running() && now - last_bg_try >= 1000000 &&
-            !xcb_running() && !g_beta_pend && !g_beta_boot && beta_ok() && !g_boot_upd && !g_login_deferred) {
+            !xcb_running() && !g_beta_pend && !g_beta_boot && beta_ok() && !g_boot_upd && !g_login_deferred &&
+            !g_netwait) {
             last_bg_try = now;
             if (net_ok && g_input_on_net) xcc_bg_start();
         }
 
         int bscr = net_ok ? beta_screen() : -1;
         int screen = !net_ok ? SCR_NONET
+                   : g_wui == 2 ? SCR_WKEY       /* v0.21.0: por cima de tudo (vem das Configurações ou da chave) */
+                   : g_wui ? SCR_WIFI
+                   : g_netwait ? SCR_NETWAIT
                    : bscr >= 0 ? bscr
                    : (g_upd_screen && !waiting) ? SCR_UPDATE   /* v0.20.3: popup antes do login também */
                    : (!waiting && g_xbox_login) ? SCR_LOGIN
@@ -1915,7 +2560,7 @@ static int menu_loop(int net_ok, const char *msg) {
                 g_next_on = 0;
                 snprintf(notice, sizeof(notice), "Cancelado");
             }
-        } else if (screen != SCR_BKEY) {
+        } else if (screen != SCR_BKEY && screen != SCR_BSET && screen != SCR_WIFI && screen != SCR_WKEY) {
             rep_up = rep_dn = rep_lf = rep_rt = 0;
         }
         /* ---- v0.20.3: telas da chave beta ---- */
@@ -1938,6 +2583,7 @@ static int menu_loop(int net_ok, const char *msg) {
         } else if (screen == SCR_BMSG) {
             int ph = g_bs.phase;
             if (ph == XCB_NOCONN || ph == XCB_ERROR) {
+                if (PRESSED(x) && g_ws.present == XW_PRESENT_YES) wifi_open();   /* v0.21.0 */
                 if (PRESSED(a)) {   /* tentar de novo: a mesma operação */
                     if (g_bs.op == XCB_OP_BOOT) g_beta_boot = 1;
                     else g_beta_pend = g_bs.op == XCB_OP_FILE ? 2 : 1;
@@ -1948,8 +2594,125 @@ static int menu_loop(int net_ok, const char *msg) {
             }
             if (PRESSED(b) && g_bchange) g_bui = BG_SETTINGS;
         } else if (screen == SCR_BSET) {
-            if (PRESSED(a)) beta_open_key(1);
-            if (PRESSED(b)) { g_bui = BG_NONE; g_bchange = 0; g_set_notice[0] = 0; }
+            /* v0.21.0: Trocar chave | Wi-Fi */
+            if (key_repeat(b.left, now, &rep_lf)) g_set_focus = 0;
+            if (key_repeat(b.right, now, &rep_rt)) g_set_focus = 1;
+            if (PRESSED(a)) {
+                if (g_set_focus == 1) wifi_open();
+                else beta_open_key(1);
+            }
+            if (PRESSED(x)) snprintf(g_set_notice, sizeof(g_set_notice), "%s", xcv_settings_cycle());   /* vídeo */
+            if (PRESSED(b)) { g_bui = BG_NONE; g_bchange = 0; g_set_notice[0] = 0; g_set_focus = 0; }
+        } else if (screen == SCR_WIFI) {
+            int dy = 0, dx = 0;
+            if (key_repeat(b.up, now, &rep_up))    dy = -1;
+            if (key_repeat(b.down, now, &rep_dn))  dy = +1;
+            if (key_repeat(b.left, now, &rep_lf))  dx = -1;
+            if (key_repeat(b.right, now, &rep_rt)) dx = +1;
+            int nn = g_ws.present == XW_PRESENT_YES ? g_ws.nnets : 0;
+            if (g_wfocus >= 0) {
+                if (dy) g_wfocus += dy;
+                if (g_wfocus < 0) g_wfocus = 0;
+                if (g_wfocus >= nn) g_wfocus = nn - 1;
+                if (dx < 0 || nn == 0) g_wfocus = -2;
+            } else {
+                if (dy < 0) g_wfocus = -2;
+                if (dy > 0) g_wfocus = -1;
+                if (dx > 0 && nn > 0) g_wfocus = 0;
+            }
+            if (dx || dy) g_wmsg[0] = 0;
+            if (PRESSED(a)) {
+                if (g_wfocus == -2) { g_wmsg[0] = 0; xw_sys_scan(); }
+                else if (g_wfocus == -1) {
+                    if (g_ws.saved || g_ws.want) { xw_sys_forget(); g_wmsg[0] = 0; }
+                } else {
+                    wifi_pick(g_wfocus);
+                }
+            }
+            if (PRESSED(y) && g_ws.present == XW_PRESENT_YES) { g_wmsg[0] = 0; xw_sys_scan(); }
+            if (PRESSED(b)) {
+                if (g_wforced && !g_netwait_done) {   /* v0.21.5 */
+                    g_bskip = 1;
+                    xc_log("[wifi] boot: usuário escolheu seguir sem internet");
+                }
+                g_wforced = 0;
+                wifi_close();
+            }
+            /* lista nova: foco volta pro topo se a rede sumiu */
+            if (g_ws.scan_seq != g_wscan_seen) {
+                g_wscan_seen = g_ws.scan_seq;
+                if (g_wfocus >= g_ws.nnets) g_wfocus = g_ws.nnets - 1;
+            }
+        } else if (screen == SCR_WKEY) {
+            int dx = 0, dy = 0;
+            if (key_repeat(b.up, now, &rep_up))    dy = -1;
+            if (key_repeat(b.down, now, &rep_dn))  dy = +1;
+            if (key_repeat(b.left, now, &rep_lf))  dx = -1;
+            if (key_repeat(b.right, now, &rep_rt)) dx = +1;
+            if (dx || dy) xtk_nav(&g_tk, dx, dy);
+            if (PRESSED(a)) {
+                int k = xtk_press(&g_tk);
+                if (k == XTK_CONFIRM) wifi_submit_password();
+                else if (k != XTK_NONE) g_wtk_err[0] = 0;
+            }
+            if (g_wui == 2) {
+                if (PRESSED(y)) xtk_toggle_case(&g_tk);
+                if (PRESSED(x)) xtk_toggle_show(&g_tk);
+                if (PRESSED(start)) wifi_submit_password();
+                if (PRESSED(b) && !xtk_backspace(&g_tk)) { xtk_wipe(&g_tk); g_wui = 1; }
+            }
+        } else if (screen == SCR_NETWAIT) {
+            if (g_bootnet == XWB_NOINTERNET) {
+                if (PRESSED(a) && now >= g_cable_retry_until) {
+                    stream_cable_retry();
+                    g_cable_retry_until = now + 10000000;
+                    xc_log("[wifi] boot: tentando o cabo de novo");
+                }
+                if (PRESSED(b)) { g_bskip = 1; xc_log("[wifi] boot: usuário escolheu seguir sem internet"); }
+            } else if (g_bootnet == XWB_CONNECTING) {
+                if (PRESSED(b) || PRESSED(x)) {   /* outra rede: a lista, ainda no boot */
+                    wifi_open();
+                    g_wforced = 1;
+                    g_wforced_shown = 1;
+                }
+            }
+        }
+        /* v0.21.10: rede na espera. Fora da fila, o texto da sessão parado
+         * por 120 s = desiste com erro na tela (antes: "Conectando video..."
+         * pra sempre). A linha vai pro log da sessão (NETLOG.TXT). */
+        {
+            static char wtxt[MM_TEXT_LEN];
+            static uint64_t wt0 = 0;
+            static int wlog = 0;
+            if (!waiting || g_mm.state == MM_ST_QUEUE) {
+                wt0 = 0;
+                wtxt[0] = 0;
+                wlog = 0;
+            } else if (!wt0 || strcmp(wtxt, g_mm.state_text)) {
+                wt0 = now;
+                snprintf(wtxt, sizeof(wtxt), "%s", g_mm.state_text);
+                wlog = 0;
+            } else {
+                uint64_t el = now - wt0;
+                uint64_t hw1 = xwd_age_ms(XWD_NET);
+                if (!wlog && el >= 30000000ULL) {
+                    wlog = 1;
+                    xc_log("[menu] espera: \"%s\" há %u s (hw1 bateu há %u ms, Wi-Fi %s)", wtxt, (unsigned)(el / 1000000),
+                           (unsigned)hw1, g_ws.link == XW_LINK_UP ? "conectado" : "fora");
+                }
+                if (el >= 120000000ULL) {
+                    xc_log("[menu] espera: \"%s\" parado há 120 s: encerrando a sessão com erro", wtxt);
+                    xn_stop();
+                    g_native_game = 0;
+                    snprintf(notice, sizeof(notice), "Tempo esgotado em \"%.60s\" (%s). Tente de novo.", wtxt,
+                             hw1 > 8000 ? "a rede do console parou" : g_ws.link == XW_LINK_UP ? "Wi-Fi conectado" : "Wi-Fi fora");
+                    waiting = 0;
+                    play_name[0] = play_id[0] = '\0';
+                    xlu_set_game("");
+                    xlu_flush_soon();
+                    wt0 = 0;
+                }
+            }
         }
         if (waiting && (screen == SCR_WAIT || screen == SCR_LOGIN) && PRESSED(b)) {
             /* B = DELETE da sessão do Xbox (fila, provisionando, SDP...). */
@@ -1978,6 +2741,7 @@ static int menu_loop(int net_ok, const char *msg) {
             }
         }
         if (!waiting && PRESSED(x) && screen != SCR_LOGIN && screen != SCR_LOADING && !beta_screen_p(screen) &&
+            !wifi_screen_p(screen) &&
             !(screen == SCR_UPDATE && g_us.mandatory)) {
             if (lt_login_running()) {
                 snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda está carregando o catálogo");
@@ -2099,6 +2863,15 @@ static int menu_loop(int net_ok, const char *msg) {
                 st.text = g_mm.state_text[0] ? g_mm.state_text
                                              : "Preparando o console na nuvem. O vídeo aparece sozinho.";
                 st.detail = "No jogo: segure Back + Start por 2 s para voltar ao menu.";
+                {   /* v0.21.10: a rede (hw1) parou: diz na tela em vez de parecer travado */
+                    static char nd[120];
+                    uint64_t hw1 = xwd_age_ms(XWD_NET);
+                    if (hw1 > 8000) {
+                        snprintf(nd, sizeof(nd), "A rede do console parou há %u s (controle e Wi-Fi sem resposta).",
+                                 (unsigned)(hw1 / 1000));
+                        st.detail = nd;
+                    }
+                }
             }
             break;
         case SCR_UPDATE: {
@@ -2191,6 +2964,12 @@ static int menu_loop(int net_ok, const char *msg) {
                 st.text = "Confira o cabo de rede e tente de novo. Sem conexão o orbita só abre se a chave "
                           "foi validada neste console nos últimos 7 dias.";
                 st.hint = g_bchange ? "A:Tentar de novo|Y:Outra chave|B:Voltar" : "A:Tentar de novo|Y:Outra chave";
+                if (g_ws.present == XW_PRESENT_YES) {   /* v0.21.0 */
+                    st.text = "Confira o cabo de rede ou conecte o Wi-Fi (X) e tente de novo. Sem conexão o orbita só "
+                              "abre se a chave foi validada neste console nos últimos 7 dias.";
+                    st.hint = g_bchange ? "A:Tentar de novo|X:Wi-Fi|Y:Outra chave|B:Voltar"
+                                        : "A:Tentar de novo|X:Wi-Fi|Y:Outra chave";
+                }
                 break;
             default:
                 st.title = "Não foi possível validar sua chave";
@@ -2237,11 +3016,73 @@ static int menu_loop(int net_ok, const char *msg) {
             g_sd.console_full = xcb_console_id();
             g_sd.key_masked = g_bs.key_masked;
             g_sd.key_status = g_key_status;
-            g_sd.version = g_ver_line;
+            g_sd.version = xcv_settings_version(g_ver_line);   /* + vídeo (X troca) */
             g_sd.note = "Para reportar um bug, envie um print desta tela junto.";
             g_sd.notice = g_set_notice[0] ? g_set_notice : NULL;
             g_sd.button = "Trocar chave";
-            g_sd.hint = "A:Trocar chave|B:Voltar";
+            g_sd.button2 = "Wi-Fi";              /* v0.21.0 */
+            g_sd.button2_note = wifi_summary();
+            g_sd.focus = g_set_focus;
+            g_sd.hint = g_set_focus ? "A:Abrir o Wi-Fi|B:Voltar" : "A:Trocar chave|B:Voltar";
+            break;
+        }
+        case SCR_WIFI:
+            wifi_fill_status();
+            break;
+        case SCR_WKEY:
+            wifi_fill_textkey();
+            break;
+        case SCR_NETWAIT: {
+            /* v0.21.5: telas do boot de rede (xw_boot.h) */
+            static char ttl[96], txt[220], det[96];
+            unsigned secs = g_ws.stage_ms / 1000;
+            if (g_bootnet == XWB_NOINTERNET) {
+                if (now < g_cable_retry_until) {
+                    st.kind = XUI_ST_LOADING;
+                    st.title = "Procurando internet pelo cabo…";
+                    st.text = stream_net_link() ? "O cabo está conectado; esperando o roteador (DHCP)."
+                                                : "Conecte o cabo de rede no Xbox e no roteador.";
+                    st.hint = NULL;
+                } else {
+                    st.kind = XUI_ST_ERROR;
+                    st.title = "Sem internet: conecte o cabo de rede";
+                    if (g_ws.dev == XW_DEV_FAILED)
+                        snprintf(txt, sizeof(txt), "O Wi-Fi interno não ligou (%.120s). Conecte o cabo de rede e aperte A.",
+                                 g_ws.why[0] ? g_ws.why : "sem resposta do adaptador");
+                    else
+                        snprintf(txt, sizeof(txt), "Este Xbox não tem Wi-Fi interno (só o Xbox 360 S/E tem). Conecte o cabo "
+                                 "de rede no Xbox e no roteador e aperte A.");
+                    st.text = txt;
+                    snprintf(det, sizeof(det), "Cabo: %s", stream_net_link() ? "conectado, mas sem resposta do roteador"
+                                                                              : "desconectado");
+                    st.detail = det;
+                    st.hint = "A:Tentar de novo|B:Seguir sem internet";
+                }
+            } else if (g_bootnet == XWB_FINDING) {
+                st.kind = XUI_ST_LOADING;
+                st.title = "Procurando o Wi-Fi interno";
+                st.text = "Sem internet pelo cabo. Ligando o adaptador Wi-Fi do Xbox…";
+                st.hint = NULL;
+            } else {
+                snprintf(ttl, sizeof(ttl), "Conectando ao Wi-Fi “%.48s”", g_ws.saved_ssid);
+                st.kind = XUI_ST_LOADING;
+                st.title = ttl;
+                const char *step =
+                    g_ws.present == XW_PRESENT_UNKNOWN || g_ws.dev < XW_DEV_READY
+                        ? (g_ws.stage[0] ? g_ws.stage : "ligando o adaptador")
+                    : g_ws.link == XW_LINK_UP ? "conectado, pedindo endereço IP (DHCP)"
+                    : g_ws.link == XW_LINK_SCAN ? "procurando a rede"
+                    : g_ws.link == XW_LINK_ASSOC ? "associando ao roteador"
+                    : g_ws.link == XW_LINK_AUTH ? "conferindo a senha (WPA2)"
+                    : g_ws.link == XW_LINK_KEYS ? "instalando as chaves"
+                    : g_ws.err != XW_E_NONE ? xw_err_text(g_ws.err) : "procurando a rede";
+                snprintf(txt, sizeof(txt), "Etapa: %s.", step);
+                st.text = txt;
+                snprintf(det, sizeof(det), "Sem internet pelo cabo · %u s (até %u s, depois a lista de redes)", secs,
+                         XWB_AUTO_MS / 1000);
+                st.detail = det;
+                st.hint = "B:Escolher outra rede";
+            }
             break;
         }
         default:
@@ -2255,7 +3096,7 @@ static int menu_loop(int net_ok, const char *msg) {
 
 /* ---- stage 5: plataforma do xc_native no Xbox ---- */
 #ifndef XCLOUD360_NATIVE_KBPS
-#define XCLOUD360_NATIVE_KBPS 1500
+#define XCLOUD360_NATIVE_KBPS 4000   /* v0.21.27: padrão da beta (KBPS.TXT sobrepõe); 1500 degradava em movimento */
 #endif
 #ifndef XCLOUD360_SESSION_KEEPALIVE_MS
 #define XCLOUD360_SESSION_KEEPALIVE_MS 5000
@@ -2287,6 +3128,7 @@ static void native_log(const char *line) {
 
 /* xcw_log() (libpeer/usrsctp com LOG_REDIRECT): mesmo destino, com teto. */
 static void native_lib_log(const char *line) {
+    if (xdd_drop_lib_line(line, g_native_game)) return;   /* v0.21.25: diag=lite */
     static uint64_t win = 0;
     static int cnt = 0;
     uint64_t t = now_us();
@@ -2296,6 +3138,18 @@ static void native_lib_log(const char *line) {
 
 static void native_before_session(void) { lt_clear_cancel(); }
 
+/* v0.21.5: o worker das capas (hw 3, dono do pendrive enquanto roda) também
+ * grava o XC360/WIFILOG.TXT, antes do lote do log beta. */
+static int worker_extra_step(void) {
+    if (xw_logfile_pending()) xw_logfile_flush();
+    /* v0.21.7: o worker quase nunca sai, então ele mesmo grava as pendências
+     * do main no pendrive (a lista do catálogo, a rede Wi-Fi nova) */
+    catlist_save_pending();
+    xcv_save_pending();   /* v0.21.21: XC360/VIDEO.TXT */
+    xw_sys_main_poll();
+    return xlu_step();
+}
+
 /* Boot: rede + thread de rede logo de cara, depois menu <-> jogo pra sempre. */
 static void menu_main(int gpu_on) {
     int net_thread_on = 0;
@@ -2303,6 +3157,7 @@ static void menu_main(int gpu_on) {
     int native_inited = 0;
     /* v0.20.1: log beta (junta em RAM; o worker da hw 3 lê a chave e envia) */
     xlu_init(XCLOUD360_APP_VERSION);
+    xw_logfile_boot(XCLOUD360_BUILD_VERSION);   /* v0.21.5: XC360/WIFILOG.TXT */
     BOOT_STEP("8 network_init...");
     int net_ok = stream_init() == 0 && stream_net_up();
     BOOT_STEP(net_ok ? "9 rede ok" : "9 SEM rede");
@@ -2315,9 +3170,27 @@ static void menu_main(int gpu_on) {
         if (npr == 0) {
             static const xn_platform_t plat = { native_inject, native_audio, native_log, native_before_session, NULL };
             xn_cfg_t xc = { XCLOUD360_NATIVE_KBPS, XCLOUD360_SESSION_KEEPALIVE_MS, XCLOUD360_NATIVE_CONSENT_MS, 2 };
+            /* v0.21.24: XC360/KBPS.TXT = teto do vídeo em kbps (500..15000).
+             * O padrão de 1500 degrada muito em cena com movimento; o limite
+             * real é o tempo de decode no Xenon, então fica configurável pra
+             * achar o teto no console sem recompilar. */
+            {
+                char kb[16];
+                int kn = xc_store_load("KBPS.TXT", kb, sizeof(kb) - 1);
+                if (kn > 0) {
+                    kb[kn] = 0;
+                    int v = atoi(kb);
+                    if (v >= 500 && v <= 15000) xc.video_kbps = v;
+                }
+                xc_log("[xn] teto do vídeo: %d kbps (%s)", xc.video_kbps, kn > 0 ? "KBPS.TXT" : "padrão");
+            }
             xcw_set_log_hook(native_lib_log);
             xcw_net_set_pump(stream_net_pump);
-            if (xn_init(&plat, &xc) == XN_OK) {
+            xpt_park_new = 1;   /* v0.21.26: o iterator do usrsctp não pega a hw 4 (DECODE-PERF.md) */
+            int xnr = xn_init(&plat, &xc);
+            xpt_park_new = 0;
+            xc_log("[dec] pthreads estacionadas no xn_init: %d (iterator do usrsctp)", xpt_parked);
+            if (xnr == XN_OK) {
                 xn_set_load_probe(stream_net_load);
                 stream_set_net_extra(xn_net_step);
                 native_inited = 1;
@@ -2326,7 +3199,46 @@ static void menu_main(int gpu_on) {
                    native_inited ? "pronto" : "FALHOU", XST_HW_THREAD, XCLOUD360_NATIVE_DEC_THREADS);
         }
         g_pad_forward = 0;
+        /* v0.21.16: XC360/DIAG.TXT (chave=valor por linha) liga/desliga os
+         * experimentos sem recompilar: netlog=0 (sem escrita direta no
+         * pendrive na sessão), overlay=0 (o poll não lê o overlay do QH),
+         * prio=1 (prioridade SMT média explícita na hw1), dma128=0 (volta a
+         * alocação antiga de 64 B dos qTD/QH; só pra bissecção) */
+        {
+            char dg[768];   /* v0.21.25: mais chaves (decoder) */
+            int dn = xc_store_load("DIAG.TXT", dg, sizeof(dg) - 1);
+            xdd_defaults(&xdd);
+            if (dn > 0) {
+                dg[dn] = 0;
+                xdd_parse(&xdd, dg);   /* v0.21.25: deblock/decthreads/profile/copy/spinprio/netprio/diag */
+                const char *k;
+                if ((k = strstr(dg, "netlog=")) != NULL) xw_diag_netlog = k[7] != '0';
+                if ((k = strstr(dg, "overlay=")) != NULL) xhs_diag_overlay = k[8] != '0';
+                if ((k = strstr(dg, "prio=")) != NULL) stream_diag_prio = k[5] == '1';
+                if ((k = strstr(dg, "dma128=")) != NULL) xhs_dma128 = k[7] != '0';
+                if ((k = strstr(dg, "dmapool=")) != NULL) xhs_dma_pool = k[8] != '0';
+                if ((k = strstr(dg, "bufcache=")) != NULL) xhs_buf_cached = k[9] != '0';
+                if ((k = strstr(dg, "ep3=")) != NULL) xhs_diag_ep3 = k[4] == '1';
+            }
+            xc_log("[wifi] DIAG.TXT %s: netlog=%d overlay=%d prio=%d dma128=%d dmapool=%d bufcache=%d ep3=%d",
+                   dn > 0 ? "lido" : "ausente (padrões)", xw_diag_netlog, xhs_diag_overlay, stream_diag_prio, xhs_dma128,
+                   xhs_dma_pool, xhs_buf_cached, xhs_diag_ep3);
+            xdd_boot_apply();
+        }
+        /* v0.21.0: Wi-Fi interno (lê XC360/WIFI.TXT; anda na thread de rede) */
+        xw_sys_init(stream_net_cable());
+        /* v0.21.7: vigia (HANG.TXT pré-alocado) e a lista do catálogo da sessão anterior */
+        xc_hang_prepare(XCLOUD360_BUILD_VERSION);
+        xc_netlog_prepare(XCLOUD360_BUILD_VERSION);   /* v0.21.10: log da sessão direto no disco */
+        g_catboot = (char *)malloc(CATLIST_CAP + 1);
+        if (g_catboot) {
+            g_catboot_len = xc_store_load(CATLIST_FILE, g_catboot, CATLIST_CAP);
+            if (g_catboot_len <= 0) { free(g_catboot); g_catboot = NULL; g_catboot_len = 0; }
+            else g_catboot[g_catboot_len] = 0;
+        }
         stream_set_idle_hook(net_hook);
+        stream_set_pump_extra(pump_wifi);   /* v0.21.10: Wi-Fi também nas esperas do WebRTC */
+        xpt_idle_hook = xwd_tripwire;       /* v0.21.12: tripwire nas esperas ociosas do decoder */
         /* Daqui em diante a thread de rede também dá printf: o console do
          * libxenon não aguenta duas threads; stdout só pra UART. */
         quiet_stdout_install();
@@ -2359,11 +3271,12 @@ static void menu_main(int gpu_on) {
         xlu_set_console_id(id);
         xcu_set_console_id(id);
         xkp_init(&g_kp);
+        xcv_log_summary();   /* [video] AV pack, EDID, modo (source/video) */
         xc_log("[beta] console %s%s", xcb_console_short(), XCLOUD360_BETA ? " (build BETA: chave obrigatoria)" : "");
     }
     /* v0.20.0: catálogo/capas: ANTES do lt_start (registra os ganchos do login) */
     xcc_init(NULL);
-    xcc_set_worker_extra(xlu_step, xlu_finish);   /* v0.20.1: log beta no worker */
+    xcc_set_worker_extra(worker_extra_step, xlu_finish);   /* v0.20.1: log beta no worker (+ v0.21.5: WIFILOG) */
     /* v0.20.1: atualização; a versão tem que bater com a publicada (UPDATE.md) */
     xcu_init(XCLOUD360_BUILD_VERSION, NULL);
     if (net_thread_on && npr == 0) {
@@ -2379,6 +3292,7 @@ static void menu_main(int gpu_on) {
 
     avcodec_register_all();
     mm_init(&g_mm);
+    catlist_apply_boot();   /* v0.21.7 */
     /* v0.20.0: menu novo (~16 MB de caches) */
     g_xv = xui_view_new(FB_W, FB_H);
     if (!g_xv) printf("[menu] xui_view_new: sem memoria (menu sem desenho)\n");
@@ -2399,7 +3313,11 @@ static void menu_main(int gpu_on) {
             xn_summary(ns, sizeof(ns));
             xc_log("[native] fim do jogo (%d): %s", r, ns);
         }
-        if (was_native && r == EXIT_NATIVE_END) {
+        if (was_native && r == EXIT_NATIVE_LOST) {
+            snprintf(msg, sizeof(msg), "A conexão do vídeo caiu (rede/Wi-Fi). A sessão foi encerrada: abra o jogo de novo.");
+            xlu_set_game("");
+            xlu_flush_soon();
+        } else if (was_native && r == EXIT_NATIVE_END) {
             snprintf(msg, sizeof(msg), "%.*s", (int)sizeof(msg) - 1,
                      g_mm.state == MM_ST_ERROR && g_mm.state_text[0] ? g_mm.state_text : "A sessão na nuvem terminou");
             xlu_set_game("");
@@ -2429,8 +3347,24 @@ static void menu_main(int gpu_on) {
     }
 }
 
+/* v0.20.6: modo de vídeo pelo cabo (AV pack), sempre 1280x720 por dentro.
+ * Antes era HDMI 720p fixo: com cabo componente/VGA a TV dizia "resolução
+ * não suportada". Mesmos códigos do xenos_autoset_mode() do libxenon; cabo
+ * AV comum/SCART (só 480i/576i) não é suportado: o app é todo 720p. */
+static int orbita_video_mode(void) {
+    g_avpack = xenon_smc_read_avpack();
+    switch (g_avpack) {
+    case 0x0C: case 0x0F: case 0x4F:  /* componente / AV "HD" */
+        return VIDEO_MODE_YUV_720P;
+    case 0x5B: case 0x59: case 0x1B:  /* VGA */
+        return VIDEO_MODE_VGA_1280x720;
+    default:                          /* HDMI e o resto: como antes */
+        return VIDEO_MODE_HDMI_720P;
+    }
+}
+
 int main(void) {
-    xenos_init(VIDEO_MODE_HDMI_720P);
+    xenos_init(orbita_video_mode());
     console_init();
     BOOT_STEP("1 xenos+console ok");
     xenon_make_it_faster(XENON_SPEED_FULL);
@@ -2442,6 +3376,7 @@ int main(void) {
     /* Warm-up drain: RF unit + wireless controller take ~500-2000ms to
      * enumerate + sync. 200 iters * 10ms = 2s window. */
     for (int i = 0; i < 200; i++) { usb_do_poll(); udelay(10000); }
+    xcv_boot(g_avpack);   /* HDMI: EDID + XC360/VIDEO.TXT -> 720p ou 1080p (antes do fb/GPU) */
     fb_direct_init();
     BOOT_STEP("5 usb warmup + fb ok");
 #ifdef XCLOUD360_AUDIO

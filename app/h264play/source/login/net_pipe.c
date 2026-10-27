@@ -3,6 +3,9 @@
 #include "xc_port.h"
 #include "dns_msg.h"
 #include "xc_logup.h"
+#include "../wifi/xw_xenon.h"
+#include "../xc_wdog.h"
+#include "../xc_lock.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,10 +53,10 @@ typedef struct {
     int             port;
     struct tcp_pcb *pcb;
     uint64_t        t0;
-    unsigned int    rx_lock;
+    xlk_t           rx_lock;   /* v0.21.14: lock instrumentado */
     uint8_t        *rx;
     size_t          rx_rd, rx_wr;
-    unsigned int    tx_lock;
+    xlk_t           tx_lock;
     uint8_t        *tx;
     size_t          tx_len;
 } np_slot_t;
@@ -100,19 +103,19 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         return ERR_OK;
     }
     if (err != ERR_OK) { pbuf_free(p); return err; }
-    lock(&s->rx_lock);
+    xlk_lock(&s->rx_lock, "net_pipe rx " XLK_HERE);
     if (NP_RX_CAP - s->rx_wr < p->tot_len && s->rx_rd > 0) {
         memmove(s->rx, s->rx + s->rx_rd, s->rx_wr - s->rx_rd);
         s->rx_wr -= s->rx_rd;
         s->rx_rd = 0;
     }
     if (NP_RX_CAP - s->rx_wr < p->tot_len) {
-        unlock(&s->rx_lock);
+        xlk_unlock(&s->rx_lock);
         return ERR_MEM;   /* consumidor atrasado: o lwIP reentrega depois */
     }
     pbuf_copy_partial(p, s->rx + s->rx_wr, p->tot_len, 0);
     s->rx_wr += p->tot_len;
-    unlock(&s->rx_lock);
+    xlk_unlock(&s->rx_lock);
     tcp_recved(pcb, p->tot_len);
     pbuf_free(p);
     return ERR_OK;
@@ -158,7 +161,7 @@ static void slot_connect(np_slot_t *s) {
 static void slot_flush(np_slot_t *s) {
     if (!s->pcb || s->st != NS_OPEN) return;
     int sent = 0;
-    lock(&s->tx_lock);
+    xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
     size_t n = s->tx_len, room = tcp_sndbuf(s->pcb);
     if (n > room) n = room;
     if (n > 0xFFFF) n = 0xFFFF;
@@ -167,7 +170,7 @@ static void slot_flush(np_slot_t *s) {
         s->tx_len -= n;
         sent = 1;
     }
-    unlock(&s->tx_lock);
+    xlk_unlock(&s->tx_lock);
     if (sent) tcp_output(s->pcb);
 }
 
@@ -248,9 +251,41 @@ static void dns_step(void) {
 /* v0.20.1: o LOG "LOG <texto>" por UDP :9003 pro PC saiu. As linhas vão pro
  * buffer do upload dos testadores beta (xc_logup.c), que só envia com
  * XC360/BETAKEY.TXT no pendrive. */
-void np_log_line(const char *text) { xlu_line(text); }
+void np_log_line(const char *text) {
+    /* v0.21.5: as linhas do Wi-Fi (e do cabo) também vão pro XC360/WIFILOG.TXT
+     * (lido pelo FTP quando não houve internet nenhuma) */
+    if (text && (!strncmp(text, "[wifi]", 6) || !strncmp(text, "[net] cabo", 10) || !strncmp(text, "[wdog]", 6))) {
+        xw_logfile_line(text);
+    } else if (text && xw_sys_session()) {
+        /* v0.21.10: na sessão vai tudo (sessão, WebRTC, TLS, falhas), no
+         * máximo 12 linhas por segundo das outras fontes (o libpeer fala muito) */
+        static uint64_t win = 0;
+        static int cnt = 0;
+        uint64_t t = xcn_now_ms();
+        if (t - win >= 1000) { win = t; cnt = 0; }
+        if (++cnt <= 12 || !strncmp(text, "[sess]", 6) || !strncmp(text, "[xn]", 4) || !strncmp(text, "[menu]", 6))
+            xw_logfile_line(text);
+    }
+    xlu_line(text);
+}
 
 /* --------------------------------------------------------- init / step */
+
+/* v0.21.3: Cloudflare primeiro (pedido dos testadores: DNS de provedor
+ * lento/bloqueando), depois Google, e só então o DNS do DHCP e o gateway.
+ * Devolve quantos vieram do DHCP. Só a thread de rede. */
+static int dns_fill(uint32_t gw) {
+    g_dns_nsrv = 0;
+    dns_add_srv(0x01010101u);   /* 1.1.1.1 */
+    dns_add_srv(0x01000001u);   /* 1.0.0.1 */
+    dns_add_srv(0x08080808u);   /* 8.8.8.8 */
+    int before = g_dns_nsrv;
+    for (int i = 0; i < 2; i++)
+        if (dhcp_rx_options_given[DHCP_IDX_DNS + i]) dns_add_srv(dhcp_rx_options_val[DHCP_IDX_DNS + i]);
+    int from_dhcp = g_dns_nsrv - before;
+    dns_add_srv(gw);
+    return from_dhcp;
+}
 
 int np_init(void) {
     if (g_np_inited) return 0;
@@ -264,13 +299,7 @@ int np_init(void) {
     if (!g_dns_pcb) return -1;
     udp_recv(g_dns_pcb, dns_recv_cb, NULL);
 
-    /* DNS do DHCP (opção 6), depois gateway e públicos. */
-    for (int i = 0; i < 2; i++)
-        if (dhcp_rx_options_given[DHCP_IDX_DNS + i]) dns_add_srv(dhcp_rx_options_val[DHCP_IDX_DNS + i]);
-    int from_dhcp = g_dns_nsrv;
-    dns_add_srv(u32_from_ipa(&netif.gw));
-    dns_add_srv(0x01010101u);
-    dns_add_srv(0x08080808u);
+    int from_dhcp = dns_fill(u32_from_ipa(&netif.gw));
     char s[160];
     int l = snprintf(s, sizeof(s), "[net] DNS (%d do DHCP):", from_dhcp);
     for (int i = 0; i < g_dns_nsrv; i++)
@@ -281,6 +310,19 @@ int np_init(void) {
     printf("%s\n", s);
     np_log_line(s);
     return 0;
+}
+
+/* v0.21.0: o Wi-Fi pegou DHCP depois do boot (sem cabo): refaz a lista de
+ * DNS (públicos, opção 6 dessa resposta, gateway do Wi-Fi). Só a
+ * thread de rede. */
+void np_dns_reload(uint32_t gw) {
+    int from_dhcp = dns_fill(gw);
+    char s[160];
+    int l = snprintf(s, sizeof(s), "[net] DNS do Wi-Fi (%d do DHCP):", from_dhcp);
+    for (int i = 0; i < g_dns_nsrv; i++)
+        l += snprintf(s + l, sizeof(s) - (size_t)l, " %u.%u.%u.%u", g_dns_srv[i] >> 24,
+                      g_dns_srv[i] >> 16 & 255, g_dns_srv[i] >> 8 & 255, g_dns_srv[i] & 255);
+    np_log_line(s);
 }
 
 void np_step(void) {
@@ -294,9 +336,9 @@ void np_step(void) {
                 tcp_abort(s->pcb);
                 s->pcb = NULL;
             }
-            lock(&s->tx_lock);
+            xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
             s->tx_len = 0;
-            unlock(&s->tx_lock);
+            xlk_unlock(&s->tx_lock);
             lwsync();
             s->st = NS_FREE;
             lwsync();
@@ -331,13 +373,14 @@ void np_step(void) {
 
 uint64_t xcn_now_ms(void) { return mftb() / (PPC_TIMEBASE_FREQ / 1000ULL); }
 uint64_t xcn_now_us(void) { return mftb() / (PPC_TIMEBASE_FREQ / 1000000ULL); }
-void     xcn_sleep_ms(int ms) { xc_polite_udelay(ms * 1000); }
+void     xcn_sleep_ms(int ms) { xwd_observe(); xc_polite_udelay(ms * 1000); }
 
 /* Cache de DNS pequeno: o fluxo fala com os mesmos hosts várias vezes. */
 #define DNS_CACHE 8
 static struct { char host[96]; uint32_t ip; uint64_t at; } g_dcache[DNS_CACHE];
 
 int xcn_resolve(const char *host, uint32_t *ip, int timeout_ms) {
+    xwd_beat2("rede: DNS", host);
     ip_addr_t lit;
     if (ipaddr_aton(host, &lit)) { *ip = u32_from_ipa(&lit); return 0; }
     if (!g_np_inited || strlen(host) >= sizeof(g_dq_host)) return XCN_EDNS;
@@ -352,6 +395,7 @@ int xcn_resolve(const char *host, uint32_t *ip, int timeout_ms) {
     for (uint64_t w = xcn_now_ms() + 15000; g_dq_st == DQ_REQ || g_dq_st == DQ_BUSY;) {
         if (xcn_cancelled()) return XCN_ECANCEL;
         if (xcn_now_ms() > w) return XCN_EDNS;
+        xwd_observe();
         xc_polite_udelay(1000);
     }
     snprintf(g_dq_host, sizeof(g_dq_host), "%s", host);
@@ -365,6 +409,7 @@ int xcn_resolve(const char *host, uint32_t *ip, int timeout_ms) {
         if (st == DQ_FAIL) break;
         if (xcn_cancelled()) { rc = XCN_ECANCEL; break; }
         if (xcn_now_ms() > end) { rc = XCN_ETIMEOUT; break; }
+        xwd_observe();
         xc_polite_udelay(500);
     }
     /* Devolve a mailbox (DONE/FAIL já são "livre"; BUSY após timeout nosso
@@ -382,18 +427,19 @@ int xcn_resolve(const char *host, uint32_t *ip, int timeout_ms) {
 }
 
 int xcn_connect(uint32_t ip, int port, int timeout_ms, int *h) {
+    xwd_beat("rede: conectando (TCP)");
     if (!g_np_inited) return XCN_ECONN;
     np_slot_t *s = NULL;
     int idx = -1;
     for (int i = 0; i < NP_SLOTS; i++)
         if (g_slot[i].st == NS_FREE && !g_slot[i].close_req) { s = &g_slot[i]; idx = i; break; }
     if (!s) return XCN_ENOSLOT;
-    lock(&s->rx_lock);
+    xlk_lock(&s->rx_lock, "net_pipe rx " XLK_HERE);
     s->rx_rd = s->rx_wr = 0;
-    unlock(&s->rx_lock);
-    lock(&s->tx_lock);
+    xlk_unlock(&s->rx_lock);
+    xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
     s->tx_len = 0;
-    unlock(&s->tx_lock);
+    xlk_unlock(&s->tx_lock);
     s->ip = ip;
     s->port = port;
     s->err = 0;
@@ -412,52 +458,57 @@ int xcn_connect(uint32_t ip, int port, int timeout_ms, int *h) {
         }
         if (xcn_cancelled()) { s->close_req = 1; return XCN_ECANCEL; }
         if (xcn_now_ms() > end) { s->close_req = 1; return XCN_ETIMEOUT; }
+        xwd_observe();
         xc_polite_udelay(500);
     }
 }
 
 int xcn_send(int h, const uint8_t *b, size_t n, int timeout_ms) {
+    xwd_beat("rede: enviando");
     if (h < 0 || h >= NP_SLOTS) return XCN_EIO;
     np_slot_t *s = &g_slot[h];
     size_t off = 0;
     uint64_t end = xcn_now_ms() + (uint64_t)timeout_ms;
     while (off < n) {
         if (s->st != NS_OPEN) return XCN_ECLOSED;
-        lock(&s->tx_lock);
+        xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
         size_t room = NP_TX_CAP - s->tx_len, k = n - off < room ? n - off : room;
         if (k) { memcpy(s->tx + s->tx_len, b + off, k); s->tx_len += k; }
-        unlock(&s->tx_lock);
+        xlk_unlock(&s->tx_lock);
         off += k;
         if (off >= n) break;
         if (xcn_cancelled()) return XCN_ECANCEL;
         if (xcn_now_ms() > end) return XCN_ETIMEOUT;
+        xwd_observe();
         xc_polite_udelay(200);
     }
     return (int)n;
 }
 
 int xcn_recv(int h, uint8_t *b, size_t n, int timeout_ms) {
+    xwd_beat("rede: recebendo");
     if (h < 0 || h >= NP_SLOTS) return XCN_EIO;
     np_slot_t *s = &g_slot[h];
     uint64_t end = xcn_now_ms() + (uint64_t)timeout_ms;
     for (;;) {
         int st = s->st;   /* lê o estado ANTES dos dados (EOF só vale com ring vazio) */
         lwsync();
-        lock(&s->rx_lock);
+        xlk_lock(&s->rx_lock, "net_pipe rx " XLK_HERE);
         size_t avail = s->rx_wr - s->rx_rd;
         if (avail) {
             size_t k = avail < n ? avail : n;
             memcpy(b, s->rx + s->rx_rd, k);
             s->rx_rd += k;
             if (s->rx_rd == s->rx_wr) s->rx_rd = s->rx_wr = 0;
-            unlock(&s->rx_lock);
+            xlk_unlock(&s->rx_lock);
             return (int)k;
         }
-        unlock(&s->rx_lock);
+        xlk_unlock(&s->rx_lock);
         if (st == NS_EOF) return 0;
         if (st != NS_OPEN) return XCN_EIO;
         if (xcn_cancelled()) return XCN_ECANCEL;
         if (xcn_now_ms() > end) return XCN_ETIMEOUT;
+        xwd_observe();
         xc_polite_udelay(200);
     }
 }
@@ -470,12 +521,12 @@ int xcn_connect_start(uint32_t ip, int port, int *h) {
     for (int i = 0; i < NP_SLOTS; i++) {
         np_slot_t *s = &g_slot[i];
         if (s->st != NS_FREE || s->close_req) continue;
-        lock(&s->rx_lock);
+        xlk_lock(&s->rx_lock, "net_pipe rx " XLK_HERE);
         s->rx_rd = s->rx_wr = 0;
-        unlock(&s->rx_lock);
-        lock(&s->tx_lock);
+        xlk_unlock(&s->rx_lock);
+        xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
         s->tx_len = 0;
-        unlock(&s->tx_lock);
+        xlk_unlock(&s->tx_lock);
         s->ip = ip;
         s->port = port;
         s->err = 0;
@@ -501,10 +552,10 @@ int xcn_try_send(int h, const uint8_t *b, size_t n) {
     if (h < 0 || h >= NP_SLOTS) return XCN_EIO;
     np_slot_t *s = &g_slot[h];
     if (s->st != NS_OPEN) return XCN_ECLOSED;
-    lock(&s->tx_lock);
+    xlk_lock(&s->tx_lock, "net_pipe tx " XLK_HERE);
     size_t room = NP_TX_CAP - s->tx_len, k = n < room ? n : room;
     if (k) { memcpy(s->tx + s->tx_len, b, k); s->tx_len += k; }
-    unlock(&s->tx_lock);
+    xlk_unlock(&s->tx_lock);
     return (int)k;
 }
 
@@ -513,17 +564,17 @@ int xcn_try_recv(int h, uint8_t *b, size_t n) {
     np_slot_t *s = &g_slot[h];
     int st = s->st;   /* estado ANTES dos dados (EOF só vale com ring vazio) */
     lwsync();
-    lock(&s->rx_lock);
+    xlk_lock(&s->rx_lock, "net_pipe rx " XLK_HERE);
     size_t avail = s->rx_wr - s->rx_rd;
     if (avail) {
         size_t k = avail < n ? avail : n;
         memcpy(b, s->rx + s->rx_rd, k);
         s->rx_rd += k;
         if (s->rx_rd == s->rx_wr) s->rx_rd = s->rx_wr = 0;
-        unlock(&s->rx_lock);
+        xlk_unlock(&s->rx_lock);
         return (int)k;
     }
-    unlock(&s->rx_lock);
+    xlk_unlock(&s->rx_lock);
     if (st == NS_EOF) return 0;
     if (st != NS_OPEN) return XCN_EIO;
     return XCN_EAGAIN;

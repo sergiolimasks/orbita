@@ -271,6 +271,36 @@ static void settings_scene(const char *name, const xui_settings_t *st) {
     save(name);
 }
 
+/* v0.21.0: Wi-Fi e teclado de texto */
+static void wifi_scene(const char *name, const xui_wifi_t *w) {
+    int anim;
+    xui_wifi_frame(V, &C, w, &D, t_ms, &anim);
+    for (int i = 0; i < 4; i++) {
+        t_ms += 100;
+        xui_rect_t r = xui_wifi_frame(V, &C, w, &D, t_ms, &anim);
+        if (w->status_kind != XUI_WS_BUSY && !w->scanning) CHECK(xui_rect_empty(r), "%s: parado não redesenha", name);
+        else if (!xui_rect_empty(r)) CHECK(r.w < 600 && r.h <= 40, "%s: só os pontinhos (%dx%d)", name, r.w, r.h);
+    }
+    /* incremental == completo */
+    memcpy(px2, px, (size_t)W * H * 4);
+    xui_view_repaint(V);
+    xui_wifi_frame(V, &C, w, &D, t_ms, &anim);
+    long diff = 0;
+    for (long i = 0; i < (long)W * H; i++) if (px[i] != px2[i]) diff++;
+    CHECK(diff == 0, "%s: incremental != completo (%ld px)", name, diff);
+    save(name);
+}
+static void textkey_scene(const char *name, const xui_textkey_t *k) {
+    int anim;
+    xui_textkey_frame(V, &C, k, &D, t_ms, &anim);
+    for (int i = 0; i < 4; i++) {
+        t_ms += 100;
+        xui_rect_t r = xui_textkey_frame(V, &C, k, &D, t_ms, &anim);
+        if (!k->busy) CHECK(xui_rect_empty(r), "%s: parado não redesenha", name);
+    }
+    save(name);
+}
+
 int main(int argc, char **argv) {
     const char *fxdir = argc > 1 ? argv[1] : "fixtures";
     snprintf(outdir, sizeof(outdir), "%s", argc > 2 ? argv[2] : "out");
@@ -516,6 +546,146 @@ int main(int argc, char **argv) {
         settings_scene("39_configuracoes", &st);
         st.notice = "Chave trocada";
         settings_scene("40_configuracoes_chave_trocada", &st);
+        /* v0.21.0: Wi-Fi (WIFI.md) */
+        st.notice = NULL;
+        st.button2 = "Wi-Fi";
+        st.button2_note = "Wi-Fi: Casa do Sérgio";
+        st.focus = 1;
+        st.hint = "A:Abrir|B:Voltar";
+        settings_scene("41_configuracoes_wifi", &st);
+        {
+            static const xui_wifi_net_t nets[] = {
+                { "Casa do Sérgio", 4, 1, "Conectada", 0 },
+                { "Café da Esquina", 3, 0, NULL, 0 },
+                { "VIVO-8F2A", 3, 1, NULL, 0 },
+                { "NET_2G5A1B", 2, 1, "Salva", 0 },
+                { "Vizinho 5G WPA3", 2, 1, "Não suportada", 1 },
+                { "Escritório (802.1X)", 1, 1, "Não suportada", 1 },
+                { "Claro_WIFI", 1, 1, NULL, 0 },
+                { "TP-Link_Extender", 1, 0, NULL, 0 },
+            };
+            xui_wifi_t w;
+            memset(&w, 0, sizeof(w));
+            w.status_title = "Wi-Fi: Casa do Sérgio";
+            w.status_text = "Conectado · IP 192.168.0.23 · sinal ótimo (-48 dBm)";
+            w.status_kind = XUI_WS_OK;
+            w.saved = "Casa do Sérgio";
+            w.can_forget = 1;
+            w.nets = nets;
+            w.nnets = 8;
+            w.focus = 1;
+            w.hint = "A:Conectar|Y:Procurar|B:Voltar";
+            wifi_scene("42_wifi_lista", &w);
+            w.focus = 7;
+            wifi_scene("43_wifi_lista_rolada", &w);
+            w.focus = -1;
+            wifi_scene("44_wifi_foco_esquecer", &w);
+            w.nnets = 0;
+            w.scanning = 1;
+            w.focus = -2;
+            w.status_title = "Desconectado";
+            w.status_text = "Escolha uma rede para conectar.";
+            w.status_kind = XUI_WS_NEUTRAL;
+            w.saved = NULL;
+            w.can_forget = 0;
+            wifi_scene("45_wifi_procurando", &w);
+            w.scanning = 0;
+            w.nets = nets;
+            w.nnets = 4;
+            w.focus = 0;
+            w.status_title = "Conectando a VIVO-8F2A";
+            w.status_text = "Handshake WPA2…";
+            w.status_kind = XUI_WS_BUSY;
+            wifi_scene("46_wifi_conectando", &w);
+            w.status_title = "Não conectou";
+            w.status_text = "Senha incorreta (ou o roteador recusou o WPA2). Escolha a rede e digite de novo.";
+            w.status_kind = XUI_WS_ERROR;
+            wifi_scene("47_wifi_senha_errada", &w);
+            w.nnets = 0;
+            w.focus = -2;
+            w.status_title = "Cabo de rede";
+            w.status_text = "O cabo pegou rede no boot e continua sendo usado.";
+            w.status_kind = XUI_WS_NEUTRAL;
+            w.empty = "Wi-Fi não encontrado neste console (só Xbox 360 S/E com Wi-Fi interno).";
+            w.hint = "B:Voltar";
+            wifi_scene("48_wifi_sem_adaptador", &w);
+
+            xui_textkey_t k;
+            memset(&k, 0, sizeof(k));
+            static const char *lower[4] = { "1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm-_." };
+            static const char *sym[4] = { "1234567890", "!\"#$%&'()*", "+,/:;<=>?[", "\\]^`{|}~-_" };
+            k.title = "Senha do Wi-Fi";
+            k.text = "Rede: VIVO-8F2A. A senha não é gravada: o pendrive guarda só a chave derivada (WPA2).";
+            for (int i = 0; i < 4; i++) k.rows[i] = lower[i];
+            k.shift_label = "ABC";
+            k.sym_label = "#+=";
+            k.typed = "minhasenha";
+            k.len = 10; k.minlen = 8; k.maxlen = 63;
+            k.row = 1; k.col = 4;
+            k.hint = "A:Digitar|B:Apagar|Y:Maiúsculas|X:Mostrar|Start:Conectar";
+            textkey_scene("49_wifi_senha", &k);
+            k.show = 1;
+            for (int i = 0; i < 4; i++) k.rows[i] = sym[i];
+            k.sym_label = "abc";
+            k.typed = "Minha senha d0 W1-Fi !@#";
+            k.len = 24;
+            k.row = 4; k.col = 1;
+            textkey_scene("50_wifi_senha_visivel_simbolos", &k);
+            k.show = 0;
+            k.typed = "abc";
+            k.len = 3;
+            k.row = 5; k.col = 1;
+            textkey_scene("51_wifi_senha_curta", &k);
+            k.typed = "minhasenha";
+            k.len = 10;
+            k.busy = 1;
+            k.status = "Conectando a VIVO-8F2A…";
+            k.hint = NULL;
+            textkey_scene("52_wifi_senha_conectando", &k);
+
+            /* v0.21.5: boot sem cabo (wifi/xw_boot.h) */
+            xui_status_t bs;
+            memset(&bs, 0, sizeof(bs));
+            bs.kind = XUI_ST_LOADING;
+            bs.title = "Conectando ao Wi-Fi “Casa do Sérgio”";
+            bs.text = "Etapa: conferindo a senha (WPA2).";
+            bs.detail = "Sem internet pelo cabo · 6 s (até 30 s, depois a lista de redes)";
+            bs.hint = "B:Escolher outra rede";
+            bs.progress = -1;
+            status_scene("53_boot_conectando_wifi", &bs);
+            memset(&w, 0, sizeof(w));
+            w.status_title = "Não conectou";
+            w.status_text = "Rede não encontrada. Escolha uma rede para conectar.";
+            w.status_kind = XUI_WS_ERROR;
+            w.saved = "Casa do Sérgio";
+            w.can_forget = 1;
+            w.nets = nets;
+            w.nnets = 4;
+            w.focus = 2;
+            w.hint = "A:Conectar|Y:Procurar|B:Seguir sem internet";
+            wifi_scene("54_boot_escolher_wifi", &w);
+            memset(&bs, 0, sizeof(bs));
+            bs.kind = XUI_ST_ERROR;
+            bs.title = "Sem internet: conecte o cabo de rede";
+            bs.text = "Este Xbox não tem Wi-Fi interno (só o Xbox 360 S/E tem). Conecte o cabo de rede no Xbox e no "
+                      "roteador e aperte A.";
+            bs.detail = "Cabo: desconectado";
+            bs.hint = "A:Tentar de novo|B:Seguir sem internet";
+            bs.progress = -1;
+            status_scene("55_boot_sem_internet", &bs);
+            memset(&bs, 0, sizeof(bs));
+            bs.kind = XUI_ST_LOADING;
+            bs.title = "Procurando internet pelo cabo…";
+            bs.text = "Conecte o cabo de rede no Xbox e no roteador.";
+            bs.progress = -1;
+            status_scene("56_boot_procurando_cabo", &bs);
+            memset(&bs, 0, sizeof(bs));
+            bs.kind = XUI_ST_LOADING;
+            bs.title = "Procurando o Wi-Fi interno";
+            bs.text = "Sem internet pelo cabo. Ligando o adaptador Wi-Fi do Xbox…";
+            bs.progress = -1;
+            status_scene("57_boot_procurando_wifi", &bs);
+        }
     }
     /* engrenagem no topo (só com chave válida) */
     xui_view_invalidate(V);

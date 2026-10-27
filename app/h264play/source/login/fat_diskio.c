@@ -78,3 +78,12 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
     default: return RES_PARERR;
     }
 }
+
+/* v0.21.7: um setor direto no disco, com buffer próprio (não o g_bounce, que
+ * um FatFs parado no meio pode estar usando). Só o vigia (xc_hang_write). */
+int fat_diskio_raw_write(uint32_t sector, const void *buf512) {
+    static uint8_t b[512] __attribute__((aligned(128)));
+    if (!g_disc) return -1;
+    memcpy(b, buf512, 512);
+    return g_disc->writeSectors((sec_t)sector, 1, b) ? 0 : -1;
+}

@@ -59,6 +59,12 @@ void     xcn_set_cancel_hook(int (*fn)(void));
 
 /* Log de diagnóstico: UART + buffer do upload beta (xc_logup.h; v0.20.1,
  * antes UDP :9003 pro PC). NUNCA passar tokens (o filtro é só a 2a linha). */
+/* v0.21.10: XC360/NETLOG.TXT gravado direto no disco (sessão/jogo) */
+int      xc_netlog_prepare(const char *version);
+int      xc_netlog_ready(void);
+int      xc_netlog_write(const char *text, size_t n);
+void     xc_netlog_stats(unsigned *writes, unsigned *fails, unsigned *worst_us);
+void     xc_log_uart_drain(void);   /* v0.21.9: o main manda pra UART o que a hw1 logou */
 void     xc_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /* Hora Unix atual, ou -1 se ainda não sabemos. */
@@ -73,6 +79,14 @@ long long xc_time_floor(void);
 int      xc_store_load(const char *name, void *buf, size_t cap);
 int      xc_store_save(const char *name, const void *buf, size_t n);
 int      xc_store_remove(const char *name);
+/* v0.21.5 (só Xbox): acrescenta; passou de cap = rotaciona pra old_name. */
+int      xc_store_append(const char *name, const char *old_name, const void *buf, size_t n, size_t cap);
+
+/* v0.21.7 (só Xbox): XC360/HANG.TXT pré-alocado e escrita direta de setor
+ * (vigia de travamento, xc_wdog.h). prepare: main, antes da thread de rede. */
+int      xc_hang_prepare(const char *version);
+int      xc_hang_write(const char *line);
+int      xc_hang_busy(void);
 
 /* Material de personalização pro DRBG (fusíveis, MAC, relógio...). */
 size_t   xc_seed_material(uint8_t *out, size_t cap);

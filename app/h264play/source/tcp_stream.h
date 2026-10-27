@@ -19,6 +19,12 @@ extern "C" {
 
 /* network_init (Aurora-safe: pula se o netif já tem IP) + ring. 0 = ok. */
 int    stream_init(void);
+/* v0.21.0: 1 se o cabo pegou DHCP no boot (Wi-Fi não liga sozinho). */
+int    stream_net_cable(void);
+/* v0.21.5: link físico no cabo (do enet_init); pedir DHCP do cabo de novo
+ * (a thread de rede faz; stream_net_cable vira 1 quando fechar). */
+int    stream_net_link(void);
+void   stream_cable_retry(void);
 /* 1 se stream_init passou do network_init (ring alocado). */
 int    stream_net_up(void);
 /* Sobe a thread de rede na thread de hardware `hw_thread` (0 = ok). Depois
@@ -47,6 +53,13 @@ int      stream_inject_au(const uint8_t *au, size_t n);
 uint32_t stream_inject_full(void);
 /* Função extra que a thread de rede roda no fim de cada net_step (o WebRTC). */
 void     stream_set_net_extra(void (*fn)(void));
+/* v0.21.10: roda também na bomba do xcw_idle (o Wi-Fi) */
+void     stream_set_pump_extra(void (*fn)(void));
+/* v0.21.13: pilha da thread de rede (hw1): tamanho, pico de uso, canário do fundo intacto */
+unsigned stream_net_stack_size(void);
+extern int stream_diag_prio;   /* v0.21.16: DIAG.TXT prio=1 */
+unsigned stream_net_stack_peak(void);
+int      stream_net_stack_canary_ok(void);
 /* Um net_step completo (sem a função extra se já estiver dentro dela):
  * bomba do xcw_idle() (xcw_net_set_pump). Só a thread de rede. */
 void     stream_net_pump(void);

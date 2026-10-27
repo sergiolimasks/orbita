@@ -20,7 +20,7 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.20.5
+VERSION := 0.21.20
 APP_VERSION := $(VERSION)
 # v0.15: nome da variante no VERSION (ex.: make VARIANT=full -> 0.15.0-full).
 # Vazio = sufixos automaticos pelos knobs (-gpu/-cpu, -altivec/-c, -st, -trace).
@@ -66,6 +66,12 @@ SOURCES  += source/update
 # Trocar BETA exige `make clean`.
 BETA ?= 1
 SOURCES  += source/beta
+# v0.21.0: Wi-Fi interno do Xbox 360 S/E (Marvell 88W8786U, USB 045e:0765), WIFI.md.
+SOURCES  += source/wifi
+# HDMI 1080p (EDID + XC360/VIDEO.TXT, scaler 1280x720 -> 1920x1080), VIDEO-1080P.md.
+SOURCES  += source/video
+# v0.21.25: DIAG.TXT do decoder, [dec] prof, [cpu] (DECODE-PERF.md)
+SOURCES  += source/dec
 # fonte Inter rasterizada + ícones (tools/gen_xui_assets.py, python3 + Pillow)
 XUI_ASSETS := $(APP_ROOT)/source/ui/xui_assets.h
 
@@ -76,7 +82,7 @@ XUI_ASSETS := $(APP_ROOT)/source/ui/xui_assets.h
 SESSION_HW ?= 3
 NATIVE_DEC_THREADS ?= 4
 # Teto de vídeo no offer (b=AS/b=TIAS) + REMB + maxBitrate.
-NATIVE_KBPS ?= 1500
+NATIVE_KBPS ?= 4000
 # /keepalive (o green-nx usa 15000). v0.19.2: na conexão keep-alive.
 SESSION_KEEPALIVE_MS ?= 5000
 # Checagens de consentimento ICE nossas (0 = desligado; 2500 se o xCloud

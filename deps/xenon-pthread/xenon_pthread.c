@@ -70,11 +70,42 @@ static void xpt_runner(void) {
     g_task[id].ret = g_task[id].fn(g_task[id].arg);
 }
 
+/* XCloud360 v0.21.26:
+ *  - xpt_park_new: pthreads criadas com isso ligado são "estacionadas" (nunca
+ *    rodam, não ocupam hw thread). O app liga em volta do xn_init: o
+ *    usrsctp_init_nothreads ainda cria a thread do iterator do SCTP, que
+ *    ficava pra sempre na hw 4 esperando trabalho que nunca vem, e o decoder
+ *    acabava nas hw 2,5,3 (a 3 sem o aluguel, o que travava a volta pra 4).
+ *  - xpt_set_slots: o decoder diz em quais hw threads as threads de frame
+ *    podem ficar (4,2,5 ou 4,2,5,3 com a hw 3 alugada).
+ *  - xpt_last_ids: onde as últimas pthreads foram parar (log do app). */
+volatile int xpt_park_new = 0;
+volatile int xpt_parked = 0;
+#define XPT_PARKED ((pthread_t)0x50a4)
+static const int *volatile g_slots_ovr = 0;
+static volatile int g_nslots_ovr = 0;
+volatile int xpt_last_ids[8];
+volatile int xpt_n_last = 0;
+void xpt_set_slots(const int *ids, int n) {
+    g_nslots_ovr = ids ? n : 0;
+    g_slots_ovr = ids;
+    __asm__ __volatile__("sync" ::: "memory");
+}
+void xpt_track_reset(void) { xpt_n_last = 0; }
+
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                    void *(*start_routine)(void *), void *arg) {
     (void)attr;
-    for (int i = 0; i < XPT_NSLOTS; i++) {
-        int id = k_slots[i];
+    if (xpt_park_new) {
+        *thread = XPT_PARKED;
+        xpt_parked++;
+        return 0;
+    }
+    const int *slots = g_slots_ovr ? g_slots_ovr : k_slots;
+    int nslots = g_slots_ovr ? g_nslots_ovr : XPT_NSLOTS;
+    for (int i = 0; i < nslots; i++) {
+        int id = slots[i];
+        if (id < 1 || id > 5) continue;
         if (xenon_is_thread_task_running(id)) continue;
         g_task[id].fn  = start_routine;
         g_task[id].arg = arg;
@@ -83,6 +114,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         if (xenon_run_thread_task(id, g_stack[id] + XPT_STACK_SIZE - 0x100,
                                   (void *)xpt_runner) == 0) {
             *thread = (pthread_t)id;
+            if (xpt_n_last < 8) xpt_last_ids[xpt_n_last++] = id;
             return 0;
         }
     }
@@ -90,6 +122,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 }
 
 int pthread_join(pthread_t thread, void **value_ptr) {
+    if (thread == XPT_PARKED) { if (value_ptr) *value_ptr = NULL; return 0; }   /* nunca rodou */
     while (xenon_is_thread_task_running((int)thread)) spin_pause();
     __asm__ __volatile__("lwsync" ::: "memory");
     if (value_ptr) *value_ptr = g_task[thread].ret;
@@ -123,10 +156,40 @@ int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a) {
 int pthread_cond_destroy(pthread_cond_t *c) { (void)c; return 0; }
 int pthread_cond_signal(pthread_cond_t *c)    { atomic_inc((unsigned int *)c); return 0; }
 int pthread_cond_broadcast(pthread_cond_t *c) { atomic_inc((unsigned int *)c); return 0; }
+/* XCloud360 v0.21.12: chamado de vez em quando nas esperas OCIOSAS (a thread
+ * não tem trabalho: nada a mais no decode); o app põe o tripwire do vigia. */
+void (*volatile xpt_idle_hook)(void) = 0;
+/* XCloud360 v0.21.25: tempo ocioso por hw thread (espera em cond) e SMT baixa
+ * enquanto espera: o irmão do núcleo (outra thread do decoder, ou o main)
+ * fica com o núcleo (DIAG.TXT spinprio=med desliga). */
+volatile uint64_t xpt_idle_tb[8];
+volatile int xpt_spin_low = 0;
+static inline uint64_t xpt_tb(void) {
+    uint32_t hi, lo, hi2;
+    do {
+        __asm__ __volatile__("mftbu %0" : "=r"(hi));
+        __asm__ __volatile__("mftb %0" : "=r"(lo));
+        __asm__ __volatile__("mftbu %0" : "=r"(hi2));
+    } while (hi != hi2);
+    return ((uint64_t)hi << 32) | lo;
+}
+
 int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
     unsigned int gen = *(volatile pthread_cond_t *)c;
     pthread_mutex_unlock(m);
-    while (*(volatile pthread_cond_t *)c == gen) spin_pause();
+    unsigned int spins = 0;
+    uint64_t t0 = xpt_tb();
+    int low = xpt_spin_low;
+    if (low) __asm__ __volatile__("or 1,1,1");
+    while (*(volatile pthread_cond_t *)c == gen) {
+        spin_pause();
+        if ((++spins & 0x3fff) == 0) {
+            void (*h)(void) = xpt_idle_hook;
+            if (h) h();
+        }
+    }
+    if (low) __asm__ __volatile__("or 2,2,2");
+    xpt_idle_tb[cur_pir() & 7] += xpt_tb() - t0;
     pthread_mutex_lock(m);
     return 0;
 }

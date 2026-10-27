@@ -1,5 +1,6 @@
 /* XCloud360 — camada de dados do menu de capas. Ver xc_catalog.h e
  * app/h264play/CATALOG-COVERS.md. Portável: xc_port.h + xcc_port.h. */
+#include "../xc_wdog.h"
 #include "xc_catalog.h"
 #include "xcc_port.h"
 #include "../login/xc_port.h"
@@ -972,6 +973,8 @@ static void task_main(void) {
     xcn_set_cancel_hook(cancel_hook);
     xc_log("[capas] worker ligado");
     while (!g_stop) {
+        xwd_beat("capas: passo do worker");
+        xwd_observe();   /* v0.21.8: main + rede paradas juntas */
         int w = xcc_worker_step();
         if (!g_stop && g_xstep) w |= g_xstep();   /* v0.20.1: log beta */
         if (!w) xcn_sleep_ms(30);
@@ -997,6 +1000,10 @@ int xcc_bg_start(void) {
 }
 
 void xcc_bg_stop(void) { if (g_running) { g_stop = 1; xccp_sync(); } }
+
+/* v0.21.7: o worker não usa a rede por `ms` (só o pendrive): as capas do
+ * cache aparecem antes do login, que espera esse aquecimento curto. */
+void xcc_offline_for(unsigned ms) { g_net_hold_until = xcn_now_ms() + ms; xccp_sync(); }
 /* 1 até a hw 3 estar livre de verdade: o g_running cai um pouco antes da
  * função da thread voltar, e um xst_start nesse meio-tempo falharia. */
 int xcc_bg_running(void) {

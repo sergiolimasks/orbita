@@ -124,6 +124,8 @@ int  xcc_bg_running(void);
  * volta, depois do xcc_worker_step: o upload do log beta (xlu_step /
  * xlu_finish). step: 1 = trabalhou. Chamar antes do 1o xcc_bg_start. */
 void xcc_set_worker_extra(int (*step)(void), void (*finish)(void));
+/* v0.21.7: sem rede por ms (só cache do pendrive) */
+void xcc_offline_for(unsigned ms);
 
 typedef struct {
     int      loaded_cache, rows_net, mru_net;     /* 1 = feito nesta sessão */

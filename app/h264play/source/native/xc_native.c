@@ -143,9 +143,27 @@ static void cb_audio(void *u, uint16_t seq, uint32_t ts, const uint8_t *p, size_
     if (g_p.audio) g_p.audio(seq, ts, p, n);
 }
 
+/* v0.21.11: video lost in game. The WebRTC died (closed/failed) or the
+ * session is waiting for hw3 while the decoder holds it: inside the game
+ * nothing can bring it back (re-signaling needs the session thread on hw3),
+ * so the game loop leaves after a few seconds (xn_video_lost_ms). */
+static volatile uint64_t g_rtc_dead_since = 0, g_hw3_wait_since = 0;
+
 static void cb_state(void *u, xcw_state_t st) {
     (void)u;
     g_last_xcw_state = (int)st;   /* the line itself comes through cb_log */
+    if (st == XCW_FAILED || st == XCW_CLOSED) {
+        if (!g_rtc_dead_since) g_rtc_dead_since = xcw_now_ms();
+    } else {
+        g_rtc_dead_since = 0;
+    }
+}
+
+int xn_video_lost_ms(void) {
+    uint64_t now = xcw_now_ms(), a = g_rtc_dead_since, b = g_hw3_wait_since;
+    uint64_t da = a && now > a ? now - a : 0, db = b && now > b ? now - b : 0;
+    uint64_t d = da > db ? da : db;
+    return d > 0x7fffffff ? 0x7fffffff : (int)d;
 }
 
 static void cb_msg(void *u, xcw_channel_t ch, const uint8_t *d, size_t n) {
@@ -220,6 +238,18 @@ void xn_dec_release_hw3(void) {
 }
 
 void xn_set_dec_threads(int n) { g_dec_thr = n; }
+
+/* v0.21.25: estado da hw 3 pro [dec] prof (por que o decoder tem 3 ou 4) */
+void xn_hw3_diag(char *o, size_t n) {
+    if (!g_inited) { snprintf(o, n, "hw3 ?"); return; }
+    int busy = xst_running();
+    xs_lock();
+    int own = owner_locked(), hw3 = g_hw3;
+    xs_unlock();
+    snprintf(o, n, "hw3=%s sessao=%s%s", hw3 == HW3_DECODER ? "decoder" : hw3 == HW3_SESSION ? "sessao" : "livre",
+             own == XSM_OWN_NET ? "hw1" : own == XSM_OWN_WANT_THREAD ? "quer-hw3" : own == XSM_OWN_DONE ? "fim" : "thread",
+             busy ? " thread-viva" : "");
+}
 
 int xn_dec_threads_wanted(int cur, int max) {
     if (!g_inited || max < 2) return cur;
@@ -526,11 +556,13 @@ static void session_drive(void) {
                 xs_unlock();
             }
         } else if (xcw_now_ms() - g_last_wait_log >= 2000) {
+            if (hw3 == HW3_DECODER && !g_hw3_wait_since) g_hw3_wait_since = xcw_now_ms();
             g_last_wait_log = xcw_now_ms();
             logf_("[xn] sessao esperando a hw%d (%s) pra: %s", XST_HW_THREAD,
                   hw3 == HW3_DECODER ? "decoder" : "ocupada", m->esc_why);
         }
     } else if (!busy) {
+        g_hw3_wait_since = 0;
         /* session thread gone (handed to hw1 or finished): hw3 is free */
         xs_lock();
         if (g_hw3 == HW3_SESSION) g_hw3 = HW3_FREE;
@@ -567,6 +599,8 @@ void xn_net_step(void) {
         g_inj_aus = g_inj_drops = g_a_pkts = g_pcs = g_steps = 0;
         g_inj_bytes = g_rtc_us = 0;
         g_last_xcw_state = -1;
+        g_rtc_dead_since = 0;
+        g_hw3_wait_since = 0;
         g_pause_pc = NULL;
         g_pause_on = 0;
         g_pause_aus = g_pause_audio = 0;

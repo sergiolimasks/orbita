@@ -1,6 +1,6 @@
 diff -ruN
---- a/drivers/input/input.c	2026-09-07 14:57:42.171622570 -0300
-+++ b/drivers/input/input.c	2026-10-25 03:21:16.213173974 -0300
+--- a/drivers/input/input.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/input/input.c	2026-10-27 04:04:42.063598109 -0300
 @@ -22,8 +22,10 @@
  }
  
@@ -14,8 +14,8 @@ diff -ruN
 +		usbgip_set_rumble(port, l, r);
  }
 diff -ruN
---- a/drivers/ppc/c_except.c	2026-09-07 14:57:42.190098311 -0300
-+++ b/drivers/ppc/c_except.c	2026-10-25 03:21:16.249806564 -0300
+--- a/drivers/ppc/c_except.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/ppc/c_except.c	2026-10-27 04:04:42.067461683 -0300
 @@ -85,6 +85,14 @@
  		
  	flush_console();
@@ -33,7 +33,7 @@ diff -ruN
  	
 diff -ruN
 --- a/drivers/usb/gip_proto.c	1969-12-31 21:00:00.000000000 -0300
-+++ b/drivers/usb/gip_proto.c	2026-10-25 03:21:16.246311987 -0300
++++ b/drivers/usb/gip_proto.c	2026-10-27 04:04:42.071076644 -0300
 @@ -0,0 +1,319 @@
 +/*
 + * gip_proto.c - GIP (Xbox One / Series wired pad) protocol layer.
@@ -356,7 +356,7 @@ diff -ruN
 +}
 diff -ruN
 --- a/drivers/usb/gip_proto.h	1969-12-31 21:00:00.000000000 -0300
-+++ b/drivers/usb/gip_proto.h	2026-10-25 03:21:16.246498081 -0300
++++ b/drivers/usb/gip_proto.h	2026-10-27 04:04:42.074354235 -0300
 @@ -0,0 +1,117 @@
 +/*
 + * gip_proto.h - Xbox One / Series "Game Input Protocol" (GIP) over wired USB.
@@ -476,8 +476,8 @@ diff -ruN
 +
 +#endif
 diff -ruN
---- a/drivers/usb/ohci.c	2026-09-07 14:57:42.190823079 -0300
-+++ b/drivers/usb/ohci.c	2026-10-25 03:21:16.249407346 -0300
+--- a/drivers/usb/ohci.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/ohci.c	2026-10-27 04:04:42.077761611 -0300
 @@ -64,6 +64,20 @@
  #include "usbchap9.h"
  #include "usbd.h"
@@ -525,7 +525,7 @@ diff -ruN
  
      td = ohci_td_from_transfer(softc,t);
  
-@@ -517,7 +543,7 @@
+@@ -517,15 +543,49 @@
      *  	   base pointer, or NULL if request fails
      ********************************************************************* */
  
@@ -533,26 +533,97 @@ diff -ruN
 +#define CACHE_ALIGN    128      /* GIP v5.1: Xenon L2 line (was 32) */
  #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
  
++/* orbita v0.21.23 ("each thing in its own box"): the EDs/TDs/HCCA lived in
++ * HEAP blocks used through the uncached alias (0xA0000000).  The same
++ * physical pages were heap through the cached alias (0x8...): neighbours,
++ * memcpy and prefetch could pull the line into L2, and a cache-inhibited load
++ * of a line valid in L2 is undefined on PowerPC (on Xenon it hung core 0 with
++ * the app's Wi-Fi driver).  Descriptors now come from a STATIC pool of their
++ * own (4 KB guard on each side, 4 KB aligned, never handed out by the heap),
++ * flushed from the cache once and then only used through the uncached alias.
++ * Pool full -> the old heap path, counted (ohci_dmapool_fallbacks). */
++#define OHCI_DMAPOOL_BYTES (32 * 1024)
++#define OHCI_DMAPOOL_GUARD 4096
++#ifndef OHCI_DMAPOOL_ADDR
++static uint8_t ohci_dmapool_mem[OHCI_DMAPOOL_BYTES + 2 * OHCI_DMAPOOL_GUARD] __attribute__((aligned(4096)));
++#define OHCI_DMAPOOL_ADDR() (ohci_dmapool_mem)
++#endif
++static size_t ohci_dmapool_off = 0;
++static int ohci_dmapool_ready = 0;
++unsigned ohci_dmapool_fallbacks = 0, ohci_bad_doneq = 0;
++
  static void * _ohci_dma_alloc(size_t size, unsigned int align)
-@@ -954,7 +980,7 @@
+ {
+     void *base;
+     size_t len = ALIGN(size, CACHE_ALIGN);
++    size_t a = ALIGN(align, CACHE_ALIGN);
++    uint8_t *pool = (uint8_t *)OHCI_DMAPOOL_ADDR() + OHCI_DMAPOOL_GUARD;
+ 
+-    base = KMALLOC(len, ALIGN(align, CACHE_ALIGN));
++    if (!ohci_dmapool_ready) {
++	memset(pool, 0, OHCI_DMAPOOL_BYTES);
++	OHCI_INVAL_RANGE(OHCI_DMAPOOL_ADDR(), OHCI_DMAPOOL_BYTES + 2 * OHCI_DMAPOOL_GUARD);
++	ohci_dmapool_ready = 1;
++	}
++    {
++	size_t off = ALIGN(ohci_dmapool_off, a);
++	if (off + len <= OHCI_DMAPOOL_BYTES) {
++	    ohci_dmapool_off = off + len;
++	    return pool + off;      /* already out of the cache: callers only use UNCADDR */
++	    }
++    }
++    ohci_dmapool_fallbacks++;
++    base = KMALLOC(len, a);
+ #if (!CPUCFG_COHERENT_DMA)
+     if (base != NULL) {
+ 	OHCI_INVAL_RANGE(base, len);
+@@ -534,6 +594,18 @@
+     return base;
+ }
+ 
++/* orbita v0.21.23: DoneHead is written by the HC.  It only becomes a
++ * pointer if it falls INSIDE our TD pool on a TD boundary; otherwise the
++ * queue is dropped (never load an arbitrary address through the uncached
++ * alias). */
++static int ohci_td_phys_ok(ohci_softc_t *softc, uint32_t phys)
++{
++    uint32_t base = OHCI_VTOP(softc->ohci_hwtdpool);
++    uint32_t end = base + OHCI_TDPOOL_SIZE * sizeof(ohci_td_t);
++    if (phys < base || phys >= end) return 0;
++    return ((phys - base) % sizeof(ohci_td_t)) == 0;
++}
++
+ 
+ /*  *********************************************************************
+     *  _ohci_initpools(softc)
+@@ -954,8 +1026,12 @@
       * Get the head of the queue
       */
  
 -    doneq = BSWAP32(donehead);
 +    doneq = BSWAP32(donehead) & M_OHCI_ED_PTRMASK;
  
++    if (doneq && !ohci_td_phys_ok(softc, doneq)) {
++	if (ohci_bad_doneq++ < 8) usblog_bc("bc ohci: DoneHead %08x outside the TD pool: queue dropped", (unsigned)doneq);
++	return;
++	}
      td = (ohci_td_t *) OHCI_PTOV(doneq);
      transfer = ohci_transfer_from_td(softc,td);
-@@ -990,7 +1016,7 @@
+ 
+@@ -990,7 +1066,11 @@
  	    }
  #endif
  
 -	doneq = BSWAP32(td->td_next_td);
 +	doneq = BSWAP32(td->td_next_td) & M_OHCI_ED_PTRMASK;
++	if (doneq && !ohci_td_phys_ok(softc, doneq)) {
++	    if (ohci_bad_doneq++ < 8) usblog_bc("bc ohci: next TD %08x outside the TD pool: rest of queue dropped", (unsigned)doneq);
++	    doneq = 0;
++	    }
  
  	val = G_OHCI_TD_CC(BSWAP32(td->td_control));
  
-@@ -1261,7 +1287,9 @@
+@@ -1261,7 +1341,9 @@
      ept = _ohci_allocept(softc);
      ed = ohci_ed_from_endpoint(softc,ept);
  
@@ -562,7 +633,7 @@ diff -ruN
      tailtd = ohci_td_from_transfer(softc,tailtransfer);
  
      /*
-@@ -1328,7 +1356,24 @@
+@@ -1328,7 +1410,24 @@
  	}
      else if (flags & UP_TYPE_INTR) {
  	/* XXX Choose place in inttable properly. */
@@ -588,7 +659,7 @@ diff -ruN
  	}
  
      return (usb_ept_t *) ept;
-@@ -1576,6 +1621,18 @@
+@@ -1576,6 +1675,18 @@
  	return ohci_roothub_xfer(bus,uept,ur);
  	}
  
@@ -607,7 +678,7 @@ diff -ruN
      /*
       * Set up the TD flags based on the 
       * request type.
-@@ -2260,3 +2317,68 @@
+@@ -2260,3 +2371,68 @@
  
      return 0;
  }
@@ -677,8 +748,8 @@ diff -ruN
 +    return n;
 +}
 diff -ruN
---- a/drivers/usb/tinyehci/ehci.c	2026-09-07 14:57:42.192146617 -0300
-+++ b/drivers/usb/tinyehci/ehci.c	2026-10-25 03:21:16.247614050 -0300
+--- a/drivers/usb/tinyehci/ehci.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/tinyehci/ehci.c	2026-10-27 04:04:42.081348542 -0300
 @@ -246,6 +246,7 @@
  }
  
@@ -687,7 +758,40 @@ diff -ruN
  
  /* one-time init, only for memory state */
  static int ehci_init(struct ehci_hcd * ehci, int default_ctrlr) {
-@@ -847,6 +848,8 @@
+@@ -332,11 +333,13 @@
+ static void qh_end_transfer(struct ehci_hcd * ehci) {
+ 	struct ehci_qtd *qtd;
+ 	struct ehci_qh *qh = ehci->asyncqh;
++	struct ehci_urb *urb = NULL;   /* orbita v0.21.28: see the error path below */
+ 	u32 token;
+ 	int error = 0;
+ 	for (qtd = qh->qtd_head; qtd; qtd = qtd->next) {
+ 		token = hc32_to_cpu(qtd->hw_token);
+-		if (likely(QTD_PID(token) != 2))
++		if (qtd->urb) urb = qtd->urb;
++		if (likely(QTD_PID(token) != 2) && qtd->urb)
+ 			qtd->urb->actual_length += qtd->length - QTD_LENGTH(token);
+ 		if (!(qtd->length == 0 && ((token & 0xff) == QTD_STS_HALT)) &&
+ 				(token & QTD_STS_HALT)) {
+@@ -360,9 +363,15 @@
+ 			error = -1;
+ 		}
+ 	}
+-	if (error) {
++	/* orbita v0.21.28: upstream wrote qtd->urb->actual_length here, but the
++	 * loop above leaves qtd == NULL, so any halted qTD (a write the pendrive
++	 * STALLs, e.g. the first f_mkdir on a fresh stick) dereferenced
++	 * NULL+0x3c (offsetof(struct ehci_qtd, urb)): Segmentation fault!,
++	 * dar=0x3c, in ehci_do_urb/qh_end_transfer.  Report the error on the
++	 * transfer's urb instead; the caller turns it into a failed transfer. */
++	if (error && urb) {
+ 		//dump_qh(ehci->asyncqh);
+-		qtd->urb->actual_length = error;
++		urb->actual_length = error;
+ 	}
+ 	ehci->qtd_used = 0;
+ }
+@@ -847,6 +856,8 @@
  	handshake_mode = f;
  	if (!(status & PORT_PE)) {
  		printf("EHCI bus %d port %d: low speed, releasing to OHCI\n",ehci->bus_id,port+1);
@@ -697,8 +801,33 @@ diff -ruN
  		// that means is low speed device so release
  		status |= PORT_OWNER;
 diff -ruN
---- a/drivers/usb/tinyehci/usbstorage.c	2026-09-07 14:57:42.192146617 -0300
-+++ b/drivers/usb/tinyehci/usbstorage.c	2026-10-25 03:21:16.247880440 -0300
+--- a/drivers/usb/tinyehci/usb_os.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/tinyehci/usb_os.c	2026-10-27 04:04:42.084911514 -0300
+@@ -31,7 +31,11 @@
+ #include "usb.h"
+ 
+ /* Heap */
+-static u32 heapspace[0x10000] __attribute__((aligned(32)));
++/* orbita v0.21.23: tinyehci's pool (cached alias only, with dcbst/dcbf around
++ * each synchronous transfer) starts on its own page and every piece takes
++ * whole 128-byte lines (a descriptor never shares a line with another one or
++ * with neighbouring .bss). */
++static u32 heapspace[0x10000] __attribute__((aligned(4096)));
+ 
+ /* Variables */
+ static u8 *aligned_mem  = 0;
+@@ -47,6 +51,8 @@
+ 
+ 	u32 addr = (u32)aligned_mem;
+ 
++	if (alignement < 128) alignement = 128;
++	size = (size + 127) & ~127;
+ 	alignement--;
+ 
+ 	/* Calculate aligned address */
+diff -ruN
+--- a/drivers/usb/tinyehci/usbstorage.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/tinyehci/usbstorage.c	2026-10-27 04:04:42.088392974 -0300
 @@ -1243,7 +1243,8 @@
  					device_data->__dev = dev;					
  
@@ -723,8 +852,19 @@ diff -ruN
  						ehci_msleep(100);
  						ehci_reset_port(ehci, i);
 diff -ruN
---- a/drivers/usb/usbctrl.c	2026-09-07 14:57:42.192146617 -0300
-+++ b/drivers/usb/usbctrl.c	2026-10-25 03:21:16.249649267 -0300
+--- a/drivers/usb/usbctrl.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbctrl.c	2026-10-27 04:04:42.092010526 -0300
+@@ -57,8 +57,8 @@
+    cache-aligned and multiples of a cache line in size, so that they
+    can be safely flushed or invalidated. */
+ 
+-#define CACHE_ALIGN	32	   /* XXX place holder, big enough to now. */
+-#define BUFF_ALIGN	 16
++#define CACHE_ALIGN    128      /* orbita v0.21.23: Xenon L2 line; a DMA buffer never shares a line with heap data */
++#define BUFF_ALIGN     128
+ #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
+ 
+ #define usb_dma_alloc(n) (KMALLOC(ALIGN((n),CACHE_ALIGN),BUFF_ALIGN))
 @@ -73,6 +73,7 @@
  static int controller_mask = 0;
  
@@ -770,8 +910,17 @@ diff -ruN
  	if (uhid->is_wireless)
  	{
 diff -ruN
---- a/drivers/usb/usbd.c	2026-09-07 14:57:42.192625954 -0300
-+++ b/drivers/usb/usbd.c	2026-10-25 03:21:16.248328213 -0300
+--- a/drivers/usb/usbd.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbd.c	2026-10-27 04:04:42.095857886 -0300
+@@ -55,7 +55,7 @@
+    cache-aligned and multiples of a cache line in size, so that they
+    can be safely flushed or invalidated. */
+ 
+-#define CACHE_ALIGN    32       /* XXX place holder, big enough to now. */
++#define CACHE_ALIGN    128      /* orbita v0.21.23: Xenon L2 line; a DMA buffer never shares a line with heap data */
+ #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
+ 
+ #define usb_dma_alloc(n) (KMALLOC(ALIGN((n),CACHE_ALIGN),CACHE_ALIGN))
 @@ -1260,3 +1260,41 @@
  
      return NULL;
@@ -815,8 +964,8 @@ diff -ruN
 +    return epdesc->bEndpointAddress;
 +}
 diff -ruN
---- a/drivers/usb/usbdevs.c	2026-09-07 14:57:42.192625954 -0300
-+++ b/drivers/usb/usbdevs.c	2026-10-25 03:21:16.247094591 -0300
+--- a/drivers/usb/usbdevs.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbdevs.c	2026-10-27 04:04:42.099567036 -0300
 @@ -59,6 +59,7 @@
  
  #include "usbchap9.h"
@@ -910,8 +1059,8 @@ diff -ruN
 +    return drv;
 +}
 diff -ruN
---- a/drivers/usb/usbd.h	2026-09-07 14:57:42.192625954 -0300
-+++ b/drivers/usb/usbd.h	2026-10-25 03:21:16.248199628 -0300
+--- a/drivers/usb/usbd.h	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbd.h	2026-10-27 04:04:42.103372420 -0300
 @@ -227,6 +227,10 @@
  int usb_get_device_status(usbdev_t *dev,usb_device_status_t *status);
  int usb_set_configuration(usbdev_t *dev,int config);
@@ -925,7 +1074,7 @@ diff -ruN
  int usb_get_device_descriptor(usbdev_t *dev,usb_device_descr_t *dscr,int smallflg);
 diff -ruN
 --- a/drivers/usb/usbgip.c	1969-12-31 21:00:00.000000000 -0300
-+++ b/drivers/usb/usbgip.c	2026-10-25 03:21:30.993428792 -0300
++++ b/drivers/usb/usbgip.c	2026-10-27 04:04:42.107143666 -0300
 @@ -0,0 +1,772 @@
 +/*
 + * usbgip.c - libxenon driver for WIRED Xbox One / One S / Elite / Series X|S
@@ -1700,9 +1849,23 @@ diff -ruN
 +    return 0;
 +}
 diff -ruN
---- a/drivers/usb/usbhub.c	2026-09-07 14:57:42.192625954 -0300
-+++ b/drivers/usb/usbhub.c	2026-10-25 03:21:16.247387935 -0300
-@@ -49,6 +49,7 @@
+--- a/drivers/usb/usbhid.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbhid.c	2026-10-27 04:04:42.110833500 -0300
+@@ -55,8 +55,8 @@
+    cache-aligned and multiples of a cache line in size, so that they
+    can be safely flushed or invalidated. */
+ 
+-#define CACHE_ALIGN    32       /* XXX place holder, big enough to now. */
+-#define BUFF_ALIGN     16
++#define CACHE_ALIGN    128      /* orbita v0.21.23: Xenon L2 line; a DMA buffer never shares a line with heap data */
++#define BUFF_ALIGN     128
+ #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
+ 
+ #define usb_dma_alloc(n) (KMALLOC(ALIGN((n),CACHE_ALIGN),BUFF_ALIGN))
+diff -ruN
+--- a/drivers/usb/usbhub.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbhub.c	2026-10-27 04:04:42.114915544 -0300
+@@ -49,13 +49,14 @@
  
  #include "usbchap9.h"
  #include "usbd.h"
@@ -1710,6 +1873,15 @@ diff -ruN
  
  /* For systems with non-coherent DMA, allocate all buffers to be
     cache-aligned and multiples of a cache line in size, so that they
+    can be safely flushed or invalidated. */
+ 
+-#define CACHE_ALIGN    32       /* XXX place holder, big enough to now. */
+-#define BUFF_ALIGN     16
++#define CACHE_ALIGN    128      /* orbita v0.21.23: Xenon L2 line; a DMA buffer never shares a line with heap data */
++#define BUFF_ALIGN     128
+ #define ALIGN(n,align) (((n)+((align)-1)) & ~((align)-1))
+ 
+ #define usb_dma_alloc(n) (KMALLOC(ALIGN((n),CACHE_ALIGN),BUFF_ALIGN))
 @@ -752,6 +753,10 @@
  		 */
  
@@ -1744,7 +1916,7 @@ diff -ruN
  							   devices as "removing" */
 diff -ruN
 --- a/drivers/usb/usblog.c	1969-12-31 21:00:00.000000000 -0300
-+++ b/drivers/usb/usblog.c	2026-10-25 03:21:45.385396046 -0300
++++ b/drivers/usb/usblog.c	2026-10-27 04:04:42.119147377 -0300
 @@ -0,0 +1,283 @@
 +/*
 + * usblog.c - USB/GIP diagnostics that survive boot and can never block.
@@ -2031,7 +2203,7 @@ diff -ruN
 +unsigned usblog_dropped(void) { return ul_dropped; }
 diff -ruN
 --- a/drivers/usb/usblog.h	1969-12-31 21:00:00.000000000 -0300
-+++ b/drivers/usb/usblog.h	2026-10-25 03:21:16.246924898 -0300
++++ b/drivers/usb/usblog.h	2026-10-27 04:04:42.123074754 -0300
 @@ -0,0 +1,36 @@
 +/*
 + * usblog.h - USB/GIP diagnostics that survive boot and can never block.
@@ -2070,8 +2242,8 @@ diff -ruN
 +
 +#endif
 diff -ruN
---- a/drivers/usb/usbmain.c	2026-09-07 14:57:42.192625954 -0300
-+++ b/drivers/usb/usbmain.c	2026-10-25 03:21:16.248056025 -0300
+--- a/drivers/usb/usbmain.c	2026-09-05 06:57:30.000000000 -0300
++++ b/drivers/usb/usbmain.c	2026-10-27 04:04:42.126942059 -0300
 @@ -54,7 +54,9 @@
  
  #include "usbmain.h"
@@ -2093,8 +2265,8 @@ diff -ruN
 +	usblog_tick();
  }
 diff -ruN
---- a/ports/xenon/Makefile	2026-09-07 14:57:42.198574491 -0300
-+++ b/ports/xenon/Makefile	2026-10-25 03:21:16.249930807 -0300
+--- a/ports/xenon/Makefile	2026-09-05 06:57:30.000000000 -0300
++++ b/ports/xenon/Makefile	2026-10-27 04:04:42.130955889 -0300
 @@ -56,6 +56,9 @@
  	../../drivers/usb/dummy.o \
  	../../drivers/usb/ohci.o \

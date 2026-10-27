@@ -1,0 +1,10 @@
+# Samsung S24E450 (SAM0CA2), linuxhw/EDID Digital/Samsung/SAM0CA2/A62BB28FF8D2: DVI, sem CEA, com 1280x720@60
+# numero de serie zerado (bytes 12-15 e descritor 0xFF), checksum do bloco 0 refeito
+00 ff ff ff ff ff ff 00 4c 2d a2 0c 00 00 00 00
+17 1c 01 04 a5 35 1e 78 22 4b a1 a3 59 55 9b 26
+0e 50 54 bf ef 80 71 4f 81 c0 81 00 81 80 95 00
+a9 c0 b3 00 01 01 02 3a 80 18 71 38 2d 40 58 2c
+45 00 13 2b 21 00 00 1e 00 00 00 fd 00 38 4b 1e
+51 11 00 0a 20 20 20 20 20 20 00 00 00 fc 00 53
+32 34 45 34 35 30 0a 20 20 20 20 20 00 00 00 ff
+00 30 0a 20 20 20 20 20 20 20 20 20 20 20 00 31

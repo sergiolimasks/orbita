@@ -20,7 +20,7 @@ fi
 EPOCH=$(date +%s)
 CF="-O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -I$SRC -I$MBED/include \
     -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_config.h\" -DXC_BUILD_EPOCH=${EPOCH}LL"
-COMMON="$SRC/xc_logup.c $SRC/http_parse.c $SRC/dns_msg.c $SRC/https.c $SRC/ca_roots.c $HERE/../login/port_posix.c"
+COMMON="$APP/source/xc_lock.c $SRC/xc_logup.c $SRC/http_parse.c $SRC/dns_msg.c $SRC/https.c $SRC/ca_roots.c $HERE/../login/port_posix.c"
 rc=0
 if [ "$WHAT" = unit ] || [ "$WHAT" = all ]; then
     rm -rf "$OUT/store"

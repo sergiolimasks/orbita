@@ -18,6 +18,16 @@ gcc $CFLAGS -o "$OUT/menu_test" "$HERE/menu_test.c" "$HERE/../source/menu_model.
 "$OUT/menu_test" || rc=1
 # v0.20: menu novo (source/ui): testes de unidade + mockup (PNGs em hosttest/ui/out).
 "$HERE/ui/run.sh" || rc=1
+# HDMI 1080p: EDID reais, escolha do modo, scaler, dump2mode.py (VIDEO-1080P.md).
+"$HERE/video/run.sh" || rc=1
+# v0.21.25: DIAG.TXT do decoder (DECODE-PERF.md)
+"$HERE/dec/run.sh" || rc=1
+# v0.21.0: Wi-Fi interno (protocolo, WPA2, driver contra firmware/AP falsos), WIFI.md.
+"$HERE/wifi/run.sh" || rc=1
+# v0.21.14: locks do app em duas threads (ThreadSanitizer, ordem/ABBA, relatório da espera).
+"$HERE/locks/run_locks.sh" || rc=1
+# v0.21.28: FatFs + fat_diskio.c reais numa imagem FAT32 nova (o 1º f_mkdir XC360 dos testadores).
+"$HERE/fatfs/run_fatfs.sh" || rc=1
 rm -rf "$OUT"
 [ $rc -eq 0 ] && echo "ALL HOST TESTS PASSED" || echo "HOST TESTS FAILED"
 exit $rc

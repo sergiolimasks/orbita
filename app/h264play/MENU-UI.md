@@ -161,3 +161,14 @@ Como o `main.c` usa (v0.20.0):
   `menu_model_t.settings_on`; sem ela o foco nunca chega nele).
 - Telas novas: `xui_key_frame` (teclado da chave) e `xui_settings_frame`.
   Mockups `27_` a `40_` (ver BETA-GATE.md). Popup de atualização: `35_`–`37_`.
+
+## v0.21.0: Wi-Fi
+
+- Configurações ganham um segundo botão, **Wi-Fi** (`xui_settings_t.button2`/`focus`;
+  esquerda/direita troca o foco). A tela sem conexão da chave beta oferece `X:Wi-Fi`
+  quando o console tem o adaptador interno.
+- Telas novas: `xui_wifi_frame` (estado, rede salva, Procurar/Esquecer, lista com
+  barras de sinal, cadeado e etiqueta Conectada/Salva/Não suportada) e
+  `xui_textkey_frame` (teclado de texto da senha: modelo `xtk_*` em
+  `beta/xc_keypad.{h,c}`, mesmo visual do teclado da chave). Mockups `41_` a `52_`.
+- Detalhes, regras de thread e o que olhar no log: `WIFI.md`.

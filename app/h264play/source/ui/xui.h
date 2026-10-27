@@ -284,9 +284,59 @@ typedef struct {
     const char *version;        /* "orbita v0.20.3 (beta)" */
     const char *note;           /* "Para reportar um bug, envie um print desta tela junto" */
     const char *notice;         /* aviso curto (ex. "Chave trocada") */
-    const char *button;         /* "Trocar chave" (em foco) */
+    const char *button;         /* "Trocar chave" */
     const char *hint;
+    /* v0.21.0: segundo botão ("Wi-Fi") e qual está em foco (0 = button, 1 = button2) */
+    const char *button2;
+    const char *button2_note;   /* linha curta ao lado (ex. "Cabo de rede", "Casa · conectado") */
+    int         focus;
 } xui_settings_t;
+
+/* ---- v0.21.0: Wi-Fi (WIFI.md) ---- */
+typedef struct {
+    const char *ssid;          /* UTF-8 */
+    int         bars;          /* 0..4 */
+    int         lock;          /* rede com senha */
+    const char *tag;           /* "Conectada", "Salva", "Não suportada" ou NULL */
+    int         dim;           /* não dá pra conectar (segurança não suportada) */
+} xui_wifi_net_t;
+
+enum { XUI_WS_NEUTRAL = 0, XUI_WS_OK, XUI_WS_BUSY, XUI_WS_ERROR };
+
+typedef struct {
+    const char *status_title;  /* "Wi-Fi: Casa", "Cabo de rede", "Desconectado" */
+    const char *status_text;   /* IP, sinal, erro... */
+    int         status_kind;   /* XUI_WS_* */
+    const char *saved;         /* "Rede salva: Casa" ou NULL */
+    const xui_wifi_net_t *nets;
+    int         nnets;
+    /* foco: -2 = "Procurar redes", -1 = "Esquecer rede", 0.. = rede da lista */
+    int         focus;
+    int         can_forget;    /* sem rede salva o botão fica apagado */
+    int         scanning;      /* "Procurando…" + pontinhos */
+    const char *empty;         /* lista vazia: texto no lugar */
+    const char *hint;
+} xui_wifi_t;
+
+/* Teclado de texto (senha). Modelo em beta/xc_keypad.h (xtk_*): 10 colunas,
+ * 4 fileiras de caracteres da página atual + 2 fileiras de ações. */
+#define XUI_TK_COLS 10
+#define XUI_TK_ROWS 4
+typedef struct {
+    const char *title;         /* "Senha do Wi-Fi" */
+    const char *text;          /* "Rede: Casa" (quebra sozinho) */
+    const char *rows[XUI_TK_ROWS];   /* as 4 fileiras da página (10 caracteres cada) */
+    const char *shift_label;   /* "ABC" / "abc" */
+    const char *sym_label;     /* "#+=" / "abc" */
+    const char *typed;         /* o que foi digitado (ASCII) */
+    int         len, minlen, maxlen;
+    int         show;          /* 0 = bolinhas */
+    int         row, col;      /* foco; row 4/5 = ações (col = ação) */
+    const char *error;
+    const char *status;        /* com busy */
+    int         busy;
+    const char *hint;
+} xui_textkey_t;
 
 /* ================================================================
  * Estado de tela (caches + animação). Um por app; só o main usa.
@@ -317,6 +367,13 @@ xui_rect_t  xui_status_frame(xui_view_t *v, xui_canvas_t *c, const xui_status_t 
  * "Validando…" = retângulo pequeno. */
 xui_rect_t  xui_key_frame(xui_view_t *v, xui_canvas_t *c, const xui_key_t *k,
                           const xui_home_data_t *d, unsigned now_ms, int *animating);
+/* v0.21.0: Wi-Fi (lista de redes) e teclado de texto (senha). Mesma
+ * lógica de sujeira: conteúdo mudou = tela inteira; só os pontinhos do
+ * "Procurando…"/"Conectando…" = retângulo pequeno. */
+xui_rect_t  xui_wifi_frame(xui_view_t *v, xui_canvas_t *c, const xui_wifi_t *w,
+                           const xui_home_data_t *d, unsigned now_ms, int *animating);
+xui_rect_t  xui_textkey_frame(xui_view_t *v, xui_canvas_t *c, const xui_textkey_t *k,
+                              const xui_home_data_t *d, unsigned now_ms, int *animating);
 xui_rect_t  xui_settings_frame(xui_view_t *v, xui_canvas_t *c, const xui_settings_t *s,
                                const xui_home_data_t *d, unsigned now_ms, int *animating);
 

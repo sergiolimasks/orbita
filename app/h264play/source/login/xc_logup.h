@@ -88,6 +88,8 @@ void xlu_set_transport(xlu_post_fn post);
 void xlu_set_clock(unsigned long long (*now_ms)(void));
 /* Qualquer thread: uma linha (sem "\n"). Filtrada antes de guardar. */
 void xlu_line(const char *text);
+/* v0.21.14: linhas descartadas porque o lock estava ocupado */
+unsigned xlu_line_drops(void);
 /* Qualquer thread: título atual ("" = nenhum) pro campo "game". */
 void xlu_set_game(const char *name_utf8);
 /* Qualquer thread: manda o próximo lote assim que o worker puder. */

@@ -664,6 +664,26 @@ void xcw_destroy(xcw_t *x) {
 /* capture-rtp main(): a=setup:passive -> a=setup:actpass (a no-op with the
  * current libpeer, whose offer says a=setup:active — kept for fidelity), and
  * b=AS:<kbps> + b=TIAS:<bps> right after the m=video section's c= line. */
+/* v0.21.25: perfil H.264 pedido na oferta (DIAG.TXT profile=). Vazio = o
+ * template padrão (42e01f). Se o servidor recusar o vídeo (m=video 0), a
+ * próxima oferta volta pro padrão. */
+static char g_plid[8];
+static int  g_plid_rejected;
+int xcw_h264_profile_plid_set(const char *plid) {
+    g_plid[0] = 0;
+    if (plid && strlen(plid) == 6) memcpy(g_plid, plid, 7);
+    g_plid_rejected = 0;
+    return 0;
+}
+
+static void log_sdp_line(xcw_t *x, const char *tag, const char *sdp, const char *key, const char *from) {
+    const char *l = strstr(from ? from : sdp, key);
+    if (!l) return;
+    size_t n = strcspn(l, "\r\n");
+    if (n > 150) n = 150;
+    xlog(x, "[sdp] %s %.*s", tag, (int)n, l);
+}
+
 static void munge_offer(xcw_t *x, const char *raw) {
     char *o = x->offer;
     size_t cap = XCW_OFFER_CAP;
@@ -701,6 +721,16 @@ static void munge_offer(xcw_t *x, const char *raw) {
     } else {
         xlog(x, "[sdp] WARN: m=video/c= not found, no b=AS cap");
     }
+    if (g_plid[0] && !g_plid_rejected) {
+        char *pl = mv ? strstr(mv, "profile-level-id=") : NULL;
+        if (pl && strlen(pl) >= 17 + 6) {
+            memcpy(pl + 17, g_plid, 6);
+            xlog(x, "[sdp] perfil H.264 pedido: profile-level-id=%s", g_plid);
+        }
+    } else if (g_plid[0]) {
+        xlog(x, "[sdp] perfil %s recusado antes: oferta padrao", g_plid);
+    }
+    log_sdp_line(x, "oferta", o, "a=fmtp:", mv);
 }
 
 static void extract_from_offer(xcw_t *x) {
@@ -756,6 +786,16 @@ int xcw_add_remote_candidate(xcw_t *x, const char *cand) {
 int xcw_set_answer(xcw_t *x, const char *sdp) {
     x->t_answer = xcw_now_ms();
     x->answer_set = 1;
+    {   /* v0.21.25: o que o servidor aceitou pro vídeo */
+        const char *mv = strstr(sdp, "m=video");
+        log_sdp_line(x, "resposta", sdp, "m=video", NULL);
+        log_sdp_line(x, "resposta", sdp, "a=rtpmap:", mv);
+        log_sdp_line(x, "resposta", sdp, "a=fmtp:", mv);
+        if (mv && strncmp(mv, "m=video 0 ", 10) == 0 && g_plid[0] && !g_plid_rejected) {
+            g_plid_rejected = 1;
+            xlog(x, "[sdp] servidor recusou o video com profile-level-id=%s: proxima oferta volta pro padrao", g_plid);
+        }
+    }
     peer_connection_set_remote_description(x->pc, sdp, SDP_TYPE_ANSWER);
     return 0;
 }

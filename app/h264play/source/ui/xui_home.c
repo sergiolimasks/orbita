@@ -964,13 +964,33 @@ static void render_settings(xui_view_t *v, xui_canvas_t *c, const xui_settings_t
     int kx = xui_text(c, XUI_F_H2, x, y, XUI_C_TEXT, s->key_masked ? s->key_masked : "—", 1, w / 2);
     if (s->key_status) xui_text(c, XUI_F_BODY, kx + 18, y - 2, XUI_C_DIM, s->key_status, 0, x + w - kx - 18);
     y += 34;
-    /* botão (em foco) */
+    /* botões (v0.21.0: + "Wi-Fi"; o em foco fica branco) */
     const char *b = s->button ? s->button : "Trocar chave";
     int bw = xui_text_width(XUI_F_ROW, b, 0) + 48;
-    xui_round_rect(c, x - 3, y - 3, bw + 6, 50, 10, XUI_C_TEXT, 255);
-    xui_text_center(c, XUI_F_ROW, x, bw, y + 30, XUI_C_BG, b, 0);
+    int f2 = s->button2 && s->focus == 1;
+    if (!f2) {
+        xui_round_rect(c, x - 3, y - 3, bw + 6, 50, 10, XUI_C_TEXT, 255);
+        xui_text_center(c, XUI_F_ROW, x, bw, y + 30, XUI_C_BG, b, 0);
+    } else {
+        xui_round_rect(c, x, y, bw, 44, 8, XUI_C_BUTTON, 255);
+        xui_text_center(c, XUI_F_ROW, x, bw, y + 30, XUI_C_TEXT, b, 0);
+    }
+    int bx = x + bw;
+    if (s->button2) {
+        int b2x = x + bw + 18, b2w = xui_text_width(XUI_F_ROW, s->button2, 0) + 48;
+        if (f2) {
+            xui_round_rect(c, b2x - 3, y - 3, b2w + 6, 50, 10, XUI_C_TEXT, 255);
+            xui_text_center(c, XUI_F_ROW, b2x, b2w, y + 30, XUI_C_BG, s->button2, 0);
+        } else {
+            xui_round_rect(c, b2x, y, b2w, 44, 8, XUI_C_BUTTON, 255);
+            xui_text_center(c, XUI_F_ROW, b2x, b2w, y + 30, XUI_C_TEXT, s->button2, 0);
+        }
+        bx = b2x + b2w;
+    }
     if (s->notice && s->notice[0])
-        xui_text(c, XUI_F_BODY, x + bw + 22, y + 29, XUI_C_ACCENT, s->notice, 0, w - bw - 22);
+        xui_text(c, XUI_F_BODY, bx + 22, y + 29, XUI_C_ACCENT, s->notice, 0, x + w - bx - 22);
+    else if (s->button2_note && s->button2_note[0])
+        xui_text(c, XUI_F_BODY, bx + 22, y + 29, XUI_C_DIM, s->button2_note, 0, x + w - bx - 22);
     y += 82;
     /* nota pros testadores */
     xui_round_rect(c, x, y - 26, w, 44, 8, XUI_C_BG, 150);
@@ -993,9 +1013,11 @@ xui_rect_t xui_settings_frame(xui_view_t *v, xui_canvas_t *c, const xui_settings
     char sig[600];
     int n = 0;
     sig[0] = 0;
-    const char *parts[9] = { s->console_short, s->console_full, s->key_masked, s->key_status, s->version,
-                             s->note, s->notice, s->button, s->hint };
-    for (int i = 0; i < 9; i++) sig_cat(sig, &n, (int)sizeof(sig), parts[i]);
+    char fnum[16];
+    snprintf(fnum, sizeof(fnum), "%d", s->focus);
+    const char *parts[12] = { s->console_short, s->console_full, s->key_masked, s->key_status, s->version,
+                              s->note, s->notice, s->button, s->hint, s->button2, s->button2_note, fnum };
+    for (int i = 0; i < 12; i++) sig_cat(sig, &n, (int)sizeof(sig), parts[i]);
     if (!v->hero_valid) { build_hero(v, d, NULL); v->st_valid = 0; }
     if (!v->st_valid || v->st_kind != ST_KIND_SETTINGS || strcmp(sig, v->st_sig) != 0) dirty = full;
     if (!xui_rect_empty(dirty)) {
@@ -1011,5 +1033,320 @@ xui_rect_t xui_settings_frame(xui_view_t *v, xui_canvas_t *c, const xui_settings
     v->st_phase = 0;
     scopy(v->st_sig, sizeof(v->st_sig), sig);
     if (animating) *animating = 0;
+    return dirty;
+}
+
+/* ================================================================
+ * v0.21.0: Wi-Fi (lista de redes) e teclado de texto (senha)
+ * ================================================================ */
+#define ST_KIND_WIFI     102
+#define ST_KIND_TEXTKEY  103
+
+#define WP_PX  64
+#define WP_PY  130
+#define WP_PW  1152
+#define WP_PH  470
+#define WL_X   (WP_PX + 44)
+#define WL_W   380
+#define WR_X   (WL_X + WL_W + 40)
+#define WR_W   (WP_PX + WP_PW - 44 - WR_X)
+#define WR_Y0  (WP_PY + 84)
+#define WROW_H 52
+#define WROW_P 58
+#define WR_VIS 6
+#define WBTN_Y (WP_PY + 330)
+
+static xui_rect_t wifi_status_dots(void) { xui_rect_t r = { WL_X, WP_PY + 86, WL_W, 30 }; return r; }
+static xui_rect_t wifi_list_dots(void) { xui_rect_t r = { WR_X + 220, WP_PY + 34, 220, 30 }; return r; }
+
+static void draw_dots(xui_canvas_t *c, int x, int cy, int phase) {
+    for (int i = 0; i < 3; i++) {
+        int on = (phase % 3) == i;
+        xui_circle(c, x + 7 + i * 22, cy, on ? 7 : 5, on ? XUI_C_ACCENT : XUI_C_FAINT, 255);
+    }
+}
+
+/* 4 barrinhas de sinal com a base em y */
+static void draw_bars(xui_canvas_t *c, int x, int y, int bars, uint32_t on, uint32_t off) {
+    for (int i = 0; i < 4; i++) {
+        int h = 5 + i * 4;
+        xui_round_rect(c, x + i * 7, y - h, 5, h, 1, i < bars ? on : off, 255);
+    }
+}
+
+/* cadeado (base em y) */
+static void draw_lock(xui_canvas_t *c, int x, int y, uint32_t col) {
+    xui_round_frame(c, x + 4, y - 15, 6, 8, 4, 2, col);
+    xui_round_rect(c, x, y - 10, 14, 10, 2, col, 255);
+}
+
+static void render_wifi(xui_view_t *v, xui_canvas_t *c, const xui_wifi_t *w, const char *version, int phase) {
+    xui_copy_from(c, v->bg, v->w, c->clip);
+    xui_fill_a(c, 0, 0, v->w, v->h, XUI_C_BG, 170);
+    draw_logo(c, version);
+    xui_round_rect(c, WP_PX, WP_PY, WP_PW, WP_PH, 14, XUI_C_PANEL, 240);
+    /* ---- esquerda: título, estado, rede salva, botões ---- */
+    int x = WL_X, y = WP_PY + 64;
+    xui_text(c, XUI_F_H2, x, y, XUI_C_TEXT, "Wi-Fi", 0, WL_W);
+    y += 44;
+    int tx = x;
+    if (w->status_kind == XUI_WS_OK) {
+        xui_circle(c, x + 7, y - 7, 7, XUI_C_ACCENT, 255);
+        tx += 24;
+    } else if (w->status_kind == XUI_WS_ERROR) {
+        xui_circle(c, x + 11, y - 7, 11, XUI_C_RED, 255);
+        xui_text_center(c, XUI_F_LABEL, x, 22, y - 2, XUI_C_TEXT, "!", 0);
+        tx += 30;
+    } else if (w->status_kind == XUI_WS_NEUTRAL) {
+        xui_circle(c, x + 7, y - 7, 6, XUI_C_FAINT, 255);
+        tx += 24;
+    }
+    int tw = xui_text(c, XUI_F_ROW, tx, y, XUI_C_TEXT, w->status_title ? w->status_title : "", 0, x + WL_W - tx -
+                      (w->status_kind == XUI_WS_BUSY ? 80 : 0));
+    if (w->status_kind == XUI_WS_BUSY) draw_dots(c, tw + 12, y - 7, phase);
+    y += 30;
+    if (w->status_text && w->status_text[0])
+        xui_text_wrap(c, XUI_F_BODY, x, y, WL_W, 0, 3, 0, w->status_kind == XUI_WS_ERROR ? XUI_C_TEXT : XUI_C_DIM,
+                      w->status_text);
+    if (w->saved && w->saved[0]) {
+        xui_text(c, XUI_F_LABEL, x, WP_PY + 262, XUI_C_FAINT, "REDE SALVA", 1, WL_W);
+        xui_text(c, XUI_F_ROW, x, WP_PY + 292, XUI_C_TEXT, w->saved, 0, WL_W);
+    }
+    static const char *blab[2] = { "Procurar redes", "Esquecer rede" };
+    for (int i = 0; i < 2; i++) {
+        int by = WBTN_Y + i * 62, f = w->focus == i - 2, dim = i == 1 && !w->can_forget;
+        if (f) {
+            xui_round_rect(c, x - 3, by - 3, WL_W + 6, 52, 10, XUI_C_TEXT, 255);
+            xui_text_center(c, XUI_F_ROW, x, WL_W, by + 30, XUI_C_BG, blab[i], 0);
+        } else {
+            xui_round_rect(c, x, by, WL_W, 46, 8, XUI_C_BUTTON, dim ? 110 : 255);
+            xui_text_center(c, XUI_F_ROW, x, WL_W, by + 30, dim ? XUI_C_FAINT : XUI_C_TEXT, blab[i], 0);
+        }
+    }
+    /* ---- direita: redes ---- */
+    xui_text(c, XUI_F_LABEL, WR_X, WP_PY + 56, XUI_C_FAINT, "REDES DISPONÍVEIS", 1, 200);
+    if (w->scanning) {
+        xui_rect_t d = wifi_list_dots();
+        int lx = xui_text(c, XUI_F_LABEL, d.x, WP_PY + 56, XUI_C_ACCENT, "Procurando", 0, 120);
+        draw_dots(c, lx + 8, WP_PY + 50, phase);
+    }
+    if (w->nnets <= 0) {
+        xui_text_wrap(c, XUI_F_BODY, WR_X, WR_Y0 + 40, WR_W, 0, 4, 0, XUI_C_DIM,
+                      w->empty ? w->empty : (w->scanning ? "Procurando redes…" : "Nenhuma rede encontrada."));
+    } else {
+        int first = 0;
+        if (w->focus >= WR_VIS) first = w->focus - WR_VIS + 1;
+        for (int i = 0; i < WR_VIS && first + i < w->nnets; i++) {
+            const xui_wifi_net_t *n = &w->nets[first + i];
+            int ry = WR_Y0 + i * WROW_P, f = w->focus == first + i;
+            uint32_t fg = f ? XUI_C_BG : (n->dim ? XUI_C_FAINT : XUI_C_TEXT);
+            if (f) xui_round_rect(c, WR_X - 3, ry - 3, WR_W + 6, WROW_H + 6, 10, XUI_C_TEXT, 255);
+            else xui_round_rect(c, WR_X, ry, WR_W, WROW_H, 8, XUI_C_BUTTON, 150);
+            int base = ry + WROW_H / 2 + 8;
+            draw_bars(c, WR_X + 16, ry + WROW_H / 2 + 9, n->bars, fg, f ? XUI_C_DIM : XUI_C_PH);
+            int right = WR_X + WR_W - 18;
+            if (n->tag && n->tag[0]) {
+                int gw = xui_text_width(XUI_F_LABEL, n->tag, 0);
+                right -= gw;
+                xui_text(c, XUI_F_LABEL, right, base - 1,
+                         f ? XUI_C_BG : (n->dim ? XUI_C_FAINT : XUI_C_ACCENT), n->tag, 0, 0);
+                right -= 16;
+            }
+            if (n->lock) {
+                right -= 14;
+                draw_lock(c, right, base, fg);
+                right -= 14;
+            }
+            xui_text(c, XUI_F_ROW, WR_X + 60, base, fg, n->ssid ? n->ssid : "", 0, right - (WR_X + 60));
+        }
+        int hidden = w->nnets - first - WR_VIS;
+        if (hidden > 0) {
+            char m[32];
+            snprintf(m, sizeof(m), "+%d %s abaixo", hidden, hidden == 1 ? "rede" : "redes");
+            xui_text(c, XUI_F_LABEL, WR_X, WR_Y0 + WR_VIS * WROW_P + 14, XUI_C_FAINT, m, 0, WR_W);
+        }
+    }
+    if (w->hint && w->hint[0]) {
+        int hw = draw_hints(c, 0, 0, w->hint, 1);
+        draw_hints(c, WP_PX + WP_PW - 36 - hw, WP_PY + WP_PH + 40, w->hint, 0);
+    }
+}
+
+xui_rect_t xui_wifi_frame(xui_view_t *v, xui_canvas_t *c, const xui_wifi_t *w, const xui_home_data_t *d,
+                          unsigned now_ms, int *animating) {
+    xui_rect_t none = { 0, 0, 0, 0 }, full = { 0, 0, v->w, v->h };
+    xui_rect_t dirty = none;
+    v->valid = 0;
+    v->last_ms = now_ms;
+    v->have_time = 1;
+    char sig[600], num[64];
+    int n = 0;
+    snprintf(num, sizeof(num), "%d/%d/%d/%d/%d", w->focus, w->nnets, w->status_kind, w->scanning, w->can_forget);
+    sig_cat(sig, &n, (int)sizeof(sig), num);
+    sig_cat(sig, &n, (int)sizeof(sig), w->status_title);
+    sig_cat(sig, &n, (int)sizeof(sig), w->status_text);
+    sig_cat(sig, &n, (int)sizeof(sig), w->saved);
+    sig_cat(sig, &n, (int)sizeof(sig), w->empty);
+    sig_cat(sig, &n, (int)sizeof(sig), w->hint);
+    for (int i = 0; i < w->nnets && n < (int)sizeof(sig) - 40; i++) {
+        snprintf(num, sizeof(num), "%d%d%d", w->nets[i].bars, w->nets[i].lock, w->nets[i].dim);
+        sig_cat(sig, &n, (int)sizeof(sig), num);
+        sig_cat(sig, &n, (int)sizeof(sig), w->nets[i].ssid);
+        sig_cat(sig, &n, (int)sizeof(sig), w->nets[i].tag);
+    }
+    if (!v->hero_valid) { build_hero(v, d, NULL); v->st_valid = 0; }
+    int phase = (int)(now_ms / 300);
+    int busy = w->status_kind == XUI_WS_BUSY;
+    if (!v->st_valid || v->st_kind != ST_KIND_WIFI || strcmp(sig, v->st_sig) != 0) {
+        dirty = full;
+    } else if ((busy || w->scanning) && phase != v->st_phase) {
+        if (busy) dirty = wifi_status_dots();
+        if (w->scanning) dirty = xui_rect_union(dirty, wifi_list_dots());
+    }
+    if (!xui_rect_empty(dirty)) {
+        xui_set_clip(c, dirty);
+        render_wifi(v, c, w, d ? d->version : NULL, phase);
+        xui_clip_all(c);
+        v->stats.frames++;
+        if (dirty.w == full.w && dirty.h == full.h) v->stats.full++; else v->stats.partial++;
+    }
+    v->st_valid = 1;
+    v->st_kind = ST_KIND_WIFI;
+    v->st_prog = -1;
+    v->st_phase = phase;
+    scopy(v->st_sig, sizeof(v->st_sig), sig);
+    if (animating) *animating = busy || w->scanning;
+    return dirty;
+}
+
+/* ---- teclado de texto (senha) ---- */
+#define TK_KW   50
+#define TK_KH   50
+#define TK_GAP  6
+#define TK_W    (XUI_TK_COLS * TK_KW + (XUI_TK_COLS - 1) * TK_GAP)
+#define TK_X    (KP_PX + KP_PW - 44 - TK_W)
+#define TK_Y    (KP_PY + 40)
+#define TKL_X   (KP_PX + 44)
+#define TKL_W   (TK_X - 48 - TKL_X)
+
+static xui_rect_t tk_dots_rect(void) { xui_rect_t r = { TKL_X, KIN_Y + KIN_H + 40, TKL_W, 40 }; return r; }
+
+/* spans das ações (iguais a xtk_act_span): A1 = 2,2,3,3; A2 = 5,5 */
+static const int tk_a1[4][2] = { { 0, 2 }, { 2, 2 }, { 4, 3 }, { 7, 3 } };
+static const int tk_a2[2][2] = { { 0, 5 }, { 5, 5 } };
+
+static void render_textkey(xui_view_t *v, xui_canvas_t *c, const xui_textkey_t *k, const char *version, int phase) {
+    xui_copy_from(c, v->bg, v->w, c->clip);
+    xui_fill_a(c, 0, 0, v->w, v->h, XUI_C_BG, 170);
+    draw_logo(c, version);
+    xui_round_rect(c, KP_PX, KP_PY, KP_PW, KP_PH, 14, XUI_C_PANEL, 240);
+    int x = TKL_X, y = KP_PY + 64, w = TKL_W;
+    xui_text(c, XUI_F_H2, x, y, XUI_C_TEXT, k->title ? k->title : "Senha", 0, w);
+    y += 38;
+    xui_text_wrap(c, XUI_F_BODY, x, y, w, 0, 3, 0, XUI_C_DIM, k->text);
+    /* caixa da senha: bolinhas ou o texto; mostra o fim se não couber */
+    xui_round_rect(c, x, KIN_Y, w, KIN_H, 10, XUI_C_BUTTON, 255);
+    int base = KIN_Y + KIN_H / 2 + 10, ix = x + 20, iw = w - 40;
+    const char *t = k->typed ? k->typed : "";
+    int n = (int)strlen(t);
+    int endx = ix;
+    if (!k->show) {
+        int cap = iw / 16;
+        int s0 = n > cap ? n - cap : 0;
+        for (int i = s0; i < n; i++) xui_circle(c, ix + 6 + (i - s0) * 16, base - 8, 5, XUI_C_TEXT, 255);
+        endx = ix + (n - s0) * 16;
+    } else {
+        int s0 = 0;
+        while (s0 < n && xui_text_width(XUI_F_ROW, t + s0, 0) > iw - 24) s0++;
+        int px0 = ix;
+        if (s0 > 0) px0 = xui_text(c, XUI_F_ROW, ix, base, XUI_C_FAINT, "…", 0, 0);
+        endx = xui_text(c, XUI_F_ROW, px0, base, XUI_C_TEXT, t + s0, 0, 0);
+    }
+    if (!k->busy) xui_fill(c, endx + 2, base - 22, 2, 28, XUI_C_ACCENT);
+    char cnt[64];
+    snprintf(cnt, sizeof(cnt), "%d/%d caracteres%s", k->len, k->maxlen,
+             k->len < k->minlen ? (k->minlen == 8 ? " (mínimo 8)" : "") : "");
+    xui_text(c, XUI_F_LABEL, x, KIN_Y + KIN_H + 24, k->len < k->minlen ? XUI_C_FAINT : XUI_C_DIM, cnt, 0, w);
+    xui_rect_t dr = tk_dots_rect();
+    if (k->busy) {
+        const char *st = k->status ? k->status : "Conectando…";
+        int sx = xui_text(c, XUI_F_ROW, x, dr.y + 26, XUI_C_TEXT, st, 0, w - 90);
+        draw_dots(c, sx + 12, dr.y + 19, phase);
+    } else if (k->error && k->error[0]) {
+        xui_circle(c, x + 11, dr.y + 19, 11, XUI_C_RED, 255);
+        xui_text_center(c, XUI_F_LABEL, x, 22, dr.y + 24, XUI_C_TEXT, "!", 0);
+        xui_text_wrap(c, XUI_F_BODY, x + 32, dr.y + 25, w - 32, 0, 2, 0, XUI_C_TEXT, k->error);
+    }
+    /* teclas */
+    for (int r = 0; r < XUI_TK_ROWS; r++) {
+        const char *row = k->rows[r] ? k->rows[r] : "";
+        int rl = (int)strlen(row);
+        for (int col = 0; col < XUI_TK_COLS && col < rl; col++) {
+            char s1[2] = { row[col], 0 };
+            key_btn(c, TK_X + col * (TK_KW + TK_GAP), TK_Y + r * (TK_KH + TK_GAP), TK_KW, TK_KH, s1,
+                    !k->busy && k->row == r && k->col == col, 0, k->busy || k->len >= k->maxlen);
+        }
+    }
+    int ay = TK_Y + XUI_TK_ROWS * (TK_KH + TK_GAP) + 8;
+    const char *l1[4] = { k->shift_label ? k->shift_label : "ABC", k->sym_label ? k->sym_label : "#+=", "Espaço",
+                          "Apagar" };
+    for (int a = 0; a < 4; a++) {
+        int ax = TK_X + tk_a1[a][0] * (TK_KW + TK_GAP), aw = tk_a1[a][1] * (TK_KW + TK_GAP) - TK_GAP;
+        key_btn(c, ax, ay, aw, TK_KH, l1[a], !k->busy && k->row == XUI_TK_ROWS && k->col == a, 0,
+                k->busy || (a == 3 && k->len == 0) || (a == 2 && k->len >= k->maxlen));
+    }
+    ay += TK_KH + TK_GAP;
+    const char *l2[2] = { k->show ? "Ocultar senha" : "Mostrar senha", "Conectar" };
+    int ready = k->len >= k->minlen && k->len <= k->maxlen;
+    for (int a = 0; a < 2; a++) {
+        int ax = TK_X + tk_a2[a][0] * (TK_KW + TK_GAP), aw = tk_a2[a][1] * (TK_KW + TK_GAP) - TK_GAP;
+        key_btn(c, ax, ay, aw, TK_KH, l2[a], !k->busy && k->row == XUI_TK_ROWS + 1 && k->col == a,
+                a == 1 && ready && !k->busy, k->busy || (a == 1 && !ready));
+    }
+    if (k->hint && k->hint[0]) {
+        int hw = draw_hints(c, 0, 0, k->hint, 1);
+        draw_hints(c, KP_PX + KP_PW - 36 - hw, KP_PY + KP_PH + 40, k->hint, 0);
+    }
+}
+
+xui_rect_t xui_textkey_frame(xui_view_t *v, xui_canvas_t *c, const xui_textkey_t *k, const xui_home_data_t *d,
+                             unsigned now_ms, int *animating) {
+    xui_rect_t none = { 0, 0, 0, 0 }, full = { 0, 0, v->w, v->h };
+    xui_rect_t dirty = none;
+    v->valid = 0;
+    v->last_ms = now_ms;
+    v->have_time = 1;
+    /* a assinatura guarda a senha só como hash curto (nunca o texto) */
+    unsigned hsh = 2166136261u;
+    for (const char *p = k->typed ? k->typed : ""; *p; p++) hsh = (hsh ^ (unsigned char)*p) * 16777619u;
+    char sig[600], num[96];
+    int n = 0;
+    snprintf(num, sizeof(num), "%d/%d/%d/%d/%d/%d/%08x", k->row, k->col, k->len, k->busy, k->show, k->maxlen, hsh);
+    sig_cat(sig, &n, (int)sizeof(sig), num);
+    sig_cat(sig, &n, (int)sizeof(sig), k->title);
+    sig_cat(sig, &n, (int)sizeof(sig), k->text);
+    for (int r = 0; r < XUI_TK_ROWS; r++) sig_cat(sig, &n, (int)sizeof(sig), k->rows[r]);
+    sig_cat(sig, &n, (int)sizeof(sig), k->shift_label);
+    sig_cat(sig, &n, (int)sizeof(sig), k->sym_label);
+    sig_cat(sig, &n, (int)sizeof(sig), k->error);
+    sig_cat(sig, &n, (int)sizeof(sig), k->status);
+    sig_cat(sig, &n, (int)sizeof(sig), k->hint);
+    if (!v->hero_valid) { build_hero(v, d, NULL); v->st_valid = 0; }
+    int phase = (int)(now_ms / 300);
+    if (!v->st_valid || v->st_kind != ST_KIND_TEXTKEY || strcmp(sig, v->st_sig) != 0) dirty = full;
+    else if (k->busy && phase != v->st_phase) dirty = tk_dots_rect();
+    if (!xui_rect_empty(dirty)) {
+        xui_set_clip(c, dirty);
+        render_textkey(v, c, k, d ? d->version : NULL, phase);
+        xui_clip_all(c);
+        v->stats.frames++;
+        if (dirty.w == full.w && dirty.h == full.h) v->stats.full++; else v->stats.partial++;
+    }
+    v->st_valid = 1;
+    v->st_kind = ST_KIND_TEXTKEY;
+    v->st_prog = -1;
+    v->st_phase = phase;
+    scopy(v->st_sig, sizeof(v->st_sig), sig);
+    if (animating) *animating = k->busy;
     return dirty;
 }

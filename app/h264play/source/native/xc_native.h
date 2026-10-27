@@ -143,11 +143,15 @@ void xn_dec_release_hw3(void);
  * nothing changes; max-1 = lend hw3 to the session (it needs CPU); max =
  * the session is back on hw1, take hw3 again (claim first). */
 int  xn_dec_threads_wanted(int cur, int max);
+/* v0.21.25: "hw3=decoder sessao=hw1" pro log do decoder */
+void xn_hw3_diag(char *o, size_t n);
 /* For the STAT line (dec_thr=). */
 void xn_set_dec_threads(int n);
 /* 1 while the session thread runs (game entry waits a little for it to
  * hand the live phases to hw1, so the decoder opens with 4). */
 int  xn_session_thread_busy(void);
+/* v0.21.10: ms com o vídeo perdido no jogo (WebRTC morto ou sessão esperando a hw3 do decoder); 0 = ok */
+int  xn_video_lost_ms(void);
 
 #ifdef __cplusplus
 }
