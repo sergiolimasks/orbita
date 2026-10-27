@@ -914,6 +914,8 @@ static int pull_next_au(uint8_t **out, int *out_size) {
 #define EXIT_USER       1    /* Back+Start 2s */
 #define EXIT_NATIVE_END 3    /* stage 5: a sessão do Xbox acabou (ERROR/IDLE) */
 #define EXIT_NATIVE_LOST 4   /* v0.21.11: vídeo perdido (WebRTC morto / sessão sem a hw 3) */
+#define EXIT_NATIVE_KICK 5   /* v0.21.32: o xCloud encerrou a sessão com um motivo (KickFor...) */
+static char g_exit_kick[48];
 
 static menu_model_t g_mm;
 static uint64_t     g_hold_since = 0;     /* Back+Start apertados desde */
@@ -987,6 +989,13 @@ static int ingame_check(uint64_t now) {
         last_st = now;
         /* RECONNECTING/STARTING (re-sinalização) ficam no jogo: o vídeo
          * congela e volta sozinho. ERROR / IDLE = acabou. */
+        /* v0.21.32: o xCloud disse por que acabou (jogo fechado pelo menu da
+         * nuvem, inatividade, tempo do gratuito, outra instância): sai já, sem
+         * re-sinalizar nem esperar os 5 s do "vídeo perdido" */
+        if (xn_kick_reason(g_exit_kick, sizeof(g_exit_kick))) {
+            xc_log("[menu] o xCloud encerrou a sessão (%s): saindo pro menu", g_exit_kick);
+            return EXIT_NATIVE_KICK;
+        }
         if (native_poll_state() && (g_mm.state == MM_ST_ERROR || g_mm.state == MM_ST_IDLE))
             return EXIT_NATIVE_END;
         /* v0.21.11: o WebRTC morreu (ou a sessão quer a hw 3, que é do
@@ -3330,7 +3339,18 @@ static void menu_main(int gpu_on) {
             xn_summary(ns, sizeof(ns));
             xc_log("[native] fim do jogo (%d): %s", r, ns);
         }
-        if (was_native && r == EXIT_NATIVE_LOST) {
+        if (was_native && r == EXIT_NATIVE_KICK) {
+            const char *k = g_exit_kick;
+            if (!strcmp(k, "KickForClosedGame")) snprintf(msg, sizeof(msg), "O jogo foi fechado.");
+            else if (!strcmp(k, "KickForBeingIdle")) snprintf(msg, sizeof(msg), "Sessão encerrada por inatividade.");
+            else if (!strcmp(k, "KickForOutOfStreamingTime"))
+                snprintf(msg, sizeof(msg), "Acabou o tempo de jogo gratuito do xCloud para este jogo.");
+            else if (!strcmp(k, "KickByNewSession")) snprintf(msg, sizeof(msg), "Sua conta abriu um jogo em outro aparelho.");
+            else if (!strcmp(k, "KickForStopCommand")) snprintf(msg, sizeof(msg), "A sessão foi encerrada.");
+            else snprintf(msg, sizeof(msg), "O xCloud encerrou a sessão (%.40s).", k);
+            xlu_set_game("");
+            xlu_flush_soon();
+        } else if (was_native && r == EXIT_NATIVE_LOST) {
             snprintf(msg, sizeof(msg), "A conexão do vídeo caiu (rede/Wi-Fi). A sessão foi encerrada: abra o jogo de novo.");
             xlu_set_game("");
             xlu_flush_soon();

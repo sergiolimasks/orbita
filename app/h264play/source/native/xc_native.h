@@ -152,6 +152,8 @@ void xn_set_dec_threads(int n);
 int  xn_session_thread_busy(void);
 /* v0.21.10: ms com o vídeo perdido no jogo (WebRTC morto ou sessão esperando a hw3 do decoder); 0 = ok */
 int  xn_video_lost_ms(void);
+/* v0.21.32: 1 = o servidor encerrou a sessão (motivo "KickFor..." em out) */
+int  xn_kick_reason(char *out, size_t n);
 
 #ifdef __cplusplus
 }

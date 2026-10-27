@@ -80,6 +80,11 @@
           <p class="muted">{{ _('area.key_none') }}</p>
         {% endif %}
         <p class="small muted">{{ _('area.key_help') }} {{ _('key.one_console') }}</p>
+        <div class="alert warn mt-3 key-swap" role="note">{{ icon('alert', 18) }}<div>
+          <b>{{ _('area.key_swap_title') }}</b>
+          <ol class="key-swap-steps">{% for s in _('area.key_swap_steps') %}<li>{{ s }}</li>{% endfor %}</ol>
+          <p class="small">{{ _('area.key_swap_blocked') }}</p>
+        </div></div>
         {% if key_blocked and not new_key %}
         <p class="small"><b>{{ _('key.blocked_regen') }}</b></p>
         {% elif not new_key %}

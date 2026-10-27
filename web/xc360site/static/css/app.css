@@ -738,3 +738,7 @@ details.disclosure p{padding:0 12px 12px;font-size:var(--t-sm);color:var(--c-mut
 @media (min-width:761px){.rep-item>.badge,.rep-item>.row{justify-self:end}}
 @media (max-width:760px){.table.cards-sm td.lead-cell{display:block}.table.cards-sm td.lead-cell .clamp2{margin-top:4px}}
 .table td.actions{padding-right:var(--s-3)}
+
+/* área: passo a passo pra trocar a chave (pedido 2026-10-27) */
+.key-swap .key-swap-steps{margin:6px 0 4px 18px;padding:0}
+.key-swap .key-swap-steps li{margin:2px 0}

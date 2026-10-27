@@ -166,8 +166,48 @@ int xn_video_lost_ms(void) {
     return d > 0x7fffffff ? 0x7fffffff : (int)d;
 }
 
+/* v0.21.32: motivo de fim mandado pelo servidor
+ * (/streaming/sessionLifetimeManagement/serverInitiatedDisconnect, {"reason":"KickFor..."}).
+ * Escreve a thread de rede; lê o main (xn_kick_reason). Zerado a cada play/stop. */
+static char         g_kick[48];
+static volatile int g_kick_set = 0;
+
+static void kick_scan(const uint8_t *d, size_t n) {
+    if (g_kick_set || n < 30) return;
+    char buf[400];
+    size_t m = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
+    memcpy(buf, d, m);
+    buf[m] = 0;
+    if (!strstr(buf, "serverInitiatedDisconnect")) return;
+    const char *k = strstr(buf, "Kick");
+    if (!k) return;
+    size_t i = 0;
+    while (i < sizeof(g_kick) - 1 && ((k[i] >= 'A' && k[i] <= 'Z') || (k[i] >= 'a' && k[i] <= 'z'))) {
+        g_kick[i] = k[i];
+        i++;
+    }
+    g_kick[i] = 0;
+    __asm__ __volatile__("sync" ::: "memory");
+    g_kick_set = 1;
+    logf_("[xn] o xCloud encerrou a sessão: %s", g_kick);
+}
+
+int xn_kick_reason(char *out, size_t n) {
+    if (!g_kick_set) return 0;
+    __asm__ __volatile__("sync" ::: "memory");
+    if (out && n) snprintf(out, n, "%s", g_kick);
+    return 1;
+}
+
+static void kick_clear(void) {
+    g_kick_set = 0;
+    g_kick[0] = 0;
+    __asm__ __volatile__("sync" ::: "memory");
+}
+
 static void cb_msg(void *u, xcw_channel_t ch, const uint8_t *d, size_t n) {
     (void)u;
+    if (ch == XCW_CH_MESSAGE) kick_scan(d, n);
     if (g_p.channel_msg) g_p.channel_msg((int)ch, d, n);
 }
 
@@ -269,6 +309,7 @@ int xn_dec_threads_wanted(int cur, int max) {
 }
 
 int xn_play(const char *title_id, const char *name, int f2p) {
+    kick_clear();
     if (!g_inited) return XN_EINIT;
     if (!xn_can_play()) return XN_EBUSY;
     if (g_p.before_session) g_p.before_session();
@@ -306,6 +347,7 @@ int xn_play(const char *title_id, const char *name, int f2p) {
 }
 
 void xn_stop(void) {
+    kick_clear();
     if (!g_inited) return;
     if (g_want || xst_running() || xst_owner() != XSM_OWN_DONE) logf_("[xn] STOP: DELETE da sessao + webrtc desligado");
     g_want = 0;
