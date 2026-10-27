@@ -109,7 +109,7 @@ Seção sem opção focável (Rede com cabo): → não faz nada, a dica mostra s
   padrão até reiniciar (`WIFI.md`, regra da rota). Mostrar o item Wi-Fi + "Para usar o
   Wi-Fi, reinicie o Xbox sem o cabo."
 
-**Vídeo e Som** (`65_cfg_tela`; pedido do usuário em 2026-10-27: "Vídeo" vira
+**Vídeo e Som** (`65_cfg_video_som`; pedido do usuário em 2026-10-27: "Vídeo" vira
 "Vídeo e Som", vídeo em cima e som embaixo)
 - *Vídeo*: "Resolução da imagem enviada à TV". Opção **720p** "1280 × 720 · 60 Hz" com o
   rádio marcado e "EM USO"; **1080p** "1920 × 1080" apagado com etiqueta Flare
