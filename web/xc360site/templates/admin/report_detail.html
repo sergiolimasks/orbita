@@ -57,6 +57,7 @@
     <section class="card"><div class="card-head"><h2>{{ _('ui.details') }}</h2></div>
       <div class="card-body"><dl class="kv">
         <dt>{{ _('adm.tester') }}</dt><dd><span class="row">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.testers', q=r.email) }}">{{ r.uname }}</a></span></dd>
+        {% if r.inv_note %}<dt>{{ _('adm.invited_as') }}</dt><dd><span class="mono">{{ r.inv_note }}</span></dd>{% endif %}
         <dt>{{ _('adm.country') }}</dt><dd>{% if r.country %}{{ flag(r.country) }} {{ country_name(r.country) }}{% else %}—{% endif %}</dd>
         <dt>{{ _('rep.version') }}</dt><dd>{% if r.version %}<a class="mono" href="{{ url_for('admin.reports', version=r.version) }}">{{ r.version }}</a>{% else %}—{% endif %}</dd>
         <dt>{{ _('rep.game') }}</dt><dd>{{ r.game or '—' }}</dd>

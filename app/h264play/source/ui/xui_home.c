@@ -82,6 +82,7 @@ struct xui_view {
     char      sess[40], notice[160], hint[160], updlab[64];
     int       upd;                       /* v0.20.1: selo do Atualizar desenhado */
     int       set;                       /* v0.20.3: botão Configurações desenhado */
+    int       netk;                      /* v0.21.29: ícone da conexão desenhado (0/1/2) */
     int       conf_open, conf_focus;
     const char *conf_title;
     char      focus_id[40];     /* último jogo em foco (hero/título) */
@@ -240,6 +241,31 @@ static void draw_logo(xui_canvas_t *c, const char *version) {
         xui_text(c, XUI_F_LABEL, MX + xui_logo.w + 12, LOGO_Y + 21, XUI_C_HAZE, version, 0, 200);
 }
 
+/* v0.21.29: ícone + rótulo da conexão depois da versão, na linha do logo.
+ * Cabo: plugue RJ45; Wi-Fi: 3 barras; sem conexão: barras apagadas + ponto vermelho. */
+static void draw_net(xui_canvas_t *c, int x, int kind) {
+    int base = LOGO_Y + 21;   /* mesma linha de base da versão */
+    int y = base - 14;        /* topo do ícone (14 px) */
+    const char *lab;
+    uint32_t col;
+    if (kind == 1) {
+        col = XUI_C_ACCENT;
+        lab = "Cabo";
+        xui_round_rect(c, x, y + 2, 14, 10, 2, col, 255);      /* corpo do plugue */
+        xui_fill(c, x + 4, y + 12, 6, 2, col);                  /* trava */
+        for (int i = 0; i < 3; i++) xui_fill(c, x + 3 + i * 3, y + 4, 2, 4, XUI_C_BG);   /* contatos */
+    } else {
+        col = kind == 2 ? XUI_C_ACCENT : XUI_C_FAINT;
+        lab = kind == 2 ? "Wi-Fi" : "Sem conexão";
+        for (int i = 0; i < 3; i++) {
+            int h = 5 + i * 4;
+            xui_fill(c, x + i * 5, y + 14 - h, 3, h, col);
+        }
+        if (kind != 2) xui_circle(c, x + 15, y + 3, 3, XUI_C_RED, 255);
+    }
+    xui_text(c, XUI_F_LABEL, x + 22, base, kind ? XUI_C_HAZE : XUI_C_RED, lab, 0, 0);
+}
+
 /* v0.20.1: etiqueta "ASSINATURA" (jogo incluso na assinatura), no lugar do
  * selo GAME PASS: caixa escura + máscara clara com o texto vazado. */
 static int draw_sub_label(xui_canvas_t *c, int x, int y) {
@@ -254,6 +280,11 @@ static int hb_cx(int w, int i) {   /* centro x do botão i (0 = Configurações,
 
 static void draw_header(xui_canvas_t *c, const xui_home_data_t *d, int focus_btn) {
     draw_logo(c, d ? d->version : NULL);
+    if (d) {
+        int vx = MX + xui_logo.w + 12;
+        if (d->version && d->version[0]) vx += xui_text_width(XUI_F_LABEL, d->version, 0) + 16;
+        draw_net(c, vx, d->net_kind);
+    }
     int cy = LOGO_Y + 15;
     int first = (d && d->settings_avail) ? XUI_HB_SETTINGS : XUI_HB_UPDATE;   /* v0.20.3 */
     for (int i = first; i < XUI_HB_COUNT; i++) {
@@ -550,7 +581,7 @@ xui_rect_t xui_home_frame(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t 
         if (strcmp(sess, v->sess)) dirty = xui_rect_union(dirty, rows);
     }
     if (strcmp(d->hint ? d->hint : "", v->hint) || (d->update_avail != 0) != v->upd ||
-        (d->settings_avail != 0) != v->set ||
+        (d->settings_avail != 0) != v->set || d->net_kind != v->netk ||
         strcmp(d->update_label ? d->update_label : "", v->updlab)) {
         xui_rect_t hdr = { 0, 0, v->w, HDR_H };
         dirty = xui_rect_union(dirty, hdr);
@@ -615,6 +646,7 @@ xui_rect_t xui_home_frame(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t 
     scopy(v->updlab, sizeof(v->updlab), d->update_label);
     v->upd = d->update_avail != 0;
     v->set = d->settings_avail != 0;
+    v->netk = d->net_kind;
     v->conf_open = conf_open;
     v->conf_focus = cf ? cf->focus : 0;
     v->conf_title = cf ? cf->title : NULL;

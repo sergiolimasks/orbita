@@ -275,6 +275,7 @@ M = {
     "adm.no_key": ("sem chave", "no key", "sin clave"),
     "adm.invite_new": ("Novo convite", "New invite", "Nueva invitación"),
     "adm.invite_note": ("Para quem (anotação interna)", "For whom (internal note)", "Para quién (nota interna)"),
+    "adm.invited_as": ("Nome no convite", "Invite name", "Nombre en la invitación"),
     "adm.invite_valid": ("Validade", "Valid for", "Validez"),
     "adm.hours": ("horas", "hours", "horas"),
     "adm.days": ("dias", "days", "días"),

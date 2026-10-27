@@ -6,7 +6,7 @@
 <div class="page-head">
   <div class="row">{{ avatar(t.name) }}
     <div><h1>{{ t.name }}{% if t.role == 'admin' %} <span class="badge outline">admin</span>{% endif %}</h1>
-      <p class="lead">{{ t.email }} · <span class="mono">{{ t.handle }}</span></p></div></div>
+      <p class="lead">{{ t.email }} · <span class="mono">{{ t.handle }}</span>{% if inv_note %} · <span title="{{ _('adm.invited_as') }}">{{ _('adm.invited_as') }}: <strong>{{ inv_note }}</strong></span>{% endif %}</p></div></div>
   <div class="actions"><a class="btn secondary" href="{{ url_for('admin.testers') }}">{{ icon('arrow-left', 16) }}{{ _('common.back') }}</a></div>
 </div>
 

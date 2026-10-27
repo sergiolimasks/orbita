@@ -40,7 +40,7 @@
       <td class="lead-cell"><div class="cell-user">{{ avatar(u.name) }}
         <div class="truncate"><div class="nm"><a href="{{ url_for('admin.tester_detail', uid=u.id) }}">{{ u.name }}</a>{% if u.role == 'admin' %} <span class="badge outline">admin</span>{% endif %}</div>
         <div class="em truncate" title="{{ u.phone }}">{{ u.email }}</div>
-        <div class="em mono">{{ u.handle }}</div></div></div></td>
+        <div class="em mono">{{ u.handle }}{% if u.inv_note %} · <span title="{{ _('adm.invited_as') }}">{{ u.inv_note }}</span>{% endif %}</div></div></div></td>
       <td data-label="{{ _('adm.country') }}" class="nowrap">{% if u.country %}<span class="flag" aria-hidden="true">{{ flag(u.country) }}</span>{{ country_name(u.country) }}{% else %}<span class="muted">—</span>{% endif %}</td>
       <td data-label="{{ _('rep.status') }}">{% if u.active %}<span class="badge u-active"><span class="dot"></span>{{ _('adm.active') }}</span>{% else %}<span class="badge u-inactive"><span class="dot"></span>{{ _('ui.inactive') }}</span>{% endif %}</td>
       <td data-label="{{ _('adm.key') }}">{% if u.key_mask %}<span class="mono" title="{{ _('ui.key_created', d=u.key_at|dt) }}">{{ u.key_mask }}</span>{% if u.key_dup_at %} <a class="badge red" href="{{ url_for('admin.tester_detail', uid=u.id) }}" title="{{ _('key.dup_when', d=u.key_dup_at|dt) }}"><span class="dot"></span>{{ _('key.st_blocked') }}</a>{% elif u.key_console %} <span class="badge gray" title="{{ u.key_console }}">{{ icon('monitor', 11) }}{{ u.key_console[:6] }}</span>{% endif %}{% else %}<span class="muted small">{{ _('adm.no_key') }}</span>{% endif %}</td>

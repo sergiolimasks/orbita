@@ -72,6 +72,7 @@ int  xw_sys_session(void);
  * deu a hora. 1 = gravou. */
 int  xw_logfile_raw_step(void);
 void xw_sys_init(int cable);
+void xw_sys_cable_up(void);   /* v0.21.29: cabo pegou DHCP depois do boot e virou a rota */
 void xw_sys_step(void);
 /* v0.21.7: o mesmo passo durante um xc_usb_hold (sem tocar no tinyehci) */
 void xw_sys_step_held(void);

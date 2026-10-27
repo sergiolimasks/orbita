@@ -956,6 +956,30 @@ static void ring_health(char *o, size_t n) {
              g_relinks);
 }
 
+/* v0.21.29: Wi-Fi desligado desde o boot (cabo): o vigia assume o hotplug do
+ * EHCI do Wi-Fi do mesmo jeito (controle com fio na frente -> OHCI), sem abrir
+ * os canos. Porta já habilitada (pendrive em uso) fica de fora até desconectar. */
+static int g_watch_only = 0;
+int xhs_watch_claim(void) {
+    int b = 1, p = 0, a = 0;
+    if (xhs_find(&b, &p, &a) == 0) { b = 1; p = 0; }   /* Fat/sem o adaptador: o EHCI 1 (portas da frente) */
+    if (b < 0 || b >= EHCI_HCD_COUNT || !ehci_hcds[b].regs) return -1;
+    g_h = &ehci_hcds[b];
+    g_bus = b;
+    g_port = p;   /* 0 = nenhuma porta reservada */
+    int np = g_h->num_port;
+    if (np > EHCI_MAX_ROOT_PORTS) np = EHCI_MAX_ROOT_PORTS;
+    if (np > 8) np = 8;
+    for (int k = 0; k < np; k++) {
+        uint32_t v = ps_rd(g_h, k);
+        if (v & PS_PE) g_pw[b][k].st = 3;   /* em uso pelo tinyehci (pendrive): não mexe */
+        g_h->devices[k].busy = 1;
+    }
+    g_watch_only = 1;
+    xc_log("[usb] Wi-Fi desligado: hotplug do EHCI %d com o vigia (porta reservada %d)", b, p);
+    return 0;
+}
+
 unsigned xhs_port_handoffs(void) { return g_pw_handoffs; }
 unsigned xhs_port_hs_blocked(void) { return g_pw_hs_blocked; }
 unsigned xhs_port_changes(void) { return g_pw_changes; }
@@ -989,7 +1013,7 @@ int xhs_port_watch(void) {
                 w->seen = 1;
             }
             /* só o EHCI do Wi-Fi, com os canos abertos, e nunca a porta do Wi-Fi */
-            if (!g_ok || b != g_bus || p == g_port - 1) continue;
+            if (!(g_ok || g_watch_only) || b != g_bus || p == g_port - 1) continue;
             h->devices[p].busy = 1;   /* o tinyehci fica fora deste controlador */
             uint64_t ms = (uint64_t)tb_diff_msec(tb, w->t);
             switch (w->st) {

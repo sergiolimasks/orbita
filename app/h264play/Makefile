@@ -13,6 +13,8 @@ $(error DEVKITXENON not set. Run: source scripts/env.sh (from repo root))
 endif
 
 include $(DEVKITXENON)/rules
+# v0.21.29: linker script próprio (app.lds + buraco nos primeiros 256 KB, ver orbita.lds)
+LDSCRIPT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))/orbita.lds
 
 TARGET   := h264play
 BUILD    := build
@@ -20,7 +22,7 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.21.20
+VERSION := 0.21.29
 APP_VERSION := $(VERSION)
 # v0.15: nome da variante no VERSION (ex.: make VARIANT=full -> 0.15.0-full).
 # Vazio = sufixos automaticos pelos knobs (-gpu/-cpu, -altivec/-c, -st, -trace).

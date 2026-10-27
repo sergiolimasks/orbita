@@ -64,6 +64,7 @@ unsigned xhs_overlay_reads(void);
 /* v0.21.20: portas do EHCI do Wi-Fi tratadas por nós (o tinyehci fica fora);
  * mudanças de PORTSC nos dois controladores vão pro log. A cada 10 ms. */
 int  xhs_port_watch(void);
+int  xhs_watch_claim(void);   /* v0.21.29: vigia sem o Wi-Fi aberto (cabo desde o boot) */
 unsigned xhs_port_handoffs(void);
 unsigned xhs_port_hs_blocked(void);
 unsigned xhs_port_changes(void);

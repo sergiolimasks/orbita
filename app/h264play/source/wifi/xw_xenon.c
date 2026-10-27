@@ -86,6 +86,12 @@ static int          g_released = 0;
 /* só liga o adaptador com rede salva e sem cabo, ou quando a tela do Wi-Fi
  * pede algo (o Ethernet de quem não usa Wi-Fi fica exatamente como antes) */
 static volatile int g_activate = 0;
+/* v0.21.29: cabo com internet = Wi-Fi desligado de vez (desassocia, tira a
+ * interface do lwIP e o passo vira um return: nada de CPU/memória gasto) */
+static volatile int g_off_req = 0;
+static int g_off = 0;
+static int g_watch_claimed = 0;   /* v0.21.29: vigia do hotplug sem o Wi-Fi aberto */
+static uint32_t g_off_t = 0;
 static uint32_t     g_last_arp = 0;
 /* v0.21.1: transporte (1 = OHCI full speed, 2 = EHCI high speed nosso), etapas
  * com log e prazo: a tela nunca fica em "Ligando" pra sempre */
@@ -760,12 +766,26 @@ static void rx_watch(uint32_t now) {
         g_probes++;
         etharp_request(&g_wl, &g_wl.gw);
     }
+    /* v0.21.29: conectado e sem DHCP há 8 s = o RX de dados está morto mesmo
+     * que respostas de comando cheguem (elas enganam o xrw_step: na tela do
+     * boot ficava 60 s "conectando"). Mesma recuperação do RX parado. */
+    static uint32_t t_up = 0, t_kick = 0;
+    int dhcp_stuck = 0;
+    if (g_core.link != XW_LINK_UP || g_dhcp_ok) t_up = 0;
+    else if (!t_up) t_up = now;
+    else if (now - t_up >= 8000u && (!t_kick || now - t_kick >= 15000u)) {
+        t_kick = now;
+        t_up = now;
+        dhcp_stuck = 1;
+        xc_log("[wifi] conectado há 8 s sem resposta do DHCP: reassociando");
+    }
     switch (g_rec) {
     case REC_IDLE:
         /* v0.21.17: o TX que conta é o TENTADO pelo core (fila do USB aceitou
          * ou não), não as conclusões do USB: com o poll parado as conclusões
          * também param e o detector ficava cego */
-        if (!xrw_step(&g_rw, now, g_core.link == XW_LINK_UP, rx, (uint32_t)(g_core.tx_frames + g_core.tx_drop))) return;
+        if (!xrw_step(&g_rw, now, g_core.link == XW_LINK_UP, rx, (uint32_t)(g_core.tx_frames + g_core.tx_drop)) &&
+            !dhcp_stuck) return;
         rec_log_dump();
         {
             /* v0.21.11: o rearme antigo reescrevia o overlay de um QH vivo (o
@@ -779,6 +799,7 @@ static void rx_watch(uint32_t now) {
         rec_save_target();
         g_rec_t0 = g_rec_t = now;
         g_rec_up_seen = 0;
+        if (dhcp_stuck) xw_avoid_current(&g_core);   /* v0.21.29: tenta o outro ponto de acesso */
         if (g_rt_len > 0 && xw_reconnect(&g_core) == 0) {
             g_rw_reassoc++;
             g_rec = REC_REASSOC;
@@ -913,6 +934,13 @@ static void step_body(int held);
  * chamada de dentro de um caminho que já está no passo) */
 static void step(int held) {
     if (!g_inited) return;
+    if (g_off) {
+        /* v0.21.29: Wi-Fi desligado, mas se ele chegou a abrir o EHCI as portas
+         * desse controlador são nossas: o vigia de hotplug (controle com fio
+         * na frente) continua, sozinho (a cada 10 ms, só registradores) */
+        if ((g_tr == TR_EHCI || g_watch_claimed) && !held) xhs_port_watch();
+        return;
+    }
     /* v0.21.17: reentrada de verdade = pilha mais funda que a de quem entrou;
      * fora disso a trava está velha (memória pisada): limpa e loga */
     uintptr_t fr = (uintptr_t)__builtin_frame_address(0);   /* a pilha de verdade (o ASan move as locais) */
@@ -955,12 +983,44 @@ static void canary_check(const char *what, uint32_t *a, uint32_t *b, size_t inne
 }
 unsigned xw_canary_hits(void) { return g_canary_hits; }
 
+/* v0.21.29: 1 = segue o passo normal (mandando o deauth), 0 = desligou */
+static int wifi_off_step(uint32_t now) {
+    if (!g_off_t) {
+        g_off_t = now ? now : 1;
+        if (g_attached && g_core.dev == XW_DEV_READY) {
+            xw_disconnect(&g_core);
+            return 1;   /* uns passos pro deauth sair pelo USB */
+        }
+    } else if (g_attached && now - g_off_t < 300u) {
+        return 1;
+    }
+    if (g_wl_added) {
+        if (netif_default == &g_wl) netif_set_default(&netif);
+        dhcp_stop(&g_wl);
+        netif_set_down(&g_wl);
+        netif_remove(&g_wl);
+        g_wl_added = 0;
+    }
+    g_wl_up = 0;
+    g_dhcp_ok = 0;
+    g_is_default = 0;
+    g_activate = 0;
+    g_core.dev = XW_DEV_OFF;
+    g_core.link = XW_LINK_IDLE;
+    publish(now);
+    xc_log("[wifi] desligado: o cabo tem internet (sem passo, sem interface)");
+    if (g_tr != TR_EHCI && xhs_watch_claim() == 0) g_watch_claimed = 1;
+    g_off = 1;
+    return 0;
+}
+
 static void step_body(int held) {
     canary_check("g_core", g_corebox.can_a, g_corebox.can_b, sizeof(xw_core_t));
     canary_check("g_rx_copy", g_rxbox.can_a, g_rxbox.can_b, sizeof(g_rxbox.buf));
     xwd_beat(held ? "rede: wifi (pendrive em uso)" : "rede: wifi");
     uint32_t now = now_ms();
     uint32_t since = (uint32_t)((mftb() - g_t0_tb) / (PPC_TIMEBASE_FREQ / 1000));
+    if (g_off_req && !wifi_off_step(now)) return;
     if (!g_attached) {
         if (g_dead || held) goto pub;
         uint32_t every = g_present == XW_PRESENT_NO ? 1000u : (g_present == XW_PRESENT_YES && !g_activate) ? 500u
@@ -1206,6 +1266,7 @@ void xw_sys_init(int cable) {
     g_drbg_ok = mbedtls_ctr_drbg_seed(&g_drbg, mbedtls_entropy_func, &g_ent, pers, sizeof(pers)) == 0;
     if (!g_drbg_ok) xc_log("[wifi] DRBG falhou: WPA2 indisponível");
     g_activate = !cable;   /* v0.21.5: sem cabo liga já (rede salva ou a lista do boot); com cabo, nunca sozinho */
+    if (cable) { g_off_req = 1; g_core.dev = XW_DEV_OFF; }   /* v0.21.29: cabo no boot: Wi-Fi nem começa */
     xc_log("[wifi] iniciado (cabo %s)", cable ? "com DHCP: Wi-Fi não liga sozinho" : "sem DHCP: ligando o adaptador");
     __asm__ __volatile__("sync" ::: "memory");
     g_inited = 1;
@@ -1352,6 +1413,18 @@ int xw_logfile_pending(void) { return g_wl_len > 0; }
 
 void xw_sys_set_session(int on) { g_session = on ? 1 : 0; }
 int  xw_sys_session(void) { return g_session; }
+
+/* v0.21.29: thread de rede (cable_watch): o cabo pegou DHCP e já é a rota.
+ * O Wi-Fi não volta a ser rota sozinho nem liga sozinho daqui pra frente. */
+void xw_sys_cable_up(void) {
+    if (g_cable) return;
+    g_cable = 1;
+    g_pub.cable = 1;
+    g_is_default = 0;
+    g_activate = 0;
+    g_off_req = 1;
+    xc_log("[wifi] cabo assumiu a rota: desligando o Wi-Fi");
+}
 
 /* v0.21.10: um setor do anel pro NETLOG.TXT (direto no disco). Com sessão,
  * a cada 2 s (ou já, com 2 KB juntos); sem sessão o anel fica pro FatFs. */

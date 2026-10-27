@@ -228,6 +228,19 @@ static void target_chosen(xw_core_t *c) {
         if (b->ssid_len != c->tssid_len || memcmp(b->ssid, c->tssid, (size_t)c->tssid_len)) continue;
         if (!best || b->rssi > best->rssi) best = b;
     }
+    if (best && c->avoid_on && !memcmp(best->bssid, c->avoid_bssid, 6)) {
+        const mwx_bss_t *alt = NULL;
+        for (int i = 0; i < c->ntmp; i++) {
+            const mwx_bss_t *b = &c->tmp[i];
+            if (b->ssid_len != c->tssid_len || memcmp(b->ssid, c->tssid, (size_t)c->tssid_len)) continue;
+            if (!memcmp(b->bssid, c->avoid_bssid, 6)) continue;
+            if (!alt || b->rssi > alt->rssi) alt = b;
+        }
+        if (alt) {
+            xlog(c, "outro ponto de acesso da mesma rede (o anterior não deu DHCP)");
+            best = alt;
+        }
+    }
     if (!best) {
         xlog(c, "\"%s\" não apareceu no scan", c->tssid);
         fail_link(c, XW_E_NOTFOUND, 0);
@@ -871,6 +884,11 @@ int xw_reconnect(xw_core_t *c) {
     wipe(pmk, sizeof(pmk));
     c->fast_chan = ch;
     return r;
+}
+
+void xw_avoid_current(xw_core_t *c) {
+    memcpy(c->avoid_bssid, c->cur.bssid, 6);
+    c->avoid_on = 1;
 }
 
 void xw_disconnect(xw_core_t *c) {

@@ -40,7 +40,7 @@
       <td class="lead-cell"><a class="row-link" href="{{ url_for('admin.report_detail', rid=r.id, back=request.full_path) }}"><span class="muted mono">#{{ r.id }}</span> {{ r.description.split('\n')[0]|truncate(70) }}</a>
         <div class="xs muted clamp2">{{ r.description|truncate(160) }}</div></td>
       <td data-label="{{ _('rep.status') }}">{{ status(r.status) }}</td>
-      <td data-label="{{ _('adm.tester') }}"><span class="row nowrap">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.reports', tester=r.user_id) }}" title="{{ _('ui.reports_of', n=r.uname) }}">{{ r.uname }}</a>{% if r.country %} <span aria-hidden="true">{{ flag(r.country) }}</span>{% endif %}</span></td>
+      <td data-label="{{ _('adm.tester') }}"><span class="row nowrap">{{ avatar(r.uname, 'sm') }}<a href="{{ url_for('admin.reports', tester=r.user_id) }}" title="{{ _('ui.reports_of', n=r.uname) }}">{{ r.uname }}</a>{% if r.inv_note %} <span class="badge gray" title="{{ _('adm.invited_as') }}">{{ r.inv_note }}</span>{% endif %}{% if r.country %} <span aria-hidden="true">{{ flag(r.country) }}</span>{% endif %}</span></td>
       <td data-label="{{ _('rep.version') }}" class="mono">{{ r.version or '—' }}</td>
       <td data-label="{{ _('rep.game') }}">{{ r.game or '—' }}</td>
       <td data-label="{{ _('adm.photos') }}" class="r num">{{ r.nfiles or '—' }}</td>

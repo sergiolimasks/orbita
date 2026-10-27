@@ -111,6 +111,8 @@ typedef struct {
     uint32_t cmd_worst_ms;
     uint16_t cmd_worst;
     int      now_set;
+    uint8_t  avoid_bssid[6];  /* v0.21.29: ponto de acesso que não deu DHCP: outro da mesma rede primeiro */
+    int      avoid_on;
     int      fast_chan;       /* v0.21.9: próxima busca só neste canal (reconexão rápida) */
     /* v0.21.10: economia de energia (desligada depois de conectar) e
      * estatísticas do firmware (GET_LOG / RSSI_INFO / TX_RATE_QUERY) */
@@ -148,6 +150,8 @@ int  xw_scan(xw_core_t *c);
 /* pmk NULL = rede aberta. user = 1 se veio da tela agora. */
 int  xw_connect(xw_core_t *c, const char *ssid, int ssid_len, const uint8_t *pmk, int user);
 void xw_disconnect(xw_core_t *c);
+/* v0.21.29: a próxima conexão evita o ponto de acesso atual se houver outro com o mesmo nome */
+void xw_avoid_current(xw_core_t *c);
 /* v0.21.9: reassocia à rede atual, procurando só no canal dela (recuperação) */
 int  xw_reconnect(xw_core_t *c);
 /* v0.21.10: pede as estatísticas ao firmware (só com o link de pé e a fila

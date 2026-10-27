@@ -19,6 +19,7 @@
 #include "tcp_stream.h"
 #include "xc_wdog.h"               /* v0.21.7: vigia */
 #include "login/net_pipe.h"        /* v0.17: canos HTTPS/DNS do login */
+#include "wifi/xw_xenon.h"           /* v0.21.29: cabo assume a rota */
 #include "webrtc/xc_udp_xenon.h"   /* stage 5: UDP do WebRTC nesta thread */
 
 #include <stdio.h>
@@ -143,15 +144,22 @@ static int net_init_fast(void) {
     }
     netif_set_default(&netif);
     dhcp_start(&netif);
+#ifdef ORBITA_TEST_PHYWAIT
+    /* build de teste: espera o link do cabo como nos consoles que sobem o PHY na hora */
+    while (!network_link_up() && tb_diff_msec(mftb(), t0) < ORBITA_TEST_PHYWAIT) network_poll();
+#endif
     int link = network_link_up() ? 1 : 0;
     unsigned link_ms = (unsigned)tb_diff_msec(mftb(), t0);
-    unsigned wait_ms = link ? 10000 : 0;
+    /* v0.21.29: o PHY do Corona diz "sem link" mesmo com cabo (o DHCP fecha
+     * ~2 s depois). Sem link: espera 3 s pelo DHCP mesmo assim, pra o cabo
+     * valer já no boot e o Wi-Fi nem ligar. */
+    unsigned wait_ms = link ? 10000 : 3000;
     uint64_t t1 = mftb();
     while (netif.ip_addr.addr == 0 && tb_diff_msec(mftb(), t1) < wait_ms) network_poll();
     unsigned dhcp_ms = (unsigned)tb_diff_msec(mftb(), t1);
     char cl[120];
     snprintf(cl, sizeof(cl), "[net] cabo: link %s (PHY %u ms), DHCP %s em %u ms%s", link ? "sim" : "não", link_ms,
-             netif.ip_addr.addr ? "ok" : "sem resposta", dhcp_ms, link ? "" : " (sem link: não espera)");
+             netif.ip_addr.addr ? "ok" : "sem resposta", dhcp_ms, link ? "" : " (PHY sem link: esperou 3 s)");
     printf("%s\n", cl);
     np_log_line(cl);
     if (netif.ip_addr.addr) return NETWORK_INIT_SUCCESS;
@@ -177,13 +185,21 @@ static void cable_watch(void) {
     if (g_cable || tb_diff_msec(now, last) < 500) return;
     last = now;
     if (netif.dhcp && netif.dhcp->state == DHCP_BOUND && netif.ip_addr.addr) {
+        /* v0.21.29: o cabo é a "caixinha" principal: com DHCP ele vira a rota
+         * e o Wi-Fi sai da frente. No meio do jogo não troca (as conexões
+         * cairiam); troca quando a sessão fechar. */
+        if (netif_default != &netif) {
+            if (xw_sys_session()) return;
+            netif_set_default(&netif);
+            np_log_line("[net] cabo pegou DHCP: agora é a rota padrão (Wi-Fi sai da frente)");
+        }
+        xw_sys_cable_up();
         g_cable = 1;
         char l[96];
         snprintf(l, sizeof(l), "[net] cabo pegou DHCP depois do boot: %u.%u.%u.%u", ip4_addr1(&netif.ip_addr),
                  ip4_addr2(&netif.ip_addr), ip4_addr3(&netif.ip_addr), ip4_addr4(&netif.ip_addr));
         np_log_line(l);
-        if (netif_default == &netif)   /* o Wi-Fi não é a rota: DNS pelo DHCP do cabo */
-            np_dns_reload(((uint32_t)ip4_addr1(&netif.gw) << 24) | ((uint32_t)ip4_addr2(&netif.gw) << 16) |
+        np_dns_reload(((uint32_t)ip4_addr1(&netif.gw) << 24) | ((uint32_t)ip4_addr2(&netif.gw) << 16) |
                           ((uint32_t)ip4_addr3(&netif.gw) << 8) | ip4_addr4(&netif.gw));
     }
 }

@@ -254,7 +254,10 @@ static void dns_step(void) {
 void np_log_line(const char *text) {
     /* v0.21.5: as linhas do Wi-Fi (e do cabo) também vão pro XC360/WIFILOG.TXT
      * (lido pelo FTP quando não houve internet nenhuma) */
-    if (text && (!strncmp(text, "[wifi]", 6) || !strncmp(text, "[net] cabo", 10) || !strncmp(text, "[wdog]", 6))) {
+    /* v0.21.29: + [net] [login] [beta] [update] [logs] (o boot sem internet não chega ao servidor) */
+    if (text && (!strncmp(text, "[wifi]", 6) || !strncmp(text, "[net]", 5) || !strncmp(text, "[wdog]", 6) ||
+                 !strncmp(text, "[login]", 7) || !strncmp(text, "[beta]", 6) || !strncmp(text, "[update]", 8) ||
+                 !strncmp(text, "[logs]", 6))) {
         xw_logfile_line(text);
     } else if (text && xw_sys_session()) {
         /* v0.21.10: na sessão vai tudo (sessão, WebRTC, TLS, falhas), no
@@ -318,7 +321,7 @@ int np_init(void) {
 void np_dns_reload(uint32_t gw) {
     int from_dhcp = dns_fill(gw);
     char s[160];
-    int l = snprintf(s, sizeof(s), "[net] DNS do Wi-Fi (%d do DHCP):", from_dhcp);
+    int l = snprintf(s, sizeof(s), "[net] DNS refeito (%d do DHCP):", from_dhcp);
     for (int i = 0; i < g_dns_nsrv; i++)
         l += snprintf(s + l, sizeof(s) - (size_t)l, " %u.%u.%u.%u", g_dns_srv[i] >> 24,
                       g_dns_srv[i] >> 16 & 255, g_dns_srv[i] >> 8 & 255, g_dns_srv[i] & 255);

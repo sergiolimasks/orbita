@@ -2799,6 +2799,8 @@ static int menu_loop(int net_ok, const char *msg) {
         g_xd.session_id = sid;
         g_xd.session_name = sname;
         g_xd.settings_avail = g_mm.settings_on;   /* v0.20.3 */
+        /* v0.21.29: ícone ao lado do logo: cabo com internet, Wi-Fi como rota ou nada */
+        g_xd.net_kind = stream_net_cable() ? 1 : g_ws.is_default ? 2 : 0;   /* o link do PHY mente no Corona: vale o DHCP */
         g_xd.update_avail = g_us.latest[0] && (g_us.phase == XCU_AVAILABLE || g_us.phase == XCU_FAILED ||
                                                g_us.phase == XCU_CANCELLED);
         if (g_xd.update_avail) {

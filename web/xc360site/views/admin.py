@@ -150,8 +150,9 @@ def _testers_ctx(**extra):
     st = request.args.get("status", "")
     where, args = ["true"], []
     if q:
-        where.append("(u.name ILIKE %s OR u.email ILIKE %s OR u.handle ILIKE %s)")
-        args += [_like(q)] * 3
+        where.append("(u.name ILIKE %s OR u.email ILIKE %s OR u.handle ILIKE %s"
+                     " OR EXISTS (SELECT 1 FROM invites i WHERE i.used_by=u.id AND i.note ILIKE %s))")
+        args += [_like(q)] * 4
     if st == "active":
         where.append("u.active")
     elif st == "inactive":
@@ -167,6 +168,7 @@ def _testers_ctx(**extra):
     total = db.row("SELECT count(*) AS n " + base, *args)["n"]
     pg = ui.Page(total, ui.page_arg(request), PER_PAGE)
     us = db.rows("""SELECT u.*, k.key_hint, k.created_at AS key_at, k.console_id AS key_console, k.dup_at AS key_dup_at,
+                    (SELECT i.note FROM invites i WHERE i.used_by=u.id AND i.note<>'' ORDER BY i.id DESC LIMIT 1) AS inv_note,
                     (SELECT count(*) FROM reports r WHERE r.user_id=u.id) AS nrep,
                     (SELECT count(*) FROM reports r WHERE r.user_id=u.id AND r.status = ANY(%s)) AS nopen,
                     GREATEST(u.last_login_at, (SELECT max(last_seen) FROM sessions s WHERE s.user_id=u.id),
@@ -221,7 +223,8 @@ def _tester_ctx(u, **extra):
                    "(SELECT count(*) FROM log_index WHERE tester = ANY(%s) AND tester <> '') AS nlogs, "
                    "(SELECT max(rx) FROM log_index WHERE tester = ANY(%s) AND tester <> '') AS last_log",
                    u["id"], hs, hs)
-    return dict(t=u, key=key, events=events, stats=stats, **extra)
+    inv = db.row("SELECT note FROM invites WHERE used_by=%s AND note<>'' ORDER BY id DESC LIMIT 1", u["id"])
+    return dict(t=u, key=key, events=events, stats=stats, inv_note=inv["note"] if inv else "", **extra)
 
 
 @bp.get("/testers/<int:uid>")
@@ -324,8 +327,9 @@ def reports():
     if fg:
         where.append("r.game ILIKE %s"); args.append(_like(fg))
     if fq:
-        where.append("(r.description ILIKE %s OR u.name ILIKE %s OR r.console_id ILIKE %s OR r.id::text = %s)")
-        args += [_like(fq)] * 3 + [fq.lstrip("#")]
+        where.append("(r.description ILIKE %s OR u.name ILIKE %s OR r.console_id ILIKE %s OR r.id::text = %s"
+                     " OR EXISTS (SELECT 1 FROM invites i WHERE i.used_by=u.id AND i.note ILIKE %s))")
+        args += [_like(fq)] * 3 + [fq.lstrip("#"), _like(fq)]
     status_where = list(where)
     if fs == "open":
         where.append("r.status = ANY(%s)"); args.append(list(OPEN_STATUSES))
@@ -336,7 +340,7 @@ def reports():
     sql_from = " FROM reports r JOIN users u ON u.id=r.user_id WHERE "
     total = db.row("SELECT count(*) AS n" + sql_from + " AND ".join(where), *args)["n"]
     pg = ui.Page(total, ui.page_arg(request), PER_PAGE)
-    reps = db.rows("SELECT r.*, u.name AS uname, u.handle, u.country, "
+    reps = db.rows("SELECT r.*, u.name AS uname, u.handle, u.country, (SELECT i.note FROM invites i WHERE i.used_by=u.id AND i.note<>'' ORDER BY i.id DESC LIMIT 1) AS inv_note, "
                    "(SELECT count(*) FROM report_files f WHERE f.report_id=r.id) AS nfiles"
                    + sql_from + " AND ".join(where) + " ORDER BY r.id DESC LIMIT %s OFFSET %s", *args, pg.per, pg.offset)
     nargs = args[:len(args) - (1 if fs else 0)]
@@ -355,7 +359,7 @@ def reports():
 
 @bp.get("/reports/<int:rid>")
 def report_detail(rid):
-    r = db.row("SELECT r.*, u.name AS uname, u.handle, u.email, u.country FROM reports r JOIN users u ON u.id=r.user_id "
+    r = db.row("SELECT r.*, u.name AS uname, u.handle, u.email, u.country, (SELECT i.note FROM invites i WHERE i.used_by=u.id AND i.note<>'' ORDER BY i.id DESC LIMIT 1) AS inv_note FROM reports r JOIN users u ON u.id=r.user_id "
                "WHERE r.id=%s", rid)
     if not r:
         abort(404)

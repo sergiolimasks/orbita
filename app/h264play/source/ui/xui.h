@@ -224,6 +224,8 @@ typedef struct {
     /* v0.20.3: botão Configurações (engrenagem) no topo: só pra quem tem
      * chave beta válida */
     int              settings_avail;
+    /* v0.21.29: conexão ao lado do logo: 0 = sem conexão, 1 = cabo, 2 = Wi-Fi */
+    int              net_kind;
 } xui_home_data_t;
 
 /* Telas de estado (mesmo estilo). */
