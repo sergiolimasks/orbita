@@ -1,3 +1,4 @@
+import json
 import re, secrets
 
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request,
@@ -30,6 +31,21 @@ def _files_by_report(reps):
     return files
 
 
+TEST_BUILD_KEY = "tester-builds/%d/%s"   # xenon.elf + meta.json, postos pela equipe (tools/tester_build.py)
+
+
+def _test_build(uid):
+    """Versão de teste só deste testador (ou None). meta: {"version","note"}."""
+    raw = _storage().get(TEST_BUILD_KEY % (uid, "meta.json"))
+    if not raw:
+        return None
+    try:
+        m = json.loads(raw)
+    except ValueError:
+        return None
+    return m if isinstance(m, dict) and m.get("version") else None
+
+
 def _area_ctx():
     """Início do testador: chave, download da beta, passos e relatos recentes."""
     reps = db.rows("SELECT * FROM reports WHERE user_id=%s ORDER BY id DESC LIMIT 3", g.user["id"])
@@ -38,7 +54,7 @@ def _area_ctx():
                     list(OPEN_STATUSES), g.user["id"])
     key = _key()
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
-                reports=reps, counts=counts)
+                reports=reps, counts=counts, test_build=_test_build(g.user["id"]))
 
 
 def _form_ctx(form=None, errors=None):
@@ -175,6 +191,19 @@ def media(fid):
     r = Response(data, mimetype="image/jpeg")
     r.headers["Cache-Control"] = "private, max-age=3600"
     r.headers["Content-Disposition"] = "inline; filename=report-%d-%d.jpg" % (f["report_id"], fid)
+    return r
+
+
+@bp.get("/area/download/teste")
+@sec.login_required
+def download_test():
+    """Versão de teste feita só pra este testador (R2 tester-builds/<id>/)."""
+    m = _test_build(g.user["id"])
+    data = _storage().get(TEST_BUILD_KEY % (g.user["id"], "xenon.elf")) if m else None
+    if data is None:
+        abort(404)
+    r = Response(data, mimetype="application/octet-stream")
+    r.headers["Content-Disposition"] = "attachment; filename=xenon.elf"
     return r
 
 

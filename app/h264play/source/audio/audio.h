@@ -32,6 +32,9 @@ enum { AUDIO_SRC_NONE = 0, AUDIO_SRC_TEST = 2, AUDIO_SRC_RTC = 3 };
 
 /* main, at boot: memory only (ring, test-stream index). Touches no hardware. */
 int  audio_init(void);
+/* v0.21.31: volume da saída do console em % (50..400; XC360/VOLUME.TXT) */
+void audio_set_volume_pct(int pct);
+int  audio_volume_pct(void);
 /* main: start/stop a session. RTC = the game's WebRTC audio;
  * TEST = play the embedded Opus tone/sweep stream in a loop (no PC needed).
  * The first begin brings up the sound chip and libopus (on this thread). */

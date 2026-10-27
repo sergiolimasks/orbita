@@ -45,13 +45,33 @@ static int dev_queued(void *u) {
 
 static uint16_t g_dev_buf[AUD_BLOCK * AUD_CH] __attribute__((aligned(128)));
 
+/* v0.21.31: volume da saída do console (XC360/VOLUME.TXT, %). A saída P2 de AV
+ * do Xbox 360 E é nível de linha: com fone ligado direto o som fica baixo. */
+#ifndef ORBITA_AUDIO_GAIN_DEFAULT
+#define ORBITA_AUDIO_GAIN_DEFAULT 100
+#endif
+static volatile int g_gain_q8 = ORBITA_AUDIO_GAIN_DEFAULT * 256 / 100;
+void audio_set_volume_pct(int pct) {
+    if (pct < 50) pct = 50;
+    if (pct > 400) pct = 400;
+    g_gain_q8 = pct * 256 / 100;
+}
+int audio_volume_pct(void) { return g_gain_q8 * 100 / 256; }
+
 static void dev_submit(void *u, const int16_t *pcm, int frames) {
     (void)u;
+    int g = g_gain_q8;
     for (int i = 0; i < frames * AUD_CH; i++) {
+        int v = pcm[i];
+        if (g != 256) {
+            v = (v * g) >> 8;
+            if (v > 32767) v = 32767;
+            else if (v < -32768) v = -32768;
+        }
 #if XCLOUD360_AUDIO_PCM_SWAP
-        g_dev_buf[i] = __builtin_bswap16((uint16_t)pcm[i]);
+        g_dev_buf[i] = __builtin_bswap16((uint16_t)(int16_t)v);
 #else
-        g_dev_buf[i] = (uint16_t)pcm[i];
+        g_dev_buf[i] = (uint16_t)(int16_t)v;
 #endif
     }
     xenon_sound_submit(g_dev_buf, frames * AUD_CH * 2);

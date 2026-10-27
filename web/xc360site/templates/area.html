@@ -41,6 +41,19 @@
       {% endif %}
     </section>
 
+    {% if test_build %}
+    {# ---------------- versão de teste só deste testador #}
+    <section class="card" aria-labelledby="tb-title">
+      <div class="card-body">
+        <span class="label">{{ _('area.test_label') }}</span>
+        <h2 id="tb-title" class="ver mt-2">{{ test_build.version }}</h2>
+        {% if test_build.note %}<p class="mt-2">{{ test_build.note }}</p>{% endif %}
+        <p class="muted small mt-2">{{ _('area.test_help') }}</p>
+        <a class="btn lg mt-3" href="{{ url_for('tester.download_test') }}">{{ icon('download', 18) }}{{ _('area.test_download') }}</a>
+      </div>
+    </section>
+    {% endif %}
+
     {# ---------------- como colocar no Xbox #}
     <section class="card" aria-labelledby="howto-title">
       <div class="card-head"><h2 id="howto-title">{{ icon('gamepad', 18) }}{{ _('ui.howto_title') }}</h2><span class="sub">{{ _('ui.howto_time') }}</span></div>

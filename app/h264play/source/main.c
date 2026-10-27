@@ -3189,6 +3189,18 @@ static void menu_main(int gpu_on) {
                 }
                 xc_log("[xn] teto do vídeo: %d kbps (%s)", xc.video_kbps, kn > 0 ? "KBPS.TXT" : "padrão");
             }
+#ifdef XCLOUD360_AUDIO
+            {   /* v0.21.31: XC360/VOLUME.TXT = volume da saída do console em % (50..400) */
+                char vb[16];
+                int vn = xc_store_load("VOLUME.TXT", vb, sizeof(vb) - 1);
+                if (vn > 0) {
+                    vb[vn] = 0;
+                    int v = atoi(vb);
+                    if (v >= 50 && v <= 400) audio_set_volume_pct(v);
+                }
+                xc_log("[audio] volume da saída: %d%% (%s)", audio_volume_pct(), vn > 0 ? "VOLUME.TXT" : "padrão");
+            }
+#endif
             xcw_set_log_hook(native_lib_log);
             xcw_net_set_pump(stream_net_pump);
             xpt_park_new = 1;   /* v0.21.26: o iterator do usrsctp não pega a hw 4 (DECODE-PERF.md) */
