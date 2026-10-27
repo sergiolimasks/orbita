@@ -32,6 +32,8 @@ section.wrap{margin-top:40px}
 .logo{display:flex;align-items:center}
 .logo img{height:30px;width:auto;display:block}
 .pill-beta{font-size:.72rem;font-weight:600;color:var(--muted);border:1px solid var(--line);padding:2px 8px;border-radius:99px;white-space:nowrap}
+.pill-ver{color:var(--accent,#38b6ff);border-color:currentColor}
+.pill-ver:hover{text-decoration:none;background:var(--surface)}
 .topnav{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .langs{display:flex;gap:2px;margin-right:4px}
 .langs a{color:var(--muted);font-size:.8rem;font-weight:600;padding:4px 6px;border-radius:6px}
@@ -175,7 +177,7 @@ dl.meta dd{margin:0;word-break:break-all}
 .navlink:hover,.navlink.on{color:var(--text);text-decoration:none;background:var(--surface)}
 @media(max-width:560px){
   .top{flex-wrap:nowrap;gap:8px;padding:10px 12px}
-  .pill-beta{display:none}
+  .pill-beta:not(.pill-ver){display:none}
   .topnav{flex-wrap:nowrap;gap:4px}
   .langs{margin-right:0}
   .langs a{padding:4px 4px}

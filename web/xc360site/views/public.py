@@ -68,7 +68,8 @@ def game_stats():
     """(jogos, resumo) com os escondidos marcados (`hidden`). Nada de console/testador sai daqui, só contagens."""
     rows = db.rows("SELECT " + PLAY_COLS + " FROM play_sessions")
     hidden = {r["gkey"] for r in db.rows("SELECT gkey FROM game_flags WHERE hidden")}
-    return plays.games(rows, hidden)
+    cur = (releases.manifest("beta") or {}).get("version")
+    return plays.games(rows, hidden, current=cur)
 
 
 @bp.get("/jogos")
@@ -82,7 +83,7 @@ def games():
     bc = db.row("SELECT count(*) FILTER (WHERE status = ANY(%s)) AS open, count(*) FILTER (WHERE status='fixed') AS fixed, "
                 "count(*) AS total FROM reports WHERE NOT public_hidden AND status<>'duplicate'", list(OPEN_STATUSES))
     return render_template("public/games.html", games=gs, summary=summary, bugs=bugs, bc=bc,
-                           badges=plays.BADGES)
+                           badges=plays.BADGES)   # versão atual: beta_now() (context processor)
 
 
 @bp.get("/games")

@@ -159,3 +159,9 @@
 .gm-reply small{color:var(--muted);font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 .gm-reply p{margin:4px 0 0;white-space:pre-line;color:#d0d4d9}
 .gm-30{display:block;font-size:.7rem;font-weight:400}
+
+/* /jogos: versão atual da beta */
+.gm-current{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-top:12px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:.92rem}
+.gm-current svg{flex:none;color:var(--accent,#38b6ff)}
+.gm-current a{font-weight:600}
+.gm-old{font-family:inherit}

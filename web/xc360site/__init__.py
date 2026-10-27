@@ -119,7 +119,20 @@ def create_app(overrides=None, storage=None):
             "asset_v": ASSET_V,
             "query_with": _query_with,
             "nav_counts": _nav_counts,
+            "beta_now": _beta_now,
         }
+
+    def _beta_now():
+        """Versão beta atual (manifesto, cache de 60 s) e se ela tem página de novidades publicada."""
+        from . import releases
+        v = (releases.manifest("beta") or {}).get("version")
+        if not v:
+            return None
+        try:
+            has_note = bool(db.row("SELECT 1 AS x FROM release_notes WHERE version=%s AND published", v))
+        except Exception:
+            has_note = False
+        return {"version": v, "has_note": has_note}
 
     def _lang():
         return g.get("lang", i18n.DEFAULT)

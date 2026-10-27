@@ -18,7 +18,9 @@
 <body class="{% block bodyclass %}{% endblock %}">
 <header class="top">
   <a class="logo" href="{{ url_for('public.home') }}"><img src="{{ url_for('static', filename=brand.logo) }}" alt="{{ brand.logo_alt }}" height="30"></a>
-  <span class="pill-beta">{{ _('common.beta') }}</span>
+  {% set bn = beta_now() %}
+  {% if bn %}<a class="pill-beta pill-ver" href="{{ url_for('public.release_note', version=bn.version) if bn.has_note else url_for('public.status') }}" title="{{ _('common.beta_now_title') }}">{{ _('common.beta_now', v=bn.version) }}</a>
+  {% else %}<span class="pill-beta">{{ _('common.beta') }}</span>{% endif %}
   <nav class="topnav">
     <span class="langs">{% for l in LANGS %}<a href="?lang={{ l }}" class="{{ 'on' if l == lang }}" hreflang="{{ l }}">{{ LANG_LABEL[l] }}</a>{% endfor %}</span>
     <a class="navlink{{ ' on' if request.endpoint in ('public.status', 'public.release_note') }}" href="{{ url_for('public.status') }}">{{ _('st.nav') }}</a>

@@ -5,6 +5,10 @@
   <span class="eyebrow">{{ icon('gamepad', 14) }}{{ _('gm.nav') }}</span>
   <h1>{{ _('gm.title') }}</h1>
   <p class="lead">{{ _('gm.lead') }}</p>
+  {% set bn = beta_now() %}{% if bn %}
+  <p class="gm-current">{{ icon('info', 15) }}<span>{{ _('gm.current', v=bn.version) }}</span>
+    <a href="{{ url_for('public.release_note', version=bn.version) if bn.has_note else url_for('public.status') }}">{{ _('gm.current_link') }}</a></p>
+  {% endif %}
 </section>
 
 <section class="wrap" aria-labelledby="gm-sum">
@@ -45,7 +49,7 @@
       <span role="cell" data-label="{{ _('gm.pct55') }}">{% set pc = g_.pct_ok if g_.target == 30 else g_.pct55 %}{% if pc is not none %}
         <svg class="gm-bar" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bg" width="100" height="6" rx="3"/><rect class="fill {{ 'hi' if pc >= 90 else ('mid' if pc >= 40 else 'lo') }}" width="{{ pc }}" height="6" rx="3"/></svg><span class="num small">{{ pc }}%</span>{% if g_.target == 30 %}<small class="muted"> (≥ 28)</small>{% endif %}
         {% else %}<span class="muted">—</span>{% endif %}</span>
-      <span role="cell" class="mono-s" data-label="{{ _('gm.last_version') }}">{{ g_.last_version or '—' }}</span>
+      <span role="cell" class="mono-s" data-label="{{ _('gm.last_version') }}">{{ g_.last_version or '—' }}{% if g_.old %} <small class="muted gm-old">{{ _('gm.older') }}</small>{% endif %}</span>
       <span role="cell" data-label="{{ _('gm.problems') }}" class="gm-probs">
         {% if g_.drops %}<span class="fpill k-known">{{ _('gm.drops', n=g_.drops) }}</span>{% endif %}
         {% if g_.errors %}<span class="fpill gs-bad">{{ _('gm.errors', n=g_.errors) }}</span>{% endif %}
@@ -62,7 +66,7 @@
   <div class="legend" aria-label="{{ _('st.legend') }}">
     {% for b in badges %}<div><span class="fpill gs-{{ b }}">{{ _('gm.s_' ~ b) }}</span>{{ _('gm.d_' ~ b) }}</div>{% endfor %}
   </div>
-  <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gm.how_text') }}</p></details>
+  <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gm.how_text') }}</p><p>{{ _('gm.rules') }}</p></details>
 </section>
 
 <section class="wrap" aria-labelledby="gm-bugs">

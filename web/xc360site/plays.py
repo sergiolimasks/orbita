@@ -263,8 +263,11 @@ def _session_rows(rs):
     return out
 
 
-def games(rows, hidden=()):
-    """Linhas de play_sessions -> (lista por jogo, resumo). `hidden`: chaves de jogo escondidas pelo admin."""
+def games(rows, hidden=(), current=None):
+    """Linhas de play_sessions -> (lista por jogo, resumo). `hidden`: chaves de jogo escondidas pelo admin.
+    `current`: versão beta atual. Erros/travamentos de versões anteriores a ela contam como corrigidos (não
+    aparecem nem pesam no selo); quedas só aparecem enquanto não houver mais sessões boas do que quedas."""
+    cur_k = _vkey(current) if current else None
     name2tid = {}
     for r in rows:
         if r["title_id"]:
@@ -302,11 +305,18 @@ def games(rows, hidden=()):
             "testers": len({r["tester_h"] for r in rs if r["tester_h"]}),
             "fps_med": med, "pct55": round(100.0 * ge55 / samples) if samples else None,
             "target": target_fps(med), "samples": samples, "minutes": round(samples * 2 / 60.0),
-            "drops": sum(1 for r in rs if r["n_drops"]), "errors": sum(1 for r in rs if r["n_errors"]),
-            "hangs": sum(1 for r in rs if r["n_hangs"]),
+            # a queda que veio junto com um erro de versão anterior é o mesmo problema (corrigido)
+            "drops": sum(1 for r in rs if r["n_drops"] and not (r["n_errors"] and cur_k is not None
+                                                                and _vkey(r["app"]) < cur_k)),
+            "errors": sum(1 for r in rs if r["n_errors"] and (cur_k is None or _vkey(r["app"]) >= cur_k)),
+            "hangs": sum(1 for r in rs if r["n_hangs"] and (cur_k is None or _vkey(r["app"]) >= cur_k)),
+            "ok_sessions": sum(1 for r in sess if r["outcome"] == "ok"),
             "last_version": _ver(last["app"]), "last_at": last["rx"] or last["day"],
         }
+        if g["ok_sessions"] > g["drops"]:   # mais sessões boas do que quedas: a queda sai da página
+            g["drops"] = 0
         g["pct_ok"] = pct_at_target(hist, g["target"])
+        g["old"] = bool(cur_k and g["last_version"] and _vkey(g["last_version"]) < cur_k)
         g["status"] = badge(g)
         g["few"] = g["sessions"] < 3
         g["hidden"] = gk in hidden

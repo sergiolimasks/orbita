@@ -104,6 +104,22 @@ def test_badges_and_aggregation():
     assert plays.games(many)[0][0]["status"] == "unstable"
 
 
+def test_current_version_rules():
+    # erro de versão anterior à beta atual = corrigido; da atual (ou mais nova) continua
+    rows = [_row(game="Old", tid="OLD", n=0, outcome="error", errors=1, app="v0.20.7", key="o1"),
+            _row(game="Now", tid="NOW", n=0, outcome="error", errors=1, app="v0.21.29", key="n1")]
+    by = {g["name"]: g for g in plays.games(rows, current="0.21.29")[0]}
+    assert by["Old"]["errors"] == 0 and by["Now"]["errors"] == 1
+    old_err_drop = [_row(game="X", tid="X", n=0, outcome="error", errors=1, drops=1, app="v0.20.7", key="x1")]
+    assert plays.games(old_err_drop, current="0.21.29")[0][0]["drops"] == 0
+    assert by["Old"]["old"] and not by["Now"]["old"]
+    # mais sessões boas do que quedas: a queda sai; empate: fica
+    more_ok = [_row(key="m%d" % i, who=str(i), drops=1 if i == 0 else 0, outcome="drop" if i == 0 else "ok") for i in range(3)]
+    assert plays.games(more_ok, current="0.21.29")[0][0]["drops"] == 0
+    tie = [_row(key="t%d" % i, who=str(i), drops=1 if i == 0 else 0, outcome="drop" if i == 0 else "ok") for i in range(2)]
+    assert plays.games(tie, current="0.21.29")[0][0]["drops"] == 1
+
+
 def test_scrub_and_public_report():
     t = plays.scrub("Fale com joao@example.com ou +55 11 91234-5678. Corrigido na 0.20.7 (2026-10-27).")
     assert "example.com" not in t and "91234" not in t and "0.20.7" in t and "2026-10-27" in t
