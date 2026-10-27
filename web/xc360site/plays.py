@@ -13,7 +13,7 @@ banco (kv.play_salt); nada disso sai na página pública, só contagens.
 import hashlib, json, re, secrets, statistics
 from datetime import timedelta
 
-PARSER_V = 1                   # sobe quando o parser muda -> o backfill reprocessa os lotes
+PARSER_V = 2                   # sobe quando o parser muda -> o backfill reprocessa os lotes
 WARMUP_S = 4                   # ignora STAT dos primeiros ~4 s de cada sessão/reconexão
 FPS_OK = 55                    # "% do tempo >= 55 fps"
 
@@ -27,6 +27,13 @@ ERROR_RE = re.compile(r"\[sess\] STATE ERROR\b(.*)")
 NOT_GAME_ERR_RE = re.compile(r"login", re.I)       # "Faca o login no Xbox primeiro": não é problema do jogo
 HANG_RE = re.compile(r"\[wdog\] (?:TRAVOU|CRASH)\b|Segmentation fault|\bkernel panic\b")
 TITLE_RE = re.compile(r"^[A-Z0-9_]{2,64}$")
+# v2: motivo de fim que o servidor manda ({"reason":"KickFor..."} no canal de mensagens)
+KICK_RE = re.compile(r'reason\\*"\s*:\s*\\*"(Kick\w+)')
+OWNED_RE = re.compile(r"SessionOwnedByAnotherInstance")
+# fim normal da sessão: não é queda do app (tempo do gratuito, saiu pelo menu,
+# a conta abriu em outro aparelho, inatividade)
+BENIGN_KICKS = {"KickForOutOfStreamingTime", "KickForStopCommand", "KickByNewSession", "KickForBeingIdle"}
+CLOSED_KICK = "KickForClosedGame"   # o jogo fechou sozinho no servidor (não abre no app)
 OUTCOMES = ("ok", "drop", "error", "hang", "nostream")
 
 
@@ -46,6 +53,8 @@ class _Seg:
         self.skipped = 0
         self._last_skipped = None
         self.drops = self.errors = self.hangs = 0
+        self.kick = ""
+        self._pre = (0, 0)              # quedas/erros antes do motivo do servidor
         self.warm = not continued       # espera a 1ª STAT pra marcar o início
         self.t0 = None
         self.warm_n = 0
@@ -79,6 +88,13 @@ class _Seg:
     def restart_warmup(self):
         self.warm, self.t0, self.warm_n = True, None, 0
 
+    def settle(self):
+        """O que veio depois de um fim normal (ou do jogo fechar) é consequência, não queda."""
+        if self.kick in BENIGN_KICKS:
+            self.drops, self.errors = self._pre
+        elif self.kick == CLOSED_KICK:
+            self.drops = self.errors = 0
+
     def outcome(self):
         if self.hangs:
             return "hang"
@@ -89,7 +105,7 @@ class _Seg:
         return "ok" if self.fps else "nostream"
 
     def useful(self):
-        return bool(self.title_id or self.fps or self.drops or self.errors or self.hangs)
+        return bool(self.title_id or self.fps or self.drops or self.errors or self.hangs or self.kick)
 
     def result(self, fallback_name):
         name = (self.name or self.stream_name or fallback_name or "").strip()[:80]
@@ -99,8 +115,9 @@ class _Seg:
             b = str(max(0, min(70, int(round(v)))))
             hist[b] = hist.get(b, 0) + 1
         r = lambda v, n=1: round(v, n) if v is not None else None
+        self.settle()
         return {
-            "title_id": self.title_id, "game": name, "continued": self.continued,
+            "title_id": self.title_id, "game": name, "continued": self.continued, "kick": self.kick[:40],
             "outcome": self.outcome(), "n_drops": self.drops, "n_errors": self.errors, "n_hangs": self.hangs,
             "samples": len(fps), "ge55": sum(1 for v in fps if v >= FPS_OK),
             "fps_avg": r(statistics.fmean(fps)) if fps else None,
@@ -135,6 +152,12 @@ def parse(lines, doc_game=""):
         if RECONN_RE.search(ln):
             cur.restart_warmup()
             continue
+        m = KICK_RE.search(ln)
+        if m or OWNED_RE.search(ln):
+            if not cur.kick:
+                cur.kick = m.group(1) if m else "KickByNewSession"
+                cur._pre = (cur.drops, cur.errors)
+            continue
         if DROP_RE.search(ln):
             cur.drops += 1
             continue
@@ -168,7 +191,7 @@ def anon(s, value):
     return hashlib.sha256((s + "|" + (value or "")).encode()).hexdigest()[:16] if value else ""
 
 
-COLS = ("title_id", "game", "continued", "outcome", "n_drops", "n_errors", "n_hangs", "samples", "ge55",
+COLS = ("title_id", "kick", "game", "continued", "outcome", "n_drops", "n_errors", "n_hangs", "samples", "ge55",
         "fps_avg", "fps_min", "fps_med", "hist", "skipped", "kbps_avg", "loss_avg")
 
 
@@ -214,7 +237,7 @@ def _vkey(v):
     return tuple(int(x) if x.isdigit() else -1 for x in re.split(r"[.+-]", _ver(v)))
 
 
-BADGES = ("good", "unstable", "bad")
+BADGES = ("good", "unstable", "bad", "noopen")
 SAME_SESSION = timedelta(hours=6)    # lote de continuação até 6 h depois de um PLAY do mesmo testador = mesma sessão
 
 
@@ -274,7 +297,7 @@ def games(rows, hidden=(), current=None):
             name2tid.setdefault(norm_name(r["game"]), r["title_id"])
     groups = {}
     for r in rows:
-        if r["outcome"] == "nostream":
+        if r["outcome"] == "nostream" and r.get("kick") != CLOSED_KICK:
             continue
         gk = r["title_id"] or name2tid.get(norm_name(r["game"])) or norm_name(r["game"])
         if not gk:
@@ -310,7 +333,8 @@ def games(rows, hidden=(), current=None):
                                                                 and _vkey(r["app"]) < cur_k)),
             "errors": sum(1 for r in rs if r["n_errors"] and (cur_k is None or _vkey(r["app"]) >= cur_k)),
             "hangs": sum(1 for r in rs if r["n_hangs"] and (cur_k is None or _vkey(r["app"]) >= cur_k)),
-            "ok_sessions": sum(1 for r in sess if r["outcome"] == "ok"),
+            "ok_sessions": sum(1 for r in sess if r["outcome"] == "ok" and r.get("kick") != CLOSED_KICK),
+            "closed": sum(1 for r in rs if r.get("kick") == CLOSED_KICK),
             "last_version": _ver(last["app"]), "last_at": last["rx"] or last["day"],
         }
         if g["ok_sessions"] > g["drops"]:   # mais sessões boas do que quedas: a queda sai da página
@@ -318,6 +342,9 @@ def games(rows, hidden=(), current=None):
         g["pct_ok"] = pct_at_target(hist, g["target"])
         g["old"] = bool(cur_k and g["last_version"] and _vkey(g["last_version"]) < cur_k)
         g["status"] = badge(g)
+        # fechou no servidor em toda tentativa e nunca rodou de verdade: "não abre"
+        if g["closed"] and not g["ok_sessions"] and (g["samples"] or 0) < 30:
+            g["status"] = "noopen"
         g["few"] = g["sessions"] < 3
         g["hidden"] = gk in hidden
         out.append(g)

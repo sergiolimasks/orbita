@@ -165,3 +165,6 @@
 .gm-current svg{flex:none;color:var(--accent,#38b6ff)}
 .gm-current a{font-weight:600}
 .gm-old{font-family:inherit}
+
+/* /jogos: jogo que fecha ao abrir */
+.fpill.gs-noopen{color:#ff9b9b;background:rgba(232,72,72,.14);border-color:rgba(232,72,72,.45)}

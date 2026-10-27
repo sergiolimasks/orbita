@@ -61,7 +61,7 @@ def release_note(version):
 
 # ------------------------------------------------------------------ /jogos: progresso dos testes
 PLAY_COLS = ("r2_key, day, rx, app, tester_h, title_id, game, continued, outcome, n_drops, n_errors, n_hangs, "
-             "samples, ge55, hist")
+             "samples, ge55, hist, kick")
 
 
 def game_stats():

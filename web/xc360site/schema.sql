@@ -246,3 +246,6 @@ CREATE TABLE IF NOT EXISTS game_flags (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS public_hidden boolean NOT NULL DEFAULT false;
+
+-- v2 do parser: motivo de fim mandado pelo servidor (KickFor...)
+ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS kick text NOT NULL DEFAULT '';

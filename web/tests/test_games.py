@@ -65,7 +65,7 @@ def _row(game="Fortnite", tid="FORTNITE", fps=59, n=100, ge=None, outcome="ok", 
     return {"r2_key": key, "day": None, "rx": rx, "app": app, "tester_h": who, "title_id": tid, "game": game,
             "continued": cont, "outcome": outcome, "n_drops": drops, "n_errors": errors, "n_hangs": hangs,
             "samples": n, "ge55": n if ge is None else ge,
-            "hist": json.dumps(hist if hist is not None else ({str(fps): n} if n else {}))}
+            "hist": json.dumps(hist if hist is not None else ({str(fps): n} if n else {})), "kick": ""}
 
 
 def test_badges_and_aggregation():
@@ -118,6 +118,35 @@ def test_current_version_rules():
     assert plays.games(more_ok, current="0.21.29")[0][0]["drops"] == 0
     tie = [_row(key="t%d" % i, who=str(i), drops=1 if i == 0 else 0, outcome="drop" if i == 0 else "ok") for i in range(2)]
     assert plays.games(tie, current="0.21.29")[0][0]["drops"] == 1
+
+
+def _kick_line(reason):
+    # formato real do log: o JSON do "content" vem escapado dentro da mensagem
+    return ('[dc] recv [message sid=4 len=252] {"content":"{\\"reason\\":\\"%s\\"}","cv":"x",'
+            '"target":"/streaming/sessionLifetimeManagement/serverInitiatedDisconnect"}' % reason)
+
+
+def test_server_kicks_are_not_drops():
+    base = [PLAY] + [stat(t) for t in range(1, 40, 2)]
+    # fim do tempo do gratuito: o vídeo perdido depois é consequência, não queda
+    s = plays.parse(base + [_kick_line("KickForOutOfStreamingTime"), "[menu] vídeo perdido há 5006 ms no jogo"])[0]
+    assert s["kick"] == "KickForOutOfStreamingTime" and s["outcome"] == "ok" and s["n_drops"] == 0
+    # queda ANTES do motivo do servidor continua contando
+    s = plays.parse(base + ["[sess] queda no meio do jogo (1/3 em 2 min): re-sinalizando",
+                            _kick_line("KickForStopCommand"), "[menu] vídeo perdido há 5000 ms no jogo"])[0]
+    assert s["n_drops"] == 1
+    # conta aberta em outro aparelho
+    s = plays.parse(base + ["[sess] keepalive falhou: HTTP 403 em keepalive (SessionOwnedByAnotherInstance)",
+                            "[menu] vídeo perdido há 5000 ms no jogo"])[0]
+    assert s["kick"] == "KickByNewSession" and s["n_drops"] == 0
+    # jogo que fecha ao abrir: aparece como "não abre"
+    closed = plays.parse(["[xn] PLAY GENSHINIMPACT (Genshin Impact): sessao no Xbox", stat(1), stat(3),
+                          _kick_line("KickForClosedGame"), "[menu] vídeo perdido há 5000 ms no jogo"])[0]
+    assert closed["kick"] == "KickForClosedGame" and closed["n_drops"] == 0
+    rows = [dict(_row(game="Genshin Impact", tid="GENSHINIMPACT", n=0, outcome="nostream", key="g%d" % i, who=str(i)),
+                 kick="KickForClosedGame") for i in range(3)]
+    g = plays.games(rows, current="0.21.30")[0][0]
+    assert g["status"] == "noopen" and g["drops"] == 0
 
 
 def test_scrub_and_public_report():
