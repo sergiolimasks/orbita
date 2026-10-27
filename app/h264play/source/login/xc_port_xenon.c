@@ -221,7 +221,27 @@ static void tmp_of(char *o, size_t n, const char *name) {
     snprintf(o, n, STORE_DIR "/%s.NEW", base);
 }
 
+/* v0.21.30: cópia em RAM do TOKEN.TXT. Pendrive que não grava (alguns modelos
+ * baratos) deixava o login sem token na hora do jogo ("Faca o login no Xbox
+ * primeiro"); agora o que foi gravado (ou tentado) vale até reiniciar. */
+#define TOKMEM_CAP 4096
+static char   g_tokmem[TOKMEM_CAP];
+static size_t g_tokmem_n = 0;
+static int is_token_file(const char *name) { return name && !strcmp(name, "TOKEN.TXT"); }
+static int xc_store_load_file(const char *name, void *buf, size_t cap);
+static int xc_store_save_file(const char *name, const void *buf, size_t n);
+
 int xc_store_load(const char *name, void *buf, size_t cap) {
+    int r = xc_store_load_file(name, buf, cap);
+    if (r <= 0 && is_token_file(name) && g_tokmem_n && g_tokmem_n <= cap) {
+        memcpy(buf, g_tokmem, g_tokmem_n);
+        xc_log("[usb] TOKEN.TXT do pendrive indisponivel: usando a copia da memoria");
+        return (int)g_tokmem_n;
+    }
+    return r;
+}
+
+static int xc_store_load_file(const char *name, void *buf, size_t cap) {
     int res = -1;
     xwd_beat2("pendrive: lendo", name);
     if (xc_usb_hold(1) != 0) {
@@ -243,6 +263,14 @@ int xc_store_load(const char *name, void *buf, size_t cap) {
 }
 
 int xc_store_save(const char *name, const void *buf, size_t n) {
+    if (is_token_file(name)) {
+        if (n < TOKMEM_CAP) { memcpy(g_tokmem, buf, n); g_tokmem_n = n; }
+        else g_tokmem_n = 0;
+    }
+    return xc_store_save_file(name, buf, n);
+}
+
+static int xc_store_save_file(const char *name, const void *buf, size_t n) {
     int res = -1;
     xwd_beat2("pendrive: gravando", name);
     if (xc_usb_hold(1) != 0) {
@@ -314,6 +342,7 @@ int xc_store_append(const char *name, const char *old_name, const void *buf, siz
 }
 
 int xc_store_remove(const char *name) {
+    if (is_token_file(name)) { memset(g_tokmem, 0, sizeof(g_tokmem)); g_tokmem_n = 0; }
     int res = -1;
     xwd_beat2("pendrive: apagando", name);
     if (xc_usb_hold(1) != 0) {
@@ -347,6 +376,51 @@ static volatile int g_hang_busy = 0;
 
 int xc_hang_busy(void) { return g_hang_busy; }
 
+/* v0.21.30: os registros de travamento ficavam só no pendrive do testador.
+ * No boot seguinte os mais novos ainda não enviados (> XC360/HANGSEEN.TXT)
+ * vão pro log beta como "[wdog] registro anterior #N". Máx. HANG_UP_MAX. */
+#define HANG_UP_MAX 6
+static char     g_hang_up[HANG_UP_MAX][512];
+static unsigned g_hang_up_q[HANG_UP_MAX];
+static int      g_hang_up_n = 0;
+static void hang_keep(unsigned q, const char *sec) {
+    int slot = -1;
+    if (g_hang_up_n < HANG_UP_MAX) slot = g_hang_up_n++;
+    else {   /* troca o mais velho se este for mais novo */
+        int old = 0;
+        for (int k = 1; k < HANG_UP_MAX; k++) if (g_hang_up_q[k] < g_hang_up_q[old]) old = k;
+        if (g_hang_up_q[old] < q) slot = old;
+    }
+    if (slot < 0) return;
+    g_hang_up_q[slot] = q;
+    memcpy(g_hang_up[slot], sec, 511);
+    g_hang_up[slot][511] = 0;
+}
+static void hang_report_unsent(void) {
+    char t[24];
+    unsigned seen = 0;
+    int n = xc_store_load_file("HANGSEEN.TXT", t, sizeof(t) - 1);
+    if (n > 0) { t[n] = 0; seen = (unsigned)strtoul(t, NULL, 10); }
+    unsigned top = seen;
+    for (int pass = 0; pass < g_hang_up_n; pass++) {   /* em ordem crescente */
+        int best = -1;
+        for (int k = 0; k < g_hang_up_n; k++)
+            if (g_hang_up_q[k] > seen && (best < 0 || g_hang_up_q[k] < g_hang_up_q[best])) best = k;
+        if (best < 0) break;
+        char *s = g_hang_up[best];
+        size_t L = strlen(s);
+        while (L > 0 && (s[L - 1] == ' ' || s[L - 1] == '\n')) s[--L] = 0;
+        for (size_t o = 0; o < L; o += 170)
+            xc_log("[wdog] registro anterior %s%.170s", o ? "(cont.) " : "", s + o);
+        if (g_hang_up_q[best] > top) top = g_hang_up_q[best];
+        seen = g_hang_up_q[best];
+    }
+    if (top > 0) {
+        n = snprintf(t, sizeof(t), "%u", top);
+        if (n > 0) xc_store_save_file("HANGSEEN.TXT", t, (size_t)n);
+    }
+}
+
 int xc_hang_prepare(const char *version) {
     static char sec[512];
     int ok = -1;
@@ -374,6 +448,7 @@ int xc_hang_prepare(const char *version) {
                     if (sec[0] == '#') {
                         unsigned q = (unsigned)strtoul(sec + 1, NULL, 10);
                         if (q >= g_hang_seq) { g_hang_seq = q; g_hang_next = i % (HANG_SECT - 1) + 1; }
+                        hang_keep(q, sec);
                     }
                 }
             }
@@ -407,6 +482,7 @@ int xc_hang_prepare(const char *version) {
         }
     }
     xc_usb_hold(0);
+    hang_report_unsent();   /* v0.21.30 (fora do hold: as funções do pendrive pegam o hold sozinhas) */
     return ok;
 }
 

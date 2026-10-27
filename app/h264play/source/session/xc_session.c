@@ -21,6 +21,20 @@
 /* X-MS-Device-Info do GssvSession::device_info_header(P720) EXATAMENTE como
  * o nlohmann::json serializa (chaves em ordem alfabética). Conferido byte a
  * byte pelo hosttest/session (golden.h, gerado do próprio json.hpp). */
+/* build de teste (o Genshin fecha com "android"?): TRACE_CFLAGS+=-DORBITA_TEST_OS_WINDOWS */
+/* build de teste: idioma/fuso de um navegador no Brasil (o Genshin escolhe a região por eles?) */
+#ifdef ORBITA_TEST_BR
+#define XS_PLAY_LOCALE "pt-BR"
+#define XS_TZ_OFFSET 180
+#else
+#define XS_PLAY_LOCALE XS_LOCALE
+#define XS_TZ_OFFSET 120
+#endif
+#ifdef ORBITA_TEST_OS_WINDOWS
+#define XS_OS_NAME "windows"
+#else
+#define XS_OS_NAME "android"
+#endif
 #define XS_DEVICE_INFO \
     "X-MS-Device-Info: {\"appInfo\":{\"env\":{\"clientAppId\":\"www.xbox.com\"," \
     "\"clientAppType\":\"browser\",\"clientAppVersion\":\"26.1.97\"," \
@@ -28,7 +42,7 @@
     "\"dev\":{\"browser\":{\"browserName\":\"chrome\",\"browserVersion\":\"140.0.3485.54\"}," \
     "\"displayInfo\":{\"dimensions\":{\"heightInPixels\":720,\"widthInPixels\":1280}," \
     "\"pixelDensity\":{\"dpiX\":1,\"dpiY\":1}},\"hw\":{\"make\":\"Microsoft\"," \
-    "\"model\":\"unknown\",\"sdktype\":\"web\"},\"os\":{\"name\":\"android\"," \
+    "\"model\":\"unknown\",\"sdktype\":\"web\"},\"os\":{\"name\":\"" XS_OS_NAME "\"," \
     "\"platform\":\"desktop\",\"ver\":\"22631.2715\"}}}"
 
 /* Mesma ordem do GssvSession::headers(). */
@@ -275,9 +289,9 @@ char *xs_build_play_body(const char *title_id, const char *locale) {
     cJSON_AddNumberToObject(st, "highContrast", 0);
     cJSON_AddStringToObject(st, "locale", locale && locale[0] ? locale : XS_LOCALE);
     cJSON_AddStringToObject(st, "nanoVersion", "V3;WebrtcTransport.dll");
-    cJSON_AddStringToObject(st, "osName", "android");
+    cJSON_AddStringToObject(st, "osName", XS_OS_NAME);
     cJSON_AddStringToObject(st, "sdkType", "web");
-    cJSON_AddNumberToObject(st, "timezoneOffsetMinutes", 120);
+    cJSON_AddNumberToObject(st, "timezoneOffsetMinutes", XS_TZ_OFFSET);
     cJSON_AddFalseToObject(st, "useIceConnection");
     cJSON_AddStringToObject(o, "systemUpdateGroup", "");
     cJSON_AddStringToObject(o, "titleId", title_id);
@@ -642,7 +656,7 @@ void xs_sdp_ufrag(const char *sdp, char *out, size_t cap) {
 void xs_init(xs_session_t *s, xs_creds_t *c) {
     memset(s, 0, sizeof(*s));
     s->creds = c;
-    snprintf(s->locale, sizeof(s->locale), "%s", XS_LOCALE);
+    snprintf(s->locale, sizeof(s->locale), "%s", XS_PLAY_LOCALE);
 }
 
 void xs_attach(xs_session_t *s, const char *path, const char *title_id) {

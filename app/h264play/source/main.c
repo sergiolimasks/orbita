@@ -2467,6 +2467,9 @@ static int menu_loop(int net_ok, const char *msg) {
             } else if (xn_can_play()) {
                 g_next_on = 0;
                 int f2p = (xbox_title_flags(g->id) & XA_F_ADPLAY) != 0;
+#ifdef ORBITA_TEST_F2P_GENSHIN
+                if (!strcmp(g->id, "GENSHINIMPACT")) f2p = 1;   /* teste: Genshin pelo caminho dos gratuitos */
+#endif
                 g_xn_seen = 0;
                 stream_discard();
                 int r = xn_play(g->id, g->name, f2p);
