@@ -77,6 +77,7 @@
 #include "xc_lock.h"            /* v0.21.14 */  /* v0.21.9: xhs_peek no vigia */
 #include "wifi/xw_wpa.h"
 #include "xc_wdog.h"          /* v0.21.7: vigia de travamento */
+#include "xc_textguard.h"   /* v0.21.37 */
 #include "wifi/xw_boot.h"     /* v0.21.5: rede no boot (cabo / Wi-Fi) */
 #include "native/xc_native.h"   /* stage 5: sessão + WebRTC no próprio Xbox */
 #include "webrtc/xc_udp_xenon.h"
@@ -584,7 +585,8 @@ static void xpt_waits_text(char *o, size_t n) {
 static struct {
     volatile int set, logged;
     unsigned pir, vec;
-    uint32_t pc, lr, dar, chain[6];
+    uint32_t pc, lr, dar, srr1, word, chain[6];
+    int altered;
 } g_crash;
 extern void __real_crashdump(uint32_t exception, uint64_t *context);
 void __wrap_crashdump(uint32_t exception, uint64_t *context) {
@@ -596,6 +598,9 @@ void __wrap_crashdump(uint32_t exception, uint64_t *context) {
         g_crash.pc = (uint32_t)context[36];
         g_crash.lr = (uint32_t)context[32];
         g_crash.dar = (uint32_t)context[38];
+        g_crash.srr1 = (uint32_t)context[37];
+        g_crash.word = *(volatile uint32_t *)g_crash.pc;   /* v0.21.37: a instrução que está na RAM agora */
+        g_crash.altered = xtg_check_addr(g_crash.pc);
         uint32_t sp = (uint32_t)context[1];
         for (int i = 0; i < 6; i++) {
             if ((sp & 7) || sp < 0x80000000u || sp >= 0xA0000000u) break;
@@ -612,10 +617,12 @@ void __wrap_crashdump(uint32_t exception, uint64_t *context) {
 }
 static void crash_report(int raw_ok) {
     if (!g_crash.set || g_crash.logged) return;
-    char l6[200];
-    snprintf(l6, sizeof(l6), "[wdog] exceção na hw%u: vetor %x pc %08x lr %08x dar %08x pilha %08x %08x %08x %08x %08x %08x",
-             g_crash.pir, g_crash.vec, (unsigned)g_crash.pc, (unsigned)g_crash.lr, (unsigned)g_crash.dar,
-             (unsigned)g_crash.chain[0], (unsigned)g_crash.chain[1], (unsigned)g_crash.chain[2],
+    char l6[260];
+    snprintf(l6, sizeof(l6), "[wdog] exceção na hw%u: vetor %x pc %08x (instr %08x%s) srr1 %08x lr %08x dar %08x "
+             "pilha %08x %08x %08x %08x %08x %08x",
+             g_crash.pir, g_crash.vec, (unsigned)g_crash.pc, (unsigned)g_crash.word,
+             g_crash.altered ? ", ALTERADA na RAM" : "", (unsigned)g_crash.srr1, (unsigned)g_crash.lr,
+             (unsigned)g_crash.dar, (unsigned)g_crash.chain[0], (unsigned)g_crash.chain[1], (unsigned)g_crash.chain[2],
              (unsigned)g_crash.chain[3], (unsigned)g_crash.chain[4], (unsigned)g_crash.chain[5]);
     if (raw_ok && !xc_hang_busy() && xc_hang_write(l6) == 0) g_crash.logged = 1;
     for (const char *p = l6; *p; p++) putch((unsigned char)*p);
@@ -661,6 +668,15 @@ void xwd_trip_report(const char *line, int slot) {
         putch('\n');
     }
     crash_report(raw_ok);   /* v0.21.36 */
+    if (xtg_bad) {   /* v0.21.37 */
+        char l7[200];
+        snprintf(l7, sizeof(l7), "[wdog] guarda do código: %u alterações (%u restauradas), última em %08x (%08x, era %08x, %u words)",
+                 xtg_bad, xtg_fixed, (unsigned)xtg_last_addr, (unsigned)xtg_last_now, (unsigned)xtg_last_want,
+                 (unsigned)xtg_last_words);
+        if (raw_ok && !xc_hang_busy()) xc_hang_write(l7);
+        for (const char *p = l7; *p; p++) putch((unsigned char)*p);
+        putch('\n');
+    }
     /* v0.21.35: main parada: em que espera do decoder cada hw thread está */
     if (slot == XWD_MAIN) {
         char l5[300], w[220];
@@ -688,6 +704,7 @@ static uint8_t g_wdt_stack[16 * 1024] __attribute__((aligned(128)));
 static void wdt_task(void) {
     while (!g_wdt_stop) {
         xwd_tripwire();
+        xtg_step();   /* v0.21.37 */
         xc_polite_udelay(250000);
     }
 }
@@ -710,6 +727,18 @@ static void wdt_start(void) {
 static volatile uint64_t g_dec_in_ms = 0;
 static char g_dec_abort_line[320];
 static unsigned g_dec_unstuck = 0;
+/* v0.21.37: guarda do código achou bloco alterado (xc_textguard.h) */
+static int xtg_line(char *o, size_t n) {
+    static unsigned seen = 0;
+    unsigned b = xtg_bad;
+    if (b == seen) return 0;
+    seen = b;
+    snprintf(o, n, "[guarda] código alterado na RAM (%u vez(es), %u restaurada(s)): %08x tinha %08x, devia ser %08x, %u words no bloco",
+             b, xtg_fixed, (unsigned)xtg_last_addr, (unsigned)xtg_last_now, (unsigned)xtg_last_want,
+             (unsigned)xtg_last_words);
+    return 1;
+}
+
 static void dec_stall_check(void) {
     static volatile int busy = 0;
     uint64_t t = g_dec_in_ms;
@@ -1375,6 +1404,11 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         int r = avcodec_decode_video2(ctx, frame, &got, &pkt);
         g_dec_in_ms = 0;
         uint64_t t_b = now_us();
+        xtg_step();   /* v0.21.37: no jogo a guarda roda aqui, no main */
+        {   /* v0.21.37 */
+            char gl[200];
+            if (xtg_line(gl, sizeof(gl))) np_log_line(gl);
+        }
         if (xpt_dec_abort) {
             /* v0.21.35: as esperas foram soltas: o quadro não vale e o decoder
              * reabre do zero (o close espera as threads terminarem; com o
@@ -1710,6 +1744,7 @@ static xcs_view_t g_cfgv;
 static xcs_cal_t  g_cal;
 static int        g_notes_scroll = 0;
 static char       g_cfg_notice[96];
+static char       g_upd_note[200];   /* v0.21.37: por que o A não instalou */
 static char       g_cfg_keywhen[48], g_cfg_noteswhen[24];
 /* zona morta: g_pad = em uso (publicada), g_pad_saved = a do PAD.TXT */
 static xpc_cfg_t  g_pad, g_pad_saved;
@@ -2707,6 +2742,45 @@ static int menu_loop(int net_ok, const char *msg) {
         wdt_start();   /* v0.21.12: tripwire na hw 5 enquanto não há decoder */
         /* v0.21.7: vigia. A hw 3 só conta com uma tarefa nossa nela. */
         xwd_beat("menu");
+        xtg_step();   /* v0.21.37 */
+#ifdef ORBITA_TEST_THRDIAG
+        {   /* teste: estado das hw threads no HANG.TXT a cada 15 s (lido por FTP) */
+            static uint64_t t_d = 0;
+            if (now - t_d > 15000000ULL && xwd_usb_holder() < 0 && !xc_hang_busy()) {
+                t_d = now;
+                char dl[300];
+                const char *l3 = xwd_label(XWD_HW3), *c3 = xwd_crumb_of(XWD_HW3);
+                snprintf(dl, sizeof(dl), "[diag] t=%u ocupadas hw1=%d hw2=%d hw3=%d hw4=%d hw5=%d | lt=%d bg=%d xcu=%d xcb=%d deferido=%d warm=%d | hw3 [%s / %s] | guarda voltas %u alt %u",
+                         (unsigned)(now / 1000000ULL), xenon_is_thread_task_running(1) != 0, xenon_is_thread_task_running(2) != 0,
+                         xenon_is_thread_task_running(3) != 0, xenon_is_thread_task_running(4) != 0,
+                         xenon_is_thread_task_running(5) != 0, lt_running(), xcc_bg_running(), xcu_running(), xcb_running(),
+                         g_login_deferred, g_cat_warm, l3 ? l3 : "-", c3 ? c3 : "-", xtg_sweeps, xtg_bad);
+                xc_hang_write(dl);
+                snprintf(dl, sizeof(dl), "[diag2] waiting=%d next=%d relogin=%d ptest=%d pupd=%d native_ok=%d can_play=%d bpend=%d bboot=%d beta_ok=%d bootupd=%d netwait=%d net_ok=%d in_net=%d upd_screen=%d cfg=%d xbox_login=%d",
+                         waiting, g_next_on, pend_relogin, pend_test, pend_upd, g_native_ok, g_native_ok ? xn_can_play() : -1,
+                         g_beta_pend, g_beta_boot, beta_ok(), g_boot_upd, g_netwait, net_ok, g_input_on_net, g_upd_screen,
+                         g_cfg.open, g_xbox_login);
+                xc_hang_write(dl);
+            }
+        }
+#endif
+#ifdef ORBITA_TEST_TEXTCORRUPT
+        {   /* teste: estraga 1 word de uma função que não roda; a guarda tem que restaurar */
+            static uint64_t t_tc = 0;
+            if (!t_tc) t_tc = now;
+            if (t_tc != 1 && now - t_tc > 20000000ULL) {
+                volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)xtg_check_addr;
+                *w = 0xdeadbeefu;
+                __asm__ __volatile__("dcbst 0,%0; sync" ::"r"(w) : "memory");
+                xc_log("[guarda] TESTE: estraguei %08x de propósito", (unsigned)(uintptr_t)w);
+                t_tc = 1;
+            }
+        }
+#endif
+        {
+            char gl[200];
+            if (xtg_line(gl, sizeof(gl))) xc_log("%s", gl);
+        }
         xwd_set_hw3_active(lt_running() || xcc_bg_running() || xcu_running() || xcb_running() ||
                            (g_native_ok && xn_session_thread_busy()));
         xwd_check(XWD_MAIN, 1u << XWD_NET);
@@ -2868,6 +2942,10 @@ static int menu_loop(int net_ok, const char *msg) {
             else if (!xcu_running()) {
                 int r = pend_upd == 2 ? xcu_install_start() : xcu_check_start();
                 printf("[update] %s r=%d\n", pend_upd == 2 ? "instalar" : "procurar", r);
+                if (pend_upd == 2) {   /* v0.21.37: no log e na tela (antes o A só não fazia nada) */
+                    xc_log("[update] instalar: %s", r == 0 ? "começou" : "não começou (hw 3 ocupada ou nada a instalar)");
+                    if (r != 0) snprintf(g_upd_note, sizeof(g_upd_note), "Não consegui começar agora. Aperte A de novo em alguns segundos.");
+                }
                 if (r == 0) g_upd_seen = g_us.seq;               /* v0.20.3: vale o próximo resultado */
                 else if (g_boot_upd == 2 && pend_upd == 1) g_boot_upd = 1;   /* hw 3 ocupada: tenta de novo */
                 pend_upd = 0;
@@ -3259,7 +3337,15 @@ static int menu_loop(int net_ok, const char *msg) {
         if (screen == SCR_UPDATE) {
             int ph = g_us.phase;
             if (PRESSED(a)) {
-                if (ph == XCU_AVAILABLE || ((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0])) {
+                if ((ph == XCU_AVAILABLE || ((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0])) &&
+                    !xc_store_writable()) {
+                    /* v0.21.37: sem pendrive que grave não tem onde pôr a versão nova */
+                    snprintf(g_upd_note, sizeof(g_upd_note),
+                             "O app não consegue gravar no pendrive. Coloque o pendrive numa porta USB de TRÁS e "
+                             "reinicie, ou baixe a versão nova no site e troque o xenon.elf no PC.");
+                    xc_log("[update] instalar: pendrive indisponível pra gravar");
+                } else if (ph == XCU_AVAILABLE || ((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0])) {
+                    g_upd_note[0] = 0;
                     pend_upd = 2;
                 } else if (ph == XCU_FAILED) {
                     pend_upd = 1;
@@ -3287,6 +3373,13 @@ static int menu_loop(int net_ok, const char *msg) {
         }
 #undef PRESSED
         prev = b;
+        /* v0.21.37: a chave valeu mas não ficou no pendrive (porta da frente, pendrive que não grava):
+         * sem o aviso a pessoa gera outra chave a cada boot e a anterior passa a dar inválida */
+        if (xcb_key_unsaved == 1 && !waiting && !notice[0]) {
+            xcb_key_unsaved = 2;
+            snprintf(notice, sizeof(notice), "A chave não foi gravada no pendrive (use uma porta de trás). "
+                                             "Na próxima vez digite esta MESMA chave, não gere outra.");
+        }
         if (!waiting && !strncmp(notice, "Cancelado: encerrando", 21) && (!g_native_ok || xn_can_play()))
             snprintf(notice, sizeof(notice), "Sessão na nuvem encerrada");
 
@@ -3407,6 +3500,7 @@ static int menu_loop(int net_ok, const char *msg) {
                 else
                     snprintf(upd_detail, sizeof(upd_detail), "v%.24s  »  v%.24s", g_us.current, g_us.latest);
                 st.detail = upd_detail;
+                if (g_upd_note[0]) st.detail = g_upd_note;   /* v0.21.37 */
                 st.progress = 0;
                 st.hint = g_us.mandatory ? "A:Atualizar agora" : "A:Atualizar agora|B:Depois";
             } else if (ph == XCU_DOWNLOADING || ph == XCU_VERIFYING) {
@@ -3453,7 +3547,8 @@ static int menu_loop(int net_ok, const char *msg) {
             switch (g_bs.phase) {
             case XCB_REVOKED:
                 st.title = "Chave revogada.";
-                st.text = "Fale com o administrador.";
+                st.text = "Esta chave não vale mais (você gerou outra ou ela foi trocada). Pegue a chave atual "
+                          "na sua área em x360.pistatrack.com e digite aqui.";
                 st.hint = g_bchange ? "A:Digitar outra chave|B:Voltar" : "A:Digitar outra chave";
                 break;
             case XCB_DUPLICATE:
@@ -3813,6 +3908,14 @@ static void menu_main(int gpu_on) {
         snprintf(g_xbox_err, sizeof(g_xbox_err), "Sem thread de rede: o login do Xbox não pode rodar.");
     }
 
+    {   /* v0.21.37: guarda do código (xc_textguard.h): no fim do boot, com rede e USB já montados */
+#ifndef ORBITA_GUARD   /* v0.21.37: desligada até resolver a sopa no jogo (Forza) */
+        int tg = -1;
+#else
+        int tg = xtg_init();
+#endif
+        printf("[guarda] cópia do código: %s\n", tg == 0 ? "ok" : "sem memória (desligada)");
+    }
     avcodec_register_all();
     mm_init(&g_mm);
     catlist_apply_boot();   /* v0.21.7 */

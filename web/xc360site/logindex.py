@@ -1,3 +1,4 @@
+import re
 """Índice dos lotes de log que a ponte grava no R2.
 
 Objetos: logs/AAAA-MM-DD/<console>/<hhmmss>-<rand>.json.gz com JSON
@@ -85,6 +86,7 @@ def sync(storage, max_fetch=300):
                 c.execute("INSERT INTO log_index(r2_key, day, console, tester, app, game, rx, nlines, size) "
                           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", rec)
                 _store_plays(c, k, day, rec[6], doc, psalt)
+                _store_board(c, console, doc)
                 n += 1
             backfill_plays(c, storage, max(0, max_fetch - n), psalt)
             if not backfilled and len(todo) <= max_fetch:
@@ -96,6 +98,24 @@ def sync(storage, max_fetch=300):
             return n
         finally:
             pass   # trava de transação: solta no fim do bloco (antes ficava presa se algo abortasse)
+
+
+BOARD_RE = re.compile(r"\[video\] AV pack \S+ \(([^)]*)\), placa ([^,]+),")
+
+
+def _store_board(c, console, doc):
+    """v0.21.37: modelo da placa (Xenon/Zephyr/Falcon/Jasper/Trinity/Corona/Winchester) e o cabo de vídeo."""
+    try:
+        for ln in (doc or {}).get("lines") or []:
+            m = BOARD_RE.search(str(ln))
+            if m:
+                with c.transaction():
+                    c.execute("INSERT INTO console_info(console, board, av) VALUES (%s,%s,%s) "
+                              "ON CONFLICT (console) DO UPDATE SET board=excluded.board, av=excluded.av, updated_at=now()",
+                              (console, m.group(2).strip()[:40], m.group(1).strip()[:20]))
+                return
+    except Exception:
+        pass
 
 
 def _store_plays(c, key, day, rx, doc, psalt):

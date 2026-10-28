@@ -134,6 +134,7 @@ int  xcb_submit_start(const char *key);
 /* "Ler do pendrive": relê BETAKEY.TXT (colado no PC) e valida. */
 int  xcb_file_start(void);
 int  xcb_running(void);
+extern volatile int xcb_key_unsaved;   /* v0.21.37 */
 int  xcb_authorized(void);
 void xcb_snapshot(xcb_snap_t *s);
 /* Chave em uso (validada). Retorna o tamanho, 0 = nenhuma. */

@@ -63,6 +63,7 @@ void     xcn_set_cancel_hook(int (*fn)(void));
 int      xc_netlog_prepare(const char *version);
 int      xc_netlog_ready(void);
 int      xc_netlog_write(const char *text, size_t n);
+int      xc_store_writable(void);   /* v0.21.37 */
 void     xc_netlog_stats(unsigned *writes, unsigned *fails, unsigned *worst_us);
 void     xc_log_uart_drain(void);   /* v0.21.9: o main manda pra UART o que a hw1 logou */
 void     xc_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

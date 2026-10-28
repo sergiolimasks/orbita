@@ -66,7 +66,16 @@ def _area_ctx():
     wl_deadline = (u["released_at"] + timedelta(hours=waitlist.DEADLINE_H)
                    if u.get("wait") == "released" and u.get("released_at") else None)
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
-                reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline)
+                reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline,
+                key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY)
+
+
+KEYS_PER_DAY = 5
+
+
+def _keys_today(uid):
+    return db.row("SELECT count(*) AS n FROM beta_keys WHERE user_id=%s AND created_at > now() - interval '1 day'",
+                  uid)["n"]
 
 
 def _form_ctx(form=None, errors=None):
@@ -95,10 +104,9 @@ def key_regen():
     if bridgekeys.is_blocked(g.user["id"]):
         sec.audit("key.self_regen_blocked", g.user["handle"])
         return render_template("area.html", **_area_ctx()), 403
-    n = db.row("SELECT count(*) AS n FROM beta_keys WHERE user_id=%s AND created_at > now() - interval '1 day'",
-               g.user["id"])["n"]
-    if n >= 5:
-        abort(429)
+    if _keys_today(g.user["id"]) >= KEYS_PER_DAY:
+        # v0.21.37: em vez do 429 seco, a área explica o limite (e o pendrive que não grava)
+        return render_template("area.html", **_area_ctx()), 429
     k = bridgekeys.new_key(g.user)
     sec.audit("key.self_regen", g.user["handle"])
     return render_template("area.html", new_key=k, **_area_ctx())
@@ -166,6 +174,10 @@ def report_new():
                 break
     if errs:
         return render_template("tester/report_form.html", **_form_ctx(f, errs)), 400
+    if not f["console_id"]:   # v0.21.37: o console da chave mais recente usada
+        k = db.row("SELECT console_id FROM beta_keys WHERE user_id=%s AND console_id <> '' "
+                   "ORDER BY coalesce(last_used_at, bound_at) DESC NULLS LAST LIMIT 1", g.user["id"])
+        f["console_id"] = (k or {}).get("console_id") or ""
     with db.conn() as c:
         rep = c.execute("INSERT INTO reports(user_id, version, console_id, game, description) "
                         "VALUES (%s,%s,%s,%s,%s) RETURNING id",

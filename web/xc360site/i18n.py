@@ -148,6 +148,16 @@ M = {
     "login.disabled_launch": ("Sua conta da beta foi desativada. Agora você vai precisar esperar o lançamento oficial para continuar jogando.",
                               "Your beta account was disabled. You will now need to wait for the official release to keep playing.",
                               "Tu cuenta de la beta fue desactivada. Ahora tendrás que esperar el lanzamiento oficial para seguir jugando."),
+    "key.limit_title": ("Limite de 5 chaves por dia atingido", "Daily limit of 5 keys reached", "Límite de 5 claves por día alcanzado"),
+    "key.limit_text": ("Use a chave que você já tem: ela continua valendo no seu console. Se o app pede a chave toda vez que liga, "
+                       "o pendrive não está gravando: coloque-o numa porta USB de trás e digite a MESMA chave. "
+                       "Dá para gerar outra depois de 24 horas.",
+                       "Use the key you already have: it still works on your console. If the app asks for the key every time it starts, "
+                       "the USB stick is not saving it: plug it into a back USB port and type the SAME key. "
+                       "You can generate another one after 24 hours.",
+                       "Usa la clave que ya tienes: sigue valiendo en tu consola. Si la app pide la clave cada vez que arranca, "
+                       "la memoria USB no la está guardando: conéctala en un puerto USB trasero y escribe la MISMA clave. "
+                       "Puedes generar otra después de 24 horas."),
     "login.error": ("E-mail ou senha inválidos.", "Invalid email or password.", "Correo o contraseña no válidos."),
     "login.locked": ("Muitas tentativas. Tente de novo em alguns minutos.", "Too many attempts. Try again in a few minutes.",
                      "Demasiados intentos. Inténtalo de nuevo en unos minutos."),

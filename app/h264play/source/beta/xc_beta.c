@@ -249,10 +249,17 @@ static int check(const char *key, int *http) {
     return r;
 }
 
+volatile int xcb_key_unsaved = 0;   /* v0.21.37: 1 = a chave digitada não ficou no pendrive */
 static void accept_key(const char *key, int save_key, int http) {
     long long t = now_s();
-    if (save_key && g_ops.save && g_ops.save(XCB_KEY_FILE, key, strlen(key)) != 0)
-        logf_("[beta] nao gravei %s", XCB_KEY_FILE);
+    if (save_key && g_ops.save) {
+        if (g_ops.save(XCB_KEY_FILE, key, strlen(key)) != 0) {
+            logf_("[beta] nao gravei %s", XCB_KEY_FILE);
+            xcb_key_unsaved = 1;
+        } else {
+            xcb_key_unsaved = 0;
+        }
+    }
     if (t > 0 && g_ops.save) {
         char f[128];
         int n = xcb_okfile_make(g_hkey, g_id, key, t, f, sizeof(f));
@@ -293,7 +300,7 @@ static int try_grace(const char *key) {
 static void result_phase(int r, int http) {
     switch (r) {
     case XCB_R_INVALID:   set_phase(XCB_INVALID, http, "Chave inválida"); break;
-    case XCB_R_REVOKED:   set_phase(XCB_REVOKED, http, "Chave revogada. Fale com o administrador."); break;
+    case XCB_R_REVOKED:   set_phase(XCB_REVOKED, http, "Chave revogada: digite a chave atual do site."); break;
     case XCB_R_DUPLICATE: set_phase(XCB_DUPLICATE, http,
                                     "Esta chave é exclusiva de um console e foi bloqueada por uso em outro aparelho. "
                                     "Fale com o administrador."); break;

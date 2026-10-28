@@ -7,7 +7,7 @@ SECTIONS
 		 * em alguns consoles a página 0x3b000 chega estragada = tela vermelha
 		 * 0x700 no 1o código que passa por ela). Só os vetores do libxenon. */
 		. = . + 0x3e000;   /* múltiplo de 4 KB: o código fica com o mesmo alinhamento de antes (cache), só deslocado */
-		*(.text*); }
+		*(.text*); orbita_text_end = .; }
 	.elfldr : { elfldr_start = .;*(.elfldr); elfldr_end = .;}
 	
 	.data : { *(.data*) }

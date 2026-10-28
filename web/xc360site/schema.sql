@@ -254,6 +254,12 @@ ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS kick text NOT NULL DEFAULT ''
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reddit text NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS wait text NOT NULL DEFAULT '';        -- '' | waiting | released | expired
 ALTER TABLE users ADD COLUMN IF NOT EXISTS released_at timestamptz;
+CREATE TABLE IF NOT EXISTS console_info (
+    console    text PRIMARY KEY,
+    board      text NOT NULL DEFAULT '',
+    av         text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_reason text NOT NULL DEFAULT '';   -- beta_prune.REASONS
 CREATE UNIQUE INDEX IF NOT EXISTS users_reddit_key ON users (lower(reddit)) WHERE reddit <> '';
 CREATE INDEX IF NOT EXISTS users_wait ON users (wait) WHERE wait <> '';

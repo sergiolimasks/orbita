@@ -205,6 +205,8 @@ static void path_of(char *o, size_t n, const char *name) { snprintf(o, n, STORE_
  * RAM, os logs vão pela rede). */
 static int g_fs_wfail = 0;
 static int fs_write_ok(void) { return g_fs_wfail < 3; }
+/* v0.21.37: tela de atualização (sem IO; o boot já montou ou desistiu) */
+int xc_store_writable(void) { return g_fs_ok && fs_write_ok(); }
 static void fs_note(FRESULT r) {
     if (r == FR_OK || r == FR_EXIST) { g_fs_wfail = 0; return; }
     if (r == FR_DISK_ERR || r == FR_INT_ERR || r == FR_NOT_READY || r == FR_WRITE_PROTECTED) {

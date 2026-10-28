@@ -357,6 +357,12 @@ def reports():
                            fv=fv, fg=fg, fs=fs, fq=fq, ft=ft, tu=tu, page=pg, counts=counts)
 
 
+def _board(console):
+    """v0.21.37: modelo do console (console_info, do log de boot)."""
+    c = re.sub(r"[^0-9a-f]", "", (console or "").lower())
+    return db.row("SELECT board, av FROM console_info WHERE console LIKE %s LIMIT 1", c + "%") if c else None
+
+
 @bp.get("/reports/<int:rid>")
 def report_detail(rid):
     r = db.row("SELECT r.*, u.name AS uname, u.handle, u.email, u.country, (SELECT i.note FROM invites i WHERE i.used_by=u.id AND i.note<>'' ORDER BY i.id DESC LIMIT 1) AS inv_note FROM reports r JOIN users u ON u.id=r.user_id "
@@ -379,7 +385,8 @@ def report_detail(rid):
                      "ORDER BY id DESC LIMIT 5", r["user_id"], rid)
     back = request.args.get("back")
     return render_template("admin/report_detail.html", r=r, files=files, events=events, logs=logs, others=others,
-                           statuses=STATUSES, back=back if sec.safe_next(back) else url_for("admin.reports"))
+                           statuses=STATUSES, back=back if sec.safe_next(back) else url_for("admin.reports"),
+                           board=_board(r["console_id"]))
 
 
 @bp.post("/reports/<int:rid>")

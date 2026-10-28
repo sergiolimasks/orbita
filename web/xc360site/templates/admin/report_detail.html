@@ -61,7 +61,7 @@
         <dt>{{ _('adm.country') }}</dt><dd>{% if r.country %}{{ flag(r.country) }} {{ country_name(r.country) }}{% else %}—{% endif %}</dd>
         <dt>{{ _('rep.version') }}</dt><dd>{% if r.version %}<a class="mono" href="{{ url_for('admin.reports', version=r.version) }}">{{ r.version }}</a>{% else %}—{% endif %}</dd>
         <dt>{{ _('rep.game') }}</dt><dd>{{ r.game or '—' }}</dd>
-        <dt>{{ _('adm.console') }}</dt><dd>{% if r.console_id %}<a href="{{ url_for('admin.logs', console=r.console_id) }}"><code>{{ r.console_id }}</code></a>{% else %}—{% endif %}</dd>
+        <dt>{{ _('adm.console') }}</dt><dd>{% if r.console_id %}<a href="{{ url_for('admin.logs', console=r.console_id) }}"><code>{{ r.console_id }}</code></a>{% if board %} <span class="muted small">· {{ board.board }}{% if board.av %} · {{ board.av }}{% endif %}</span>{% endif %}{% else %}—{% endif %}</dd>
         <dt>{{ _('adm.logs') }}</dt><dd><a href="{{ url_for('admin.logs', tester=r.handle) }}">{{ r.handle }}</a></dd>
       </dl></div></section>
 

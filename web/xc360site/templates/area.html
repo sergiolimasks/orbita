@@ -90,6 +90,8 @@
         </div></div>
         {% if key_blocked and not new_key %}
         <p class="small"><b>{{ _('key.blocked_regen') }}</b></p>
+        {% elif key_limit and not new_key %}
+        <div class="alert warn mt-3" role="note">{{ icon('alert', 18) }}<div><b>{{ _('key.limit_title') }}</b><p class="small">{{ _('key.limit_text') }}</p></div></div>
         {% elif not new_key %}
         <form method="post" action="{{ url_for('tester.key_regen') }}" data-confirm="{{ _('area.key_regen_help') }}" data-confirm-title="{{ _('area.key_regen') }}?" data-confirm-ok="{{ _('area.key_regen') }}" data-danger>
           {{ csrf() }}<button class="btn secondary sm">{{ icon('refresh', 14) }}{{ _('area.key_regen') }}</button>
