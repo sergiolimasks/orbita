@@ -15,6 +15,7 @@ def home():
     groups = [(grp, [f for f in soon if f["grp"] == grp]) for grp in ui.FEATURE_GROUPS]
     return render_template("home.html", stable=releases.manifest("stable"),
                            video=current_app.config["VIDEO_EMBED_URL"],
+                           video_file=current_app.config["VIDEO_FILE"], video_poster=current_app.config["VIDEO_POSTER"],
                            soon_groups=[x for x in groups if x[1]])
 
 

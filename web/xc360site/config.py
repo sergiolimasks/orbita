@@ -18,6 +18,12 @@ VIDEO_PREFIXES = ("https://www.youtube-nocookie.com/embed/", "https://www.youtub
                   "https://player.vimeo.com/video/")
 
 
+def _media(name):
+    """Arquivo do serviço media da stack (nginx em /media/, ver deploy/stack.yml); fora disso, vazio."""
+    v = os.environ.get(name, "").strip()
+    return v if v.startswith("/media/") and ".." not in v else ""
+
+
 def load():
     video = os.environ.get("VIDEO_EMBED_URL", "").strip()
     if video and not video.startswith(VIDEO_PREFIXES):
@@ -29,6 +35,8 @@ def load():
         "R2_ENV": _secret("xc360_site_r2", "R2_ENV") or "",
         "BASE_URL": os.environ.get("BASE_URL", "https://x360.pistatrack.com").rstrip("/"),
         "VIDEO_EMBED_URL": video,
+        "VIDEO_FILE": _media("VIDEO_FILE"),       # vídeo da página inicial (só toca ao clicar)
+        "VIDEO_POSTER": _media("VIDEO_POSTER"),
         "BRIDGE_TOKEN": _secret("xc360_bridge_token", "BRIDGE_TOKEN") or "",   # /_bridge/check (ponte)
         "LOG_SYNC_INTERVAL": int(os.environ.get("LOG_SYNC_INTERVAL", "300")),
         "MAX_FILES": 4,

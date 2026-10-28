@@ -7,6 +7,8 @@ services:
     environment:
       - BASE_URL=https://x360.pistatrack.com
       - VIDEO_EMBED_URL=
+      - VIDEO_FILE=/media/orbita-beta.mp4
+      - VIDEO_POSTER=/media/orbita-beta-capa.jpg
       - LOG_SYNC_INTERVAL=300
     secrets:
       - xc360_site_secret
@@ -32,6 +34,27 @@ services:
         - traefik.http.routers.xc360-site.entrypoints=websecure
         - traefik.http.routers.xc360-site.tls.certresolver=letsencryptresolver
         - traefik.http.services.xc360-site.loadbalancer.server.port=8000
+  # vídeo e capa da página inicial: arquivos em /root/xc360-site/media na VPS,
+  # servidos com Range (pular no vídeo) sem ocupar os workers do site
+  media:
+    image: nginx:1.27-alpine
+    volumes:
+      - /root/xc360-site/media:/usr/share/nginx/html/media:ro
+    networks:
+      - network_swarm_public
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 64M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.xc360-media.rule=Host(`x360.pistatrack.com`) && PathPrefix(`/media/`)
+        - traefik.http.routers.xc360-media.priority=1000
+        - traefik.docker.network=network_swarm_public
+        - traefik.http.routers.xc360-media.entrypoints=websecure
+        - traefik.http.routers.xc360-media.tls.certresolver=letsencryptresolver
+        - traefik.http.services.xc360-media.loadbalancer.server.port=80
 secrets:
   xc360_site_secret:
     external: true

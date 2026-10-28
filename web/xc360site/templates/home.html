@@ -58,7 +58,9 @@
 
 <section class="wrap">
   <h2>{{ _('home.video_title') }}</h2>
-  {% if video %}
+  {% if video_file %}
+    <div class="video"><video controls preload="none" playsinline{% if video_poster %} poster="{{ video_poster }}"{% endif %}><source src="{{ video_file }}" type="video/mp4"></video></div>
+  {% elif video %}
     <div class="video"><iframe src="{{ video }}" title="{{ brand.name }}" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
   {% else %}
     <div class="video empty"><img src="{{ url_for('static', filename=brand.symbol) }}" alt="" width="64" height="64"><p>{{ _('home.video_soon') }}</p></div>

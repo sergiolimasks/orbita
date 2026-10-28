@@ -721,3 +721,20 @@ def test_admin_logs_dev_key_belongs_to_admin(app, client):
             assert av._log_handles(a) == [a["handle"]]
     v = client.get("/admin/logs/view?key=logs/2026-10-25/%s/%s.json.gz" % ("d" * 16, kd)).get_data(as_text=True)
     assert "Developer (admin)" in v
+
+
+def test_home_video_file(app, client, monkeypatch):
+    app.config["VIDEO_FILE"] = "/media/orbita-beta.mp4"
+    app.config["VIDEO_POSTER"] = "/media/orbita-beta-capa.jpg"
+    html = client.get("/").get_data(as_text=True)
+    assert 'preload="none"' in html and 'src="/media/orbita-beta.mp4"' in html and 'poster="/media/orbita-beta-capa.jpg"' in html
+
+
+def test_media_env_only_media_paths(monkeypatch):
+    from xc360site import config
+    monkeypatch.setenv("VIDEO_FILE", "https://evil.example/x.mp4")
+    assert config._media("VIDEO_FILE") == ""
+    monkeypatch.setenv("VIDEO_FILE", "/media/../x")
+    assert config._media("VIDEO_FILE") == ""
+    monkeypatch.setenv("VIDEO_FILE", "/media/orbita-beta.mp4")
+    assert config._media("VIDEO_FILE") == "/media/orbita-beta.mp4"
