@@ -58,10 +58,12 @@ console estende a janela (o app recusa só relógio que voltou para antes da val
   `XC360/BETAKEY.TXT` (colado pelo PC, qualquer chave 8–64 ASCII, ex. a de dev),
   Start confirma. Só grava se 204.
 - `33_chave_duplicada`, `34_chave_revogada`, `38_chave_sem_conexao`.
-- `27_topo_configuracoes` (engrenagem à esquerda do Atualizar, só com chave
-  válida) e `39_configuracoes` / `40_configuracoes_chave_trocada`: ID curto e
-  completo, chave mascarada (`*****-**P9H`), data da validação (Brasília), "Trocar
-  chave" e "Para reportar um bug, envie um print desta tela junto".
+- `27_topo_configuracoes` (engrenagem à esquerda do Atualizar). v0.21.33: as
+  Configurações viraram menu lateral (`60_cfg_conta` em diante, MENU-UI.md); a
+  seção **Conta e sobre** tem o ID curto e completo, a versão, a linha **Chave
+  beta** (`*****-**P9H · validada em 25/10 22:56`, A = Trocar chave, B volta pra
+  seção) e "Para reportar um bug, envie uma foto desta tela junto". Com BETA=0 as
+  Configurações existem e a linha da chave some.
 - Trocar chave: precisa da hw 3 (para o worker das capas; jogo aberto = "Feche o
   jogo aberto"). Falhou = a chave antiga continua valendo; B volta. Deu certo =
   log passa a usar a nova e o app procura atualização de novo (canal pode mudar).

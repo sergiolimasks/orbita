@@ -120,6 +120,12 @@ static volatile int g_cable = 0;
 static volatile int g_cable_retry = 0;
 int stream_net_cable(void) { return g_cable; }
 int stream_net_link(void) { return network_link_up() ? 1 : 0; }
+/* v0.21.33: leitura de uma palavra (o lwIP é da hw1; o endereço só muda no DHCP) */
+uint32_t stream_net_cable_ip(void) {
+    ip_addr_t a = netif.ip_addr;
+    return ((uint32_t)ip4_addr1(&a) << 24) | ((uint32_t)ip4_addr2(&a) << 16) | ((uint32_t)ip4_addr3(&a) << 8) |
+           (uint32_t)ip4_addr4(&a);
+}
 void stream_cable_retry(void) { g_cable_retry = 1; }
 
 extern err_t enet_init(struct netif *nf);

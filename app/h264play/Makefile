@@ -22,7 +22,7 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.21.32
+VERSION := 0.21.33
 APP_VERSION := $(VERSION)
 # v0.15: nome da variante no VERSION (ex.: make VARIANT=full -> 0.15.0-full).
 # Vazio = sufixos automaticos pelos knobs (-gpu/-cpu, -altivec/-c, -st, -trace).
@@ -74,6 +74,9 @@ SOURCES  += source/wifi
 SOURCES  += source/video
 # v0.21.25: DIAG.TXT do decoder, [dec] prof, [cpu] (DECODE-PERF.md)
 SOURCES  += source/dec
+# v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md): navegação/textos
+# (source/settings) e zona morta dos analógicos, XC360/PAD.TXT (source/input).
+SOURCES  += source/settings source/input
 # fonte Inter rasterizada + ícones (tools/gen_xui_assets.py, python3 + Pillow)
 XUI_ASSETS := $(APP_ROOT)/source/ui/xui_assets.h
 

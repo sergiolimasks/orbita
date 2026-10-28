@@ -24,7 +24,7 @@ fi
 EPOCH=$(date +%s)
 CF="-O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -I$SRC -I$MBED/include \
     -DMBEDTLS_CONFIG_FILE=\"xc360_mbedtls_config.h\" -DXC_BUILD_EPOCH=${EPOCH}LL"
-CORE="$UPD/xc_update.c $SRC/cjson/cJSON.c $HERE/xcu_port_posix.c $HERE/../login/port_posix.c $SRC/dns_msg.c"
+CORE="$UPD/xc_update.c $APP/source/settings/xc_notes.c $SRC/cjson/cJSON.c $HERE/xcu_port_posix.c $HERE/../login/port_posix.c $SRC/dns_msg.c"
 NET="$UPD/xcu_net.c $SRC/https.c $SRC/http_parse.c $SRC/ca_roots.c"
 
 rc=0

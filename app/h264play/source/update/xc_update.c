@@ -1,5 +1,6 @@
 /* XCloud360 — ver xc_update.h e app/h264play/UPDATE.md. */
 #include "xc_update.h"
+#include "../settings/xc_notes.h"   /* v0.21.33 */
 #include "xcu_port.h"
 #include "xcu_pubkey.h"
 #include "../login/xc_port.h"
@@ -555,6 +556,14 @@ static void do_install(void) {
     st_set(XCU_INSTALLING, "Instalando... nao desligue o Xbox");
     if (swap_in(&m) != 0) return;
     xcup_unlink(XCU_INF);
+    {   /* v0.21.33: "Novidades desta versão" (settings/xc_notes.h): as notas
+         * assinadas da versão instalada; o app novo lê no boot. Falhar aqui
+         * não desfaz a instalação. */
+        char nb[XCN_FILE_MAX];
+        int nn = xcn_notes_format(m.version, xc_time_now(), m.notes, nb, sizeof(nb));
+        int wr = nn > 0 ? xcup_write_file(XCN_PATH, nb, (size_t)nn) : -1;
+        xc_log("[update] %s: %s", XCN_PATH, wr == 0 ? "gravado" : "falhou (sem notas na tela)");
+    }
     char s[96];
     snprintf(s, sizeof(s), "Atualizado para v%s. Reinicie o Xbox.", m.version);
     st_progress(m.size, m.size);

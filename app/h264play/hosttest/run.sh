@@ -18,6 +18,8 @@ gcc $CFLAGS -o "$OUT/menu_test" "$HERE/menu_test.c" "$HERE/../source/menu_model.
 "$OUT/menu_test" || rc=1
 # v0.20: menu novo (source/ui): testes de unidade + mockup (PNGs em hosttest/ui/out).
 "$HERE/ui/run.sh" || rc=1
+# v0.21.33: Configurações em menu lateral (navegação, zona morta/PAD.TXT, NOTES.TXT).
+"$HERE/settings/run_settings.sh" || rc=1
 # HDMI 1080p: EDID reais, escolha do modo, scaler, dump2mode.py (VIDEO-1080P.md).
 "$HERE/video/run.sh" || rc=1
 # v0.21.25: DIAG.TXT do decoder (DECODE-PERF.md)

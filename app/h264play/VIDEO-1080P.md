@@ -160,11 +160,15 @@ livre e `worker_extra_step`). O X sempre grava o modo sem letras.
   em `xc_video_xenon.c` e precisa bater com `xenos_videomodesdata.h`.
 - Na TV: o boot mostra 720p por ~3 s (até o `xcv_boot`) e então troca. Numa
   TV que não aceita 720p isso é só tela preta/aviso até a troca.
-- **Configurações** (engrenagem): a linha da versão mostra
-  `vídeo: Automático (agora 720p) (X troca)`. X troca Auto -> 720p -> 1080p
-  e grava `XC360/VIDEO.TXT`; vale no próximo boot. (Sem mexer no layout de
-  `source/ui`, que o Wi-Fi está mudando; dá pra virar uma linha própria depois
-  com `xcv_settings_line()`.)
+- **Configurações > Vídeo e Som** (v0.21.33; o X que trocava Auto -> 720p ->
+  1080p saiu): rádios **720p** e **1080p** (os dois escolhíveis; o 1080p fica
+  apagado fora do HDMI ou sem tabela 1080p pra placa). A grava `XC360/VIDEO.TXT`
+  pelo mesmo caminho do X de antes (`xcv_settings_set` só muda a memória e marca
+  pendente; `xcv_save_pending` grava com a hw 3 livre); vale no próximo boot. A
+  linha escolhida diferente da que está na TV ganha "AO REINICIAR"; a que está na
+  TV, "EM USO". Rodapé: "Saída atual: HDMI · 720p · 60 Hz" (`xcv_settings_state`)
+  e a dica do LB+RB. Escolher a mesma opção não regrava (as letras de
+  diagnóstico do VIDEO.TXT ficam).
 - Se o 1080p escolhido à mão der tela preta: segurar **LB+RB** ao ligar (720p
   nesse boot), ou apagar `XC360/VIDEO.TXT` do pendrive no PC.
 - Log (`[video]`, UART no boot e repetido pro upload no `menu_main`):
@@ -184,7 +188,7 @@ livre e `worker_extra_step`). O X sempre grava o modo sem letras.
 | `source/video/xc_video_xenon.c`, `xc_video.h` | Xbox: lê VIDEO.TXT/EDID/LB+RB, aplica o 1080p, log, Configurações. |
 | `tools/video/dump2mode.py` | dump -> `xc_video_1080p_data.h` (`gen`), e validação do método contra o 720p do libxenon (`check720`). |
 | `hosttest/video/` | `run.sh` (entra no `hosttest/run.sh`), EDIDs reais em `edid/*.hex`, `fake_dump.py` (dump sintético). |
-| `main.c` | 5 ganchos de uma linha: include, `xcv_boot`, `xcv_log_summary`, X nas Configurações, linha da versão. |
+| `main.c` | ganchos: include, `xcv_boot`, `xcv_log_summary`, `xcv_save_pending`; v0.21.33: `xcv_settings_state`/`xcv_settings_set` na tela Vídeo e Som, `xcv_boot_forced` (LB+RB também ignora o PAD.TXT). |
 
 ## O dump (XEX local, fora do git)
 
@@ -254,6 +258,6 @@ O que revisar no `gen`:
   o que o `xenos_set_mode_f1` escreve.
 - Se a TV do testador rejeitar o 720p mesmo listando 720p60 no EDID (ex.:
   algum detalhe do sinal 720p do libxenon), o auto fica em 720p: aí a saída é
-  o manual 1080p (X nas Configurações, ou `VIDEO.TXT` pelo PC).
+  o manual 1080p (Configurações > Vídeo e Som, ou `VIDEO.TXT` pelo PC).
 - EDIDs de teste: 5 da base pública linuxhw/EDID (caminhos no cabeçalho de
   cada `.hex`) e 2 do dev; número de série zerado em todos.

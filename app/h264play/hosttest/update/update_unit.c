@@ -5,6 +5,7 @@
  * Uso: update_unit <fixtures> <pasta-pendrive>
  */
 #include "../../source/update/xc_update.h"
+#include "../../source/settings/xc_notes.h"   /* v0.21.33 */
 #include "../../source/login/xc_port.h"
 #include "../../source/update/xcu_pubkey.h"
 
@@ -331,6 +332,14 @@ static void t_install_ok(void) {
     CHECK(file_is(XCU_OLD, g_old, g_old_n));
     CHECK(fsz(XCU_NEW) < 0 && fsz(XCU_INF) < 0);
     CHECK(g_req_n == (int)((g_elf_n + XCU_CHUNK - 1) / XCU_CHUNK));
+    {   /* v0.21.33: NOTES.TXT com as notas assinadas da versão instalada */
+        size_t nn = 0;
+        char *nb = slurp(g_root, XCN_PATH, &nn);
+        xcn_notes_t no;
+        CHECK(xcn_notes_parse(nb, nn, &no) == 0);
+        CHECK(!strcmp(no.version, "0.21.0-beta.1") && strstr(no.notes, "Correções") != NULL);
+        free(nb);
+    }
     /* de novo, agora com XENON.OLD já existindo: o backup vira o da vez */
     s = check("0.20.0", g_good);
     s = install();

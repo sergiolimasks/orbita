@@ -21,15 +21,23 @@ void xcv_boot(int avpack);
  * existe depois do xlu_init, no menu_main). */
 void xcv_log_summary(void);
 
-/* Configurações: linha "Automático (agora 1080p)" e o X que troca
- * Auto -> 720p -> 1080p (grava XC360/VIDEO.TXT; vale no próximo boot).
- * cycle devolve o aviso curto pra tela. */
-const char *xcv_settings_line(void);
-const char *xcv_settings_cycle(void);
-/* A linha da versão + "  ·  vídeo: <linha> (X troca)": hoje a tela de
- * configurações mostra o vídeo assim, sem mexer no layout (source/ui). */
-const char *xcv_settings_version(const char *version_line);
-/* v0.21.21: grava o VIDEO.TXT pendente do X. Chamar só de quem pode usar o
+/* v0.21.33: Configurações > Vídeo e Som (o X que trocava Auto/720p/1080p
+ * saiu). state = o que a tela mostra; set = rádio escolhido (720p ou 1080p):
+ * só memória + pendência, igual o X fazia (grava em xcv_save_pending, vale
+ * no próximo boot; LB+RB no boot continua forçando 720p). Devolve 1 se
+ * mudou (0 = já era essa a escolha). */
+typedef struct {
+    int av_kind;      /* XCV_AV_* (-1 = antes do xcv_boot) */
+    int mode;         /* XCV_HDMI_720P... na TV agora */
+    int ovr;          /* XCV_OVR_* escolhido (VIDEO.TXT ou a tela, pendente incluído) */
+    int have_1080p;   /* tabela 1080p validada pra esta placa */
+    int forced_720p;  /* LB+RB segurados no boot */
+} xcv_state_t;
+void xcv_settings_state(xcv_state_t *o);
+int  xcv_settings_set(int ovr);
+/* v0.21.33: LB+RB segurados no boot (o main também ignora o PAD.TXT) */
+int  xcv_boot_forced(void);
+/* v0.21.21: grava o VIDEO.TXT pendente (v0.21.33: da tela Vídeo e Som). Chamar só de quem pode usar o
  * pendrive agora (main com a hw 3 livre, ou o worker das capas), junto do
  * catlist_save_pending. Sem pendência não faz nada. */
 void xcv_save_pending(void);

@@ -172,3 +172,29 @@ Como o `main.c` usa (v0.20.0):
   `xui_textkey_frame` (teclado de texto da senha: modelo `xtk_*` em
   `beta/xc_keypad.{h,c}`, mesmo visual do teclado da chave). Mockups `41_` a `52_`.
 - Detalhes, regras de thread e o que olhar no log: `WIFI.md`.
+
+## v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md)
+
+- A tela única da v0.20.3 (`xui_settings_frame`/`xui_settings_t`, `SCR_BSET`) saiu.
+  Agora `xui_cfg_frame(xui_cfg_t)`: coluna "Configurações" (Conta e sobre, Rede,
+  Vídeo e Som, Controles + ENERGIA: Reiniciar/Desligar) e o painel da seção.
+- Modelo da navegação: `source/settings/xc_cfgnav.{h,c}` (C puro, como o
+  `menu_model`); textos/linhas/dicas: `source/settings/xc_cfgview.{h,c}` (recebe o
+  estado do app achatado em `xcs_in_t`). O `main.c` só preenche o `xcs_in_t` e
+  executa as ações (`cfg_fill_in`, `cfg_key`, `cfg_option`).
+- Botões: A confirma/ativa; B volta (painel -> coluna, subpágina -> seção,
+  calibração = salva e volta) e, na coluna, fecha; LB/RB = seção; Guia fecha tudo.
+  X nunca é usado nas Configurações (o X que trocava o vídeo saiu).
+- **Guia** (`menu_btn_t.guide` = `controller_data_s.logo`, só o toque): na home,
+  carregando, falha e código do login abre as Configurações (na última seção
+  aberta); dentro delas (inclusive calibração, Wi-Fi/senha e Trocar chave abertos
+  por elas) fecha tudo. Fila, atualização, confirmação de energia e o boot do
+  Wi-Fi: nada. No jogo continua indo pro xCloud como Nexus (`send_pad`, sem mudança).
+- Engrenagem no topo também sem chave beta (`settings_on = beta_ok()`, D4); a
+  linha "Chave beta" só aparece com BETA=1 e chave validada.
+- `draw_hints` ganhou teclas em pílula: `LB/RB:`, `Guia:`, `D-pad:`, `Esq/Dir:`.
+- Sujeira: conteúdo mudou = tela inteira (hash FNV do `xui_cfg_t` no `st_sig`); na
+  calibração, só o analógico mexendo = só `xui_cfg_calib_rect()` (387x382 px, o
+  círculo + a leitura); host: ~2,5 ms por quadro parcial.
+- Mockups pelo código real: cenas `60_` a `69b_` no `hosttest/ui/mockup.c` (as
+  `39_`–`41_` da tela antiga saíram). Testes do modelo: `hosttest/settings/`.

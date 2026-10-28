@@ -22,6 +22,9 @@
 #include "../../source/ui/xui_mm.h"
 #include "../../source/ui/xui_cat.h"
 #include "xui_png.h"
+#include "../../source/settings/xc_cfgview.h"   /* v0.21.33 */
+#include "../../source/video/xc_video_mode.h"
+#include "../../source/update/xc_update.h"
 
 #define W 1280
 #define H 720
@@ -251,7 +254,7 @@ static void status_scene(const char *name, xui_status_t *s) {
     save(name);
 }
 
-/* v0.20.3: chave beta e configurações (sujeira: o quadro seguinte igual não redesenha) */
+/* v0.20.3: chave beta (sujeira: o quadro seguinte igual não redesenha) */
 static void key_scene(const char *name, const xui_key_t *k) {
     int anim;
     xui_key_frame(V, &C, k, &D, t_ms, &anim);
@@ -262,13 +265,183 @@ static void key_scene(const char *name, const xui_key_t *k) {
     }
     save(name);
 }
-static void settings_scene(const char *name, const xui_settings_t *st) {
+/* v0.21.33: Configurações em menu lateral, pelo código do app
+ * (settings/xc_cfgview.c monta, xui_cfg_frame desenha). Sujeira: parado não
+ * redesenha; incremental == completo; na calibração, mexer só o analógico
+ * suja só o quadrado do círculo + a leitura. PNGs 60-69 (os mesmos nomes dos
+ * mockups aprovados do settings_v2.c). */
+static xcs_view_t CV;
+static long cfg_diff(void) {
+    long diff = 0;
+    for (long i = 0; i < (long)W * H; i++) if (px[i] != px2[i]) diff++;
+    return diff;
+}
+static void cfg_scene(const char *name, const xcs_in_t *in, const xcf_nav_t *nav, const xcs_cal_t *cal, int scroll) {
     int anim;
-    xui_settings_frame(V, &C, st, &D, t_ms, &anim);
+    xcs_build(&CV, in, nav, cal, scroll, t_ms);
+    xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
     t_ms += 100;
-    xui_rect_t r = xui_settings_frame(V, &C, st, &D, t_ms, &anim);
-    CHECK(xui_rect_empty(r) && !anim, "%s: parado", name);
+    xcs_build(&CV, in, nav, cal, scroll, t_ms);
+    xui_rect_t r = xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
+    CHECK(xui_rect_empty(r), "%s: parado não redesenha", name);
+    CHECK(anim == (nav->page == XCF_PG_CALIB && !nav->confirm), "%s: anima só na calibração", name);
+    memcpy(px2, px, (size_t)W * H * 4);
+    xui_view_repaint(V);
+    xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
+    long diff = cfg_diff();
+    CHECK(diff == 0, "%s: incremental != completo (%ld px)", name, diff);
     save(name);
+}
+
+/* nav aberta na seção sec; right = foco no painel na opção focus */
+static void cfg_nav(xcf_nav_t *n, const xcs_in_t *in, int item, int right, int focus) {
+    xcf_init(n);
+    n->sec = item < XCF_NSEC ? item : 0;
+    xcf_open(n);
+    for (int s = 0; s < XCF_NSEC; s++) {
+        int ids[XCF_MAX_OPT];
+        unsigned adj;
+        xcf_set_options(n, s, xcs_options(in, s, ids, &adj), adj);
+    }
+    n->item = item;
+    n->right = right;
+    if (right) n->focus[n->sec] = focus;
+}
+
+static void cfg_scenes(void) {
+    xcs_in_t in;
+    xcf_nav_t nav;
+    memset(&in, 0, sizeof(in));
+    in.beta_build = 1;
+    in.key_row = 1;
+    in.console_short = "A1B2-C3D4-E5F6";
+    in.console_full = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    in.version = "v0.21.33";
+    in.channel = "beta";
+    in.key_masked = "*****-**P9H";
+    in.key_when = "validada em 25/10 22:56";
+    in.upd_phase = XCU_UP_TO_DATE;
+    in.cable = 1;
+    in.cable_ip = (192u << 24) | (168u << 16) | (15u << 8) | 47u;
+    in.wifi = XCS_W_NONE;
+    in.av_kind = XCV_AV_HDMI;
+    in.mode = XCV_HDMI_720P;
+    in.ovr = XCV_OVR_AUTO;
+    in.have_1080p = 1;
+    in.audio = 1;
+    in.volume = 100;
+    xpc_defaults(&in.pad);
+    /* fundo: o hero do jogo em foco que a home deixou (como no console) */
+
+    cfg_nav(&nav, &in, XCF_SEC_ACCOUNT, 0, 0);
+    cfg_scene("60_cfg_conta", &in, &nav, NULL, 0);
+    {   /* build pública (BETA=0): sem a linha da chave */
+        xcs_in_t p = in;
+        p.beta_build = 0; p.key_row = 0; p.channel = "";
+        cfg_nav(&nav, &p, XCF_SEC_ACCOUNT, 1, 0);
+        cfg_scene("60b_cfg_conta_publica", &p, &nav, NULL, 0);
+    }
+    in.upd_avail = 1; in.upd_phase = XCU_AVAILABLE; in.upd_latest = "0.22.0";
+    cfg_nav(&nav, &in, XCF_SEC_ACCOUNT, 1, 2);
+    cfg_scene("61_cfg_conta_atualizacao", &in, &nav, NULL, 0);
+    in.upd_avail = 0; in.upd_phase = XCU_UP_TO_DATE;
+    in.notes = "- Wi-Fi interno do Xbox 360 S/E: procure redes, conecte com senha WPA2 e o orbita lembra da rede.\n"
+               "- Decodificação de vídeo mais rápida: menos quadros perdidos em cenas com muito movimento.\n"
+               "- Saída HDMI em 1080p para TVs que não aceitam 720p.\n"
+               "- Correções da beta: travamento ao gravar no pendrive com o Wi-Fi ligado, catálogo que demorava a abrir.";
+    in.notes_from_file = 1; in.notes_when = "26/10/2026";
+    cfg_nav(&nav, &in, XCF_SEC_ACCOUNT, 1, 1);
+    xcf_set_page(&nav, XCF_PG_NOTES);
+    cfg_scene("62_cfg_novidades", &in, &nav, NULL, 0);
+    cfg_scene("62c_cfg_novidades_rolada", &in, &nav, NULL, 2);
+    in.notes = NULL;
+    cfg_scene("62b_cfg_novidades_sem_notas", &in, &nav, NULL, 0);
+
+    cfg_nav(&nav, &in, XCF_SEC_NET, 0, 0);
+    cfg_scene("63_cfg_rede_cabo", &in, &nav, NULL, 0);
+    in.cable = 0; in.wifi = XCS_W_UP; in.wifi_ssid = "Casa do Sérgio"; in.wifi_rssi = -58; in.wifi_dhcp = 1;
+    in.wifi_ip = (192u << 24) | (168u << 16) | (15u << 8) | 77u;
+    cfg_nav(&nav, &in, XCF_SEC_NET, 1, 0);
+    cfg_scene("64_cfg_rede_wifi", &in, &nav, NULL, 0);
+    in.wifi = XCS_W_NONE;
+    cfg_nav(&nav, &in, XCF_SEC_NET, 0, 0);
+    cfg_scene("64b_cfg_rede_sem_wifi", &in, &nav, NULL, 0);
+
+    cfg_nav(&nav, &in, XCF_SEC_AV, 1, 0);
+    cfg_scene("65_cfg_video_som", &in, &nav, NULL, 0);
+    in.volume = 150;
+    cfg_nav(&nav, &in, XCF_SEC_AV, 1, 2);
+    cfg_scene("65b_cfg_video_som_volume", &in, &nav, NULL, 0);
+    in.ovr = XCV_OVR_1080P; in.volume = 180;
+    cfg_nav(&nav, &in, XCF_SEC_AV, 1, 1);
+    cfg_scene("65c_cfg_video_1080p_ao_reiniciar", &in, &nav, NULL, 0);
+    in.ovr = XCV_OVR_AUTO; in.volume = 100; in.av_kind = XCV_AV_VGA; in.mode = XCV_VGA_720P;
+    cfg_nav(&nav, &in, XCF_SEC_AV, 1, 0);
+    cfg_scene("65d_cfg_video_vga", &in, &nav, NULL, 0);
+    in.av_kind = XCV_AV_HDMI; in.mode = XCV_HDMI_720P;
+
+    cfg_nav(&nav, &in, XCF_SEC_PADS, 1, 0);
+    cfg_scene("66_cfg_controles", &in, &nav, NULL, 0);
+    xcf_ask(&nav, XCF_CF_PADRESET);
+    cfg_scene("66b_cfg_controles_restaurar", &in, &nav, NULL, 0);
+
+    /* calibração: mesma conta do jogo (xc_padcfg) na leitura */
+    static xcs_cal_t cal;
+    cfg_nav(&nav, &in, XCF_SEC_PADS, 1, 0);
+    xcf_set_page(&nav, XCF_PG_CALIB);
+    xcs_cal_begin(&cal, &in.pad, 0);
+    for (int i = 8; i >= 0; i--) {   /* rastro: vindo do centro */
+        xcs_cal_feed(&cal, 5000 + (8 - i) * 40, (int)(0.22f * 32767 * (1.0f - i * 0.06f)),
+                     (int)(0.12f * 32767 * (1.0f - i * 0.06f)));
+    }
+    cfg_scene("67_cfg_calibrar_esquerdo", &in, &nav, &cal, 0);
+    {   /* só a posição mexeu: suja só o círculo + leitura, e o resultado é igual ao completo */
+        int anim;
+        xcs_cal_feed(&cal, 6000, (int)(0.6f * 32767), (int)(-0.3f * 32767));
+        xcs_build(&CV, &in, &nav, &cal, 0, t_ms);
+        xui_rect_t r = xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
+        xui_rect_t want = xui_cfg_calib_rect();
+        CHECK(r.x == want.x && r.y == want.y && r.w == want.w && r.h == want.h,
+              "calibração: posição suja só o círculo (%d,%d %dx%d)", r.x, r.y, r.w, r.h);
+        CHECK((long)r.w * r.h < (long)W * H / 4, "calibração: retângulo pequeno (%dx%d)", r.w, r.h);
+        memcpy(px2, px, (size_t)W * H * 4);
+        xui_view_repaint(V);
+        xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
+        long diff = cfg_diff();
+        CHECK(diff == 0, "calibração: parcial != completo (%ld px)", diff);
+        double t0 = now_s();
+        for (int i = 0; i < 20; i++) {   /* custo do quadro parcial (prévia ao vivo) */
+            xcs_cal_feed(&cal, 6100 + i * 16, (int)(0.6f * 32767) - i * 500, (int)(-0.3f * 32767) + i * 700);
+            xcs_build(&CV, &in, &nav, &cal, 0, t_ms);
+            r = xui_cfg_frame(V, &C, &CV.cfg, &D, t_ms, &anim);
+            xui_tile_copy(fb, W, W, H, &C, r);
+        }
+        printf("  calibração: quadro parcial %dx%d, %.3f ms (desenho + tiles, host)\n", r.w, r.h,
+               (now_s() - t0) / 20 * 1e3);
+    }
+    xcs_cal_key(&cal, XCF_K_DOWN, 7000);
+    xcs_cal_key(&cal, XCF_K_DOWN, 7000);
+    xcs_cal_key(&cal, XCF_K_DOWN, 7000);
+    xcs_cal_key(&cal, XCF_K_A, 7000);    /* Próximo: direito */
+    xcs_cal_key(&cal, XCF_K_DOWN, 7000); /* foco no limite máximo */
+    for (int i = 0; i < 5; i++) xcs_cal_key(&cal, XCF_K_LEFT, 7000);   /* 95 -> 90% */
+    cal.ntrail = 0;
+    for (int i = 8; i >= 0; i--)
+        xcs_cal_feed(&cal, 8000 + (8 - i) * 40, (int)(0.55f * 32767 * (1.0f - i * 0.05f)),
+                     (int)(0.48f * 32767 * (1.0f - i * 0.05f)));
+    cfg_scene("68_cfg_calibrar_direito", &in, &nav, &cal, 0);
+    xcs_cal_key(&cal, XCF_K_DOWN, 9000);
+    xcs_cal_key(&cal, XCF_K_A, 9000);    /* Medir sozinho */
+    xcs_cal_feed(&cal, 9100, 900, -600);
+    cal.multi = 1; cal.port = 1;
+    cfg_scene("68b_cfg_calibrar_medindo", &in, &nav, &cal, 0);
+
+    cfg_nav(&nav, &in, XCF_IT_SHUTDOWN, 0, 0);
+    nav.sec = XCF_SEC_ACCOUNT;
+    xcf_ask(&nav, XCF_CF_SHUTDOWN);
+    cfg_scene("69_cfg_desligar", &in, &nav, NULL, 0);
+    cfg_nav(&nav, &in, XCF_IT_REBOOT, 0, 0);
+    cfg_scene("69b_cfg_energia_coluna", &in, &nav, NULL, 0);
 }
 
 /* v0.21.0: Wi-Fi e teclado de texto */
@@ -536,23 +709,8 @@ int main(int argc, char **argv) {
         s.hint = "A:Tentar de novo|Y:Outra chave";
         status_scene("38_chave_sem_conexao", &s);
 
-        xui_settings_t st;
-        memset(&st, 0, sizeof(st));
-        st.console_short = "A1B2-C3D4-E5F6"; st.console_full = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
-        st.key_masked = "*****-**P9H"; st.key_status = "validada em 25/10/2026 22:56";
-        st.version = "orbita v0.20.3  ·  versão beta";
-        st.note = "Para reportar um bug, envie um print desta tela junto.";
-        st.button = "Trocar chave"; st.hint = "A:Trocar chave|B:Voltar";
-        settings_scene("39_configuracoes", &st);
-        st.notice = "Chave trocada";
-        settings_scene("40_configuracoes_chave_trocada", &st);
-        /* v0.21.0: Wi-Fi (WIFI.md) */
-        st.notice = NULL;
-        st.button2 = "Wi-Fi";
-        st.button2_note = "Wi-Fi: Casa do Sérgio";
-        st.focus = 1;
-        st.hint = "A:Abrir|B:Voltar";
-        settings_scene("41_configuracoes_wifi", &st);
+        /* v0.21.33: Configurações em menu lateral (as cenas 39-41 da tela antiga saíram) */
+        cfg_scenes();
         {
             static const xui_wifi_net_t nets[] = {
                 { "Casa do Sérgio", 4, 1, "Conectada", 0 },

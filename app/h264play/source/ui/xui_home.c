@@ -213,6 +213,26 @@ static int draw_hints(xui_canvas_t *c, int x, int base, const char *h, int measu
         char b = 0;
         if (seg[0] && seg[1] == ':') { b = seg[0]; txt = seg + 2; }
         else if (strncmp(seg, "Start:", 6) == 0) { b = 'S'; txt = seg + 6; }
+        else {
+            /* v0.21.33: teclas de mais de uma letra numa pílula (LB/RB, Guia, D-pad, Esq/Dir) */
+            static const char *const pills[] = { "LB/RB:", "Guia:", "D-pad:", "Esq/Dir:" };
+            for (int i = 0; i < 4; i++) {
+                size_t pl = strlen(pills[i]);
+                if (strncmp(seg, pills[i], pl) == 0) {
+                    char key[12];
+                    memcpy(key, seg, pl - 1);
+                    key[pl - 1] = 0;
+                    int pw = xui_text_width(XUI_F_LABEL, key, 0) + 16;
+                    if (!measure) {
+                        xui_round_rect(c, x, base - 15, pw, 20, 10, XUI_C_BUTTON, 255);
+                        xui_text_center(c, XUI_F_LABEL, x, pw, base, XUI_C_TEXT, key, 0);
+                    }
+                    x += pw + 7;
+                    txt = seg + pl;
+                    break;
+                }
+            }
+        }
         if (b) {
             if (!measure) {
                 if (b == 'S') {
@@ -394,6 +414,23 @@ static xui_rect_t row_band(const xui_view_t *v, int r) {
 
 static const xui_rect_t k_hero_text = { 0, HERO_TITLE_Y - 46, 900, HERO_NOTE_Y + 10 - (HERO_TITLE_Y - 46) };
 
+/* diálogo de confirmação por cima de tudo (home e, v0.21.33, Configurações) */
+static void draw_confirm(xui_view_t *v, xui_canvas_t *c, const xui_confirm_t *cf) {
+    xui_fill_a(c, 0, 0, v->w, v->h, 0, 175);
+    int pw = 560, ph = 250, px = (v->w - pw) / 2, py = (v->h - ph) / 2;
+    xui_round_rect(c, px, py, pw, ph, 12, XUI_C_PANEL, 255);
+    xui_text(c, XUI_F_H2, px + 36, py + 62, XUI_C_TEXT, cf->title, 0, pw - 72);
+    xui_text_wrap(c, XUI_F_BODY, px + 36, py + 100, pw - 72, 0, 3, 0, XUI_C_DIM, cf->text);
+    int bw = (pw - 72 - 16) / 2, by = py + ph - 36 - 48;
+    for (int i = 0; i < 2; i++) {
+        int bx = px + 36 + i * (bw + 16);
+        int f = (cf->focus == (i == 0 ? 0 : 1));
+        const char *lab = i == 0 ? cf->no : cf->yes;
+        xui_round_rect(c, bx, by, bw, 48, 6, f ? XUI_C_TEXT : XUI_C_BUTTON, 255);
+        xui_text_center(c, XUI_F_ROW, bx, bw, by + 32, f ? XUI_C_BG : XUI_C_TEXT, lab, 0);
+    }
+}
+
 static void render_home(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t *d, const xui_confirm_t *cf) {
     xui_copy_from(c, v->bg, v->w, c->clip);
     /* hero: nome + linha de meta */
@@ -459,21 +496,7 @@ static void render_home(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t *d
     }
     c->clip = saved;
     draw_header(c, d, d->row < 0 && !cf ? d->col : -1);
-    if (cf) {
-        xui_fill_a(c, 0, 0, v->w, v->h, 0, 175);
-        int pw = 560, ph = 250, px = (v->w - pw) / 2, py = (v->h - ph) / 2;
-        xui_round_rect(c, px, py, pw, ph, 12, XUI_C_PANEL, 255);
-        xui_text(c, XUI_F_H2, px + 36, py + 62, XUI_C_TEXT, cf->title, 0, pw - 72);
-        xui_text_wrap(c, XUI_F_BODY, px + 36, py + 100, pw - 72, 0, 3, 0, XUI_C_DIM, cf->text);
-        int bw = (pw - 72 - 16) / 2, by = py + ph - 36 - 48;
-        for (int i = 0; i < 2; i++) {
-            int bx = px + 36 + i * (bw + 16);
-            int f = (cf->focus == (i == 0 ? 0 : 1));
-            const char *lab = i == 0 ? cf->no : cf->yes;
-            xui_round_rect(c, bx, by, bw, 48, 6, f ? XUI_C_TEXT : XUI_C_BUTTON, 255);
-            xui_text_center(c, XUI_F_ROW, bx, bw, by + 32, f ? XUI_C_BG : XUI_C_TEXT, lab, 0);
-        }
-    }
+    if (cf) draw_confirm(v, c, cf);
 }
 
 /* Escala até `budget` capas que ainda não estão no cache (fileira em foco
@@ -970,101 +993,471 @@ xui_rect_t xui_key_frame(xui_view_t *v, xui_canvas_t *c, const xui_key_t *k, con
     return dirty;
 }
 
-/* ---- configurações ---- */
-#define SP_PW 760
-#define SP_PH 470
+/* ================================================================
+ * v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md, mockups
+ * 60-68). Coluna "Configurações" (312 px) com as 4 seções e ENERGIA embaixo;
+ * painel da seção (820 px). Foco = pílula branca; seção aberta com o foco
+ * no painel = pílula cinza com barrinha Sky.
+ * ================================================================ */
+#define CF_LX   64
+#define CF_LY   88
+#define CF_LW   312
+#define CF_LH   548
+#define CF_RX   (CF_LX + CF_LW + 20)
+#define CF_RY   CF_LY
+#define CF_RW   (1280 - 64 - CF_RX)
+#define CF_RH   CF_LH
+#define CF_RIN  40
+#define CF_IT_H 50
+#define CF_IT_P 56
+#define CF_ROW_H 58
+#define CF_ROW_P 66
+/* calibração: círculo de 320 px = curso inteiro do analógico */
+#define CF_CAL_CX (CF_RX + CF_RIN + 175)
+#define CF_CAL_CY (CF_RY + 290)
+#define CF_CAL_R  160
+#define ST_KIND_CFG ST_KIND_SETTINGS
 
-static void render_settings(xui_view_t *v, xui_canvas_t *c, const xui_settings_t *s, const char *version) {
-    xui_copy_from(c, v->bg, v->w, c->clip);
-    xui_fill_a(c, 0, 0, v->w, v->h, XUI_C_BG, 170);
-    draw_logo(c, version);
-    int px = (v->w - SP_PW) / 2, py = (v->h - SP_PH) / 2 + 24;
-    xui_round_rect(c, px, py, SP_PW, SP_PH, 14, XUI_C_PANEL, 240);
-    int x = px + 44, w = SP_PW - 88, y = py + 62;
-    xui_mask(c, &xui_icon_gear, x, y - 20, XUI_C_TEXT, 255);
-    xui_text(c, XUI_F_H2, x + 34, y, XUI_C_TEXT, "Configurações", 0, w - 34);
-    y += 46;
-    /* ID do console: o que o administrador procura no print */
-    xui_text(c, XUI_F_LABEL, x, y, XUI_C_FAINT, "ID DO CONSOLE", 1, w);
-    y += 40;
-    xui_text(c, XUI_F_TITLE, x, y, XUI_C_TEXT, s->console_short ? s->console_short : "—", 2, w);
-    y += 26;
-    if (s->console_full) xui_text(c, XUI_F_LABEL, x, y, XUI_C_HAZE, s->console_full, 0, w);
-    y += 40;
-    xui_text(c, XUI_F_LABEL, x, y, XUI_C_FAINT, "CHAVE BETA", 1, w);
-    y += 30;
-    int kx = xui_text(c, XUI_F_H2, x, y, XUI_C_TEXT, s->key_masked ? s->key_masked : "—", 1, w / 2);
-    if (s->key_status) xui_text(c, XUI_F_BODY, kx + 18, y - 2, XUI_C_DIM, s->key_status, 0, x + w - kx - 18);
-    y += 34;
-    /* botões (v0.21.0: + "Wi-Fi"; o em foco fica branco) */
-    const char *b = s->button ? s->button : "Trocar chave";
-    int bw = xui_text_width(XUI_F_ROW, b, 0) + 48;
-    int f2 = s->button2 && s->focus == 1;
-    if (!f2) {
-        xui_round_rect(c, x - 3, y - 3, bw + 6, 50, 10, XUI_C_TEXT, 255);
-        xui_text_center(c, XUI_F_ROW, x, bw, y + 30, XUI_C_BG, b, 0);
-    } else {
-        xui_round_rect(c, x, y, bw, 44, 8, XUI_C_BUTTON, 255);
-        xui_text_center(c, XUI_F_ROW, x, bw, y + 30, XUI_C_TEXT, b, 0);
-    }
-    int bx = x + bw;
-    if (s->button2) {
-        int b2x = x + bw + 18, b2w = xui_text_width(XUI_F_ROW, s->button2, 0) + 48;
-        if (f2) {
-            xui_round_rect(c, b2x - 3, y - 3, b2w + 6, 50, 10, XUI_C_TEXT, 255);
-            xui_text_center(c, XUI_F_ROW, b2x, b2w, y + 30, XUI_C_BG, s->button2, 0);
-        } else {
-            xui_round_rect(c, b2x, y, b2w, 44, 8, XUI_C_BUTTON, 255);
-            xui_text_center(c, XUI_F_ROW, b2x, b2w, y + 30, XUI_C_TEXT, s->button2, 0);
-        }
-        bx = b2x + b2w;
-    }
-    if (s->notice && s->notice[0])
-        xui_text(c, XUI_F_BODY, bx + 22, y + 29, XUI_C_ACCENT, s->notice, 0, x + w - bx - 22);
-    else if (s->button2_note && s->button2_note[0])
-        xui_text(c, XUI_F_BODY, bx + 22, y + 29, XUI_C_DIM, s->button2_note, 0, x + w - bx - 22);
-    y += 82;
-    /* nota pros testadores */
-    xui_round_rect(c, x, y - 26, w, 44, 8, XUI_C_BG, 150);
-    xui_text(c, XUI_F_BODY, x + 16, y + 2, XUI_C_TEXT, s->note ? s->note : "", 0, w - 32);
-    y += 50;
-    if (s->version) xui_text(c, XUI_F_LABEL, x, y, XUI_C_FAINT, s->version, 0, w);
-    if (s->hint && s->hint[0]) {
-        int hw = draw_hints(c, 0, 0, s->hint, 1);
-        draw_hints(c, px + SP_PW - 36 - hw, py + SP_PH + 40, s->hint, 0);
+xui_rect_t xui_cfg_calib_rect(void) {
+    /* círculo + rastro + bolinha (pode passar um pouco da borda) + a leitura embaixo;
+     * pára antes dos sliders (x = CF_RX + CF_RIN - 12 + 400) */
+    xui_rect_t r = { CF_CAL_CX - CF_CAL_R - 16, CF_CAL_CY - CF_CAL_R - 16, 0, 0 };
+    r.w = (CF_RX + CF_RIN - 12 + 400 - 2) - r.x;
+    r.h = (CF_CAL_CY + CF_CAL_R + 46) - r.y;
+    return r;
+}
+
+static void cf_chevron(xui_canvas_t *c, int x, int cy, uint32_t col) {
+    for (int i = 0; i < 6; i++) {
+        xui_fill(c, x + i, cy - 6 + i, 3, 2, col);
+        xui_fill(c, x + i, cy + 5 - i, 3, 2, col);
     }
 }
 
-xui_rect_t xui_settings_frame(xui_view_t *v, xui_canvas_t *c, const xui_settings_t *s, const xui_home_data_t *d,
-                              unsigned now_ms, int *animating) {
+static void cf_bars(xui_canvas_t *c, int x, int base, int n, uint32_t on, uint32_t off) {
+    for (int i = 0; i < 4; i++) {
+        int h = 5 + i * 4;
+        xui_round_rect(c, x + i * 6, base - h, 4, h, 1, i < n ? on : off, 255);
+    }
+}
+
+/* ícones da coluna: 0 conta, 1 rede, 2 tela, 3 controle, 4 reiniciar, 5 desligar */
+static void cf_icon(xui_canvas_t *c, int kind, int cx, int cy, uint32_t col) {
+    switch (kind) {
+    case 0:
+        xui_circle(c, cx, cy - 5, 5, col, 255);
+        xui_round_rect(c, cx - 9, cy + 2, 18, 9, 5, col, 255);
+        break;
+    case 1: cf_bars(c, cx - 11, cy + 9, 4, col, col); break;
+    case 2:
+        xui_round_frame(c, cx - 9, cy - 8, 18, 12, 2, 2, col);
+        xui_fill(c, cx - 1, cy + 6, 2, 3, col);
+        xui_fill(c, cx - 6, cy + 9, 12, 2, col);
+        break;
+    case 3: xui_mask(c, &xui_icon_pad, cx - 9, cy - 6, col, 255); break;
+    case 4: xui_mask(c, &xui_icon_restart, cx - 10, cy - 10, col, 255); break;
+    default: xui_mask(c, &xui_icon_power, cx - 10, cy - 10, col, 255); break;
+    }
+}
+
+static void cf_column(xui_canvas_t *c, const xui_cfg_t *s) {
+    xui_round_rect(c, CF_LX, CF_LY, CF_LW, CF_LH, 14, XUI_C_PANEL, 245);
+    xui_mask(c, &xui_icon_gear, CF_LX + 24, CF_LY + 30, XUI_C_TEXT, 255);
+    xui_text(c, XUI_F_H2, CF_LX + 54, CF_LY + 48, XUI_C_TEXT, "Configurações", 0, CF_LW - 70);
+    int x = CF_LX + 14, w = CF_LW - 28;
+    for (int i = 0; i < XUI_CFG_NSEC + 2; i++) {
+        int y = i < XUI_CFG_NSEC ? CF_LY + 82 + i * CF_IT_P
+                                 : CF_LY + CF_LH - 14 - (XUI_CFG_NSEC + 2 - i) * CF_IT_P + (CF_IT_P - CF_IT_H);
+        const char *lab = i < XUI_CFG_NSEC ? (s->sections[i] ? s->sections[i] : "") : i == XUI_CFG_NSEC ? "Reiniciar" : "Desligar";
+        int focus = i == s->item && !s->right;
+        int open = i == s->item && s->right;
+        uint32_t fg = XUI_C_TEXT;
+        if (focus) {
+            xui_round_rect(c, x - 3, y - 3, w + 6, CF_IT_H + 6, 10, XUI_C_TEXT, 255);
+            fg = XUI_C_BG;
+        } else if (open) {
+            xui_round_rect(c, x, y, w, CF_IT_H, 8, XUI_C_BUTTON, 255);
+            xui_round_rect(c, x, y + 10, 4, CF_IT_H - 20, 2, XUI_C_ACCENT, 255);
+        } else if (i >= XUI_CFG_NSEC) {
+            fg = XUI_C_DIM;
+        }
+        cf_icon(c, i, x + 30, y + CF_IT_H / 2, fg);
+        xui_text(c, XUI_F_ROW, x + 58, y + CF_IT_H / 2 + 8, fg, lab, 0, w - 70);
+    }
+    int sy = CF_LY + CF_LH - 14 - 2 * CF_IT_P - 18;
+    xui_text(c, XUI_F_LABEL, x + 4, sy, XUI_C_FAINT, "ENERGIA", 1, 200);
+    xui_fill(c, x + 4, sy - 26, w - 8, 1, XUI_C_BUTTON);
+}
+
+/* uma linha de opção no painel (y = topo) */
+static void cf_row(xui_canvas_t *c, int y, const xui_cfg_row_t *r, int focus) {
+    int x = CF_RX + CF_RIN - 12, w = CF_RW - 2 * CF_RIN + 24;
+    int dim = (r->flags & XUI_CR_DIM) != 0;
+    uint32_t fg = focus ? XUI_C_BG : dim ? XUI_C_FAINT : XUI_C_TEXT;
+    if (focus) xui_round_rect(c, x - 3, y - 3, w + 6, CF_ROW_H + 6, 10, XUI_C_TEXT, 255);
+    else xui_round_rect(c, x, y, w, CF_ROW_H, 8, XUI_C_BUTTON, dim ? 110 : 170);
+    int base = y + CF_ROW_H / 2 + 8;
+    int right = x + w - 22;
+    int lx = x + 22;
+    if ((r->flags & XUI_CR_WARN) && !focus) xui_circle(c, x + 8, y + 10, 5, XUI_C_FLARE, 255);
+    if (r->flags & XUI_CR_CENTER) {
+        xui_text_center(c, XUI_F_ROW, x, w, base, fg, r->label, 0);
+        return;
+    }
+    if (r->flags & XUI_CR_RADIO) {
+        if (r->flags & XUI_CR_ON) {
+            xui_circle(c, x + 30, y + CF_ROW_H / 2, 11, XUI_C_ACCENT, 255);
+            xui_circle(c, x + 30, y + CF_ROW_H / 2, 4, XUI_C_TEXT, 255);
+        } else {
+            xui_round_frame(c, x + 21, y + CF_ROW_H / 2 - 9, 18, 18, 9, 2, focus ? XUI_C_BG : XUI_C_FAINT);
+        }
+        lx = x + 56;
+    }
+    if (r->flags & XUI_CR_ARROW) { cf_chevron(c, right - 8, y + CF_ROW_H / 2, fg); right -= 26; }
+    if ((r->flags & XUI_CR_CHOICES) && r->nchoices > 0) {
+        int pw = 92, gap = 10, px0 = right - r->nchoices * pw - (r->nchoices - 1) * gap;
+        for (int i = 0; i < r->nchoices; i++) {
+            int bx = px0 + i * (pw + gap), by = y + CF_ROW_H / 2 - 17;
+            if (i == r->choice) {
+                xui_round_rect(c, bx, by, pw, 34, 17, XUI_C_ACCENT, 255);
+                xui_text_center(c, XUI_F_BODY, bx, pw, by + 23, XUI_C_TEXT, r->choices[i], 0);
+            } else {
+                xui_round_rect(c, bx, by, pw, 34, 17, focus ? XUI_C_DIM : XUI_C_BG, focus ? 90 : 150);
+                xui_text_center(c, XUI_F_BODY, bx, pw, by + 23, focus ? XUI_C_BG : XUI_C_DIM, r->choices[i], 0);
+            }
+        }
+        right = px0 - 16;
+    }
+    if (r->tag && r->tag[0]) {
+        int tw = xui_text_width(XUI_F_LABEL, r->tag, 1);
+        xui_text(c, XUI_F_LABEL, right - tw - 8, base - 2, focus ? XUI_C_BG : XUI_C_HAZE, r->tag, 1, 0);
+        right -= tw + 28;
+    }
+    if (r->value && r->value[0]) {
+        int vf = (r->flags & XUI_CR_CHOICES) ? XUI_F_LABEL : XUI_F_BODY;
+        int vw = xui_text_width(vf, r->value, 0);
+        int maxw = right - lx - 160;
+        if (maxw > 420) maxw = 420;
+        if (vw > maxw) vw = maxw;
+        uint32_t vc = focus ? XUI_C_BG : (r->flags & XUI_CR_WARN) ? XUI_C_FLARE : dim ? XUI_C_FAINT : XUI_C_DIM;
+        xui_text(c, vf, right - vw, base - 1, vc, r->value, 0, maxw);
+        right -= vw + 20;
+    }
+    int lx2 = xui_text(c, XUI_F_ROW, lx, base, fg, r->label, 0, right - lx);
+    if (r->detail && r->detail[0] && lx2 + 12 < right)
+        xui_text(c, XUI_F_BODY, lx2 + 12, base - 1, focus ? XUI_C_BG : dim ? XUI_C_FAINT : XUI_C_DIM, r->detail, 0,
+                 right - lx2 - 12);
+}
+
+static void cf_slider(xui_canvas_t *c, int y, const char *lab, int pct, int focus, uint32_t col) {
+    int x = CF_RX + CF_RIN - 12 + 400, w = CF_RW - 2 * CF_RIN + 24 - 400;
+    uint32_t fg = focus ? XUI_C_BG : XUI_C_TEXT;
+    if (focus) xui_round_rect(c, x - 3, y - 3, w + 6, 82 + 6, 10, XUI_C_TEXT, 255);
+    else xui_round_rect(c, x, y, w, 82, 8, XUI_C_BUTTON, 170);
+    xui_text(c, XUI_F_ROW, x + 20, y + 32, fg, lab, 0, w - 120);
+    char v[16];
+    snprintf(v, sizeof(v), "%d%%", pct);
+    int vw = xui_text_width(XUI_F_ROW, v, 0);
+    xui_text(c, XUI_F_ROW, x + w - 20 - vw, y + 32, fg, v, 0, 0);
+    int tx = x + 20, tww = w - 40, ty = y + 56;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    xui_round_rect(c, tx, ty, tww, 6, 3, focus ? XUI_C_DIM : XUI_C_PH, 255);
+    xui_round_rect(c, tx, ty, tww * pct / 100, 6, 3, col, 255);
+    xui_circle(c, tx + tww * pct / 100, ty + 3, 9, focus ? XUI_C_BG : XUI_C_TEXT, 255);
+    if (focus) {   /* setinhas: o D-pad ajusta */
+        for (int i = 0; i < 5; i++) {
+            xui_fill(c, tx - 14 + i, ty + 3 - i, 1, 2 * i + 1, XUI_C_BG);
+            xui_fill(c, tx + tww + 14 - i, ty + 3 - i, 1, 2 * i + 1, XUI_C_BG);
+        }
+    }
+}
+
+/* posição do analógico -> ponto no círculo (preso um pouco além da borda) */
+static void cf_cal_pt(int x, int y, int *ox, int *oy) {
+    float fx = x / 32767.0f, fy = y / 32767.0f;
+    float m = sqrtf(fx * fx + fy * fy), lim = 1.04f;
+    if (m > lim) { fx *= lim / m; fy *= lim / m; }
+    *ox = CF_CAL_CX + (int)(fx * CF_CAL_R);
+    *oy = CF_CAL_CY - (int)(fy * CF_CAL_R);
+}
+
+static void cf_calib(xui_canvas_t *c, const xui_calib_t *k) {
+    int cx = CF_CAL_CX, cy = CF_CAL_CY, R = CF_CAL_R;
+    xui_circle(c, cx, cy, R + 2, XUI_C_BG, 200);
+    xui_round_frame(c, cx - R, cy - R, 2 * R, 2 * R, R, 2, XUI_C_FAINT);        /* curso todo */
+    int rm = R * k->out_pct / 100;
+    xui_circle(c, cx, cy, rm, XUI_C_ACCENT, 40);                                 /* vai pro jogo */
+    xui_round_frame(c, cx - rm, cy - rm, 2 * rm, 2 * rm, rm, 2, XUI_C_ACCENT);   /* limite máximo */
+    int rd = R * k->dz_pct / 100;
+    if (rd > 0) {
+        xui_circle(c, cx, cy, rd, XUI_C_FLARE, 70);                              /* zona morta */
+        xui_round_frame(c, cx - rd, cy - rd, 2 * rd, 2 * rd, rd, 2, XUI_C_FLARE);
+    }
+    xui_fill_a(c, cx - R, cy, 2 * R, 1, XUI_C_TEXT, 50);
+    xui_fill_a(c, cx, cy - R, 1, 2 * R, XUI_C_TEXT, 50);
+    for (int i = k->ntrail - 1; i >= 0; i--) {   /* rastro curto, o mais velho mais apagado */
+        int px, py;
+        cf_cal_pt(k->tx[i], k->ty[i], &px, &py);
+        xui_circle(c, px, py, 4, XUI_C_TEXT, (unsigned)(110 - i * 12));
+    }
+    int dx, dy;
+    cf_cal_pt(k->x, k->y, &dx, &dy);
+    xui_circle(c, dx, dy, 11, XUI_C_BG, 255);
+    xui_circle(c, dx, dy, 9, XUI_C_TEXT, 255);
+    char l1[48], l2[48];
+    snprintf(l1, sizeof(l1), "Posição: %d%%", k->pos_pct);
+    snprintf(l2, sizeof(l2), "Jogo recebe: %d%%", k->game_pct);
+    xui_text(c, XUI_F_BODY, cx - R, cy + R + 36, XUI_C_DIM, l1, 0, 160);
+    xui_text(c, XUI_F_BODY, cx + 10, cy + R + 36, k->game_pct == 0 ? XUI_C_FLARE : XUI_C_ACCENT, l2, 0, 190);
+}
+
+static void cf_calib_page(xui_canvas_t *c, const xui_calib_t *k) {
+    int cx = CF_CAL_CX, cy = CF_CAL_CY, R = CF_CAL_R;
+    const char *stp = k->step ? k->step : "";
+    if (stp[0]) {
+        int sw = xui_text_width(XUI_F_LABEL, stp, 0) + 20;
+        xui_round_rect(c, CF_RX + CF_RW - CF_RIN - sw, CF_RY + 44, sw, 26, 13, XUI_C_ACCENT, 255);
+        xui_text_center(c, XUI_F_LABEL, CF_RX + CF_RW - CF_RIN - sw, sw, CF_RY + 62, XUI_C_BG, stp, 0);
+    }
+    cf_calib(c, k);
+    /* legenda (+ qual controle, com mais de um) */
+    xui_circle(c, cx - R + 6, cy + R + 60, 5, XUI_C_FLARE, 255);
+    xui_text(c, XUI_F_LABEL, cx - R + 18, cy + R + 65, XUI_C_FAINT, "ignorado", 0, 100);
+    xui_circle(c, cx - R + 100, cy + R + 60, 5, XUI_C_ACCENT, 255);
+    xui_text(c, XUI_F_LABEL, cx - R + 112, cy + R + 65, XUI_C_FAINT, "vai pro jogo", 0, 120);
+    if (k->pad) xui_text(c, XUI_F_LABEL, cx - R + 230, cy + R + 65, XUI_C_HAZE, k->pad, 0, 120);
+    int y = CF_RY + 104;
+    cf_slider(c, y, "Zona morta mínima", k->dz_pct, k->focus == 0, XUI_C_FLARE);
+    y += 98;
+    cf_slider(c, y, "Limite máximo", k->out_pct, k->focus == 1, XUI_C_ACCENT);
+    y += 98;
+    int x = CF_RX + CF_RIN - 12 + 400, w = CF_RW - 2 * CF_RIN + 24 - 400;
+    for (int i = 0; i < 2; i++) {
+        int f = k->focus == 2 + i, by = y + i * 62;
+        const char *b = i ? (k->next ? k->next : "Concluir") : (k->measuring ? "Medindo…" : "Medir sozinho");
+        if (f) xui_round_rect(c, x - 3, by - 3, w + 6, 52, 10, XUI_C_TEXT, 255);
+        else xui_round_rect(c, x, by, w, 46, 8, XUI_C_BUTTON, 255);
+        xui_text_center(c, XUI_F_ROW, x, w, by + 30, f ? XUI_C_BG : XUI_C_TEXT, b, 0);
+    }
+    xui_text_wrap(c, XUI_F_LABEL, x, y + 146, w, 0, 3, 0, k->status ? XUI_C_ACCENT : XUI_C_FAINT,
+                  k->status ? k->status : "Medir sozinho: solte o analógico por 2 s, depois gire-o encostando na borda.");
+}
+
+/* Novidades: parágrafos (\n) com bolinha; "- " / "* " no começo some */
+static void cf_notes_page(xui_canvas_t *c, const xui_cfg_t *s) {
+    int x = CF_RX + CF_RIN, w = CF_RW - 2 * CF_RIN;
+    int y = CF_RY + 150, ymax = CF_RY + CF_RH - 56;
+    const char *p = s->notes;
+    if (!p || !p[0]) {
+        xui_text_wrap(c, XUI_F_BODY, x, y, w, 0, 3, 0, XUI_C_DIM, s->notes_empty ? s->notes_empty : "");
+        return;
+    }
+    int paras = 0;
+    for (const char *q = p; *q; q++) if (*q == '\n') paras++;
+    paras++;
+    int skip = s->scroll, multi = paras > 1;
+    char para[XUI_MAX_W / 2];
+    while (*p && y < ymax) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n >= sizeof(para)) n = sizeof(para) - 1;
+        memcpy(para, p, n);
+        para[n] = 0;
+        p = e ? e + 1 : p + strlen(p);
+        char *t = para;
+        while (*t == ' ' || *t == '\t' || *t == '\r') t++;
+        if ((t[0] == '-' || t[0] == '*') && t[1] == ' ') t += 2;
+        size_t tl = strlen(t);
+        while (tl && (t[tl - 1] == '\r' || t[tl - 1] == ' ')) t[--tl] = 0;
+        if (!t[0]) continue;
+        if (skip > 0) { skip--; continue; }
+        int lines = (ymax - y) / xui_line_h(XUI_F_BODY);
+        if (lines < 1) break;
+        if (lines > 6) lines = 6;
+        int tx = multi ? x + 24 : x;
+        if (multi) xui_circle(c, x + 6, y - 6, 4, XUI_C_ACCENT, 255);
+        int k = xui_text_wrap(c, XUI_F_BODY, tx, y, w - (tx - x), 0, lines, 0, XUI_C_TEXT, t);
+        y += k * xui_line_h(XUI_F_BODY) + 18;
+    }
+}
+
+static void render_cfg(xui_view_t *v, xui_canvas_t *c, const xui_cfg_t *s, const char *version) {
+    xui_copy_from(c, v->bg, v->w, c->clip);
+    xui_fill_a(c, 0, 0, v->w, v->h, XUI_C_BG, 200);
+    draw_logo(c, version);
+    cf_column(c, s);
+    xui_round_rect(c, CF_RX, CF_RY, CF_RW, CF_RH, 14, XUI_C_PANEL, s->right ? 245 : 225);
+    int x = CF_RX + CF_RIN, w = CF_RW - 2 * CF_RIN;
+    if (s->page != XUI_CFG_ROWS) {
+        if (s->crumb) xui_text(c, XUI_F_LABEL, x, CF_RY + 30, XUI_C_FAINT, s->crumb, 1, 500);
+        xui_text(c, XUI_F_H2, x, CF_RY + 66, XUI_C_TEXT, s->title ? s->title : "", 0, w - 120);
+        if (s->page == XUI_CFG_NOTES) {
+            if (s->subtitle) xui_text(c, XUI_F_BODY, x, CF_RY + 96, XUI_C_DIM, s->subtitle, 0, w);
+            cf_notes_page(c, s);
+        } else if (s->calib) {
+            cf_calib_page(c, s->calib);
+        }
+    } else {
+        xui_text(c, XUI_F_H2, x, CF_RY + 52, XUI_C_TEXT, s->title ? s->title : "", 0, w);
+        if (s->subtitle) xui_text(c, XUI_F_BODY, x, CF_RY + 82, XUI_C_DIM, s->subtitle, 0, w);
+        int y = s->ninfo ? CF_RY + 92 : s->rows && s->nrows && s->rows[0].head && !s->card ? CF_RY + 112 : CF_RY + 116;
+        for (int i = 0; i < s->ninfo && i < 2; i++) {
+            int ix = x + i * 430, big = s->info[i].big_title;
+            xui_text(c, XUI_F_LABEL, ix, y, XUI_C_FAINT, s->info[i].label, 1, 400);
+            xui_text(c, big ? XUI_F_TITLE : XUI_F_ROW, ix, y + (big ? 40 : 30), XUI_C_TEXT, s->info[i].big, big ? 2 : 0,
+                     i ? w - 430 : 420);
+            if (s->info[i].small)
+                xui_text(c, XUI_F_LABEL, ix, y + (big ? 64 : 52), XUI_C_HAZE, s->info[i].small, 0, i ? w - 430 : 420);
+        }
+        if (s->ninfo) y += 96;
+        int yend = y;   /* fim do último bloco desenhado */
+        if (s->card) {
+            int cx = x - 12, cw = w + 24, h = s->card_text2 ? 104 : 80;
+            xui_round_rect(c, cx, y, cw, h, 10, XUI_C_BG, 150);
+            if (s->card == 2) cf_bars(c, cx + 20, y + 42, s->card_bars, s->card_ok ? XUI_C_ACCENT : XUI_C_FAINT, XUI_C_PH);
+            else xui_circle(c, cx + 28, y + 30, 7, s->card_ok ? XUI_C_ACCENT : XUI_C_FAINT, 255);
+            xui_text(c, XUI_F_ROW, cx + 56, y + 38, XUI_C_TEXT, s->card_title ? s->card_title : "", 0, cw - 80);
+            if (s->card_text) xui_text(c, XUI_F_BODY, cx + 56, y + 66, XUI_C_DIM, s->card_text, 0, cw - 80);
+            if (s->card_text2) xui_text(c, XUI_F_BODY, cx + 56, y + 90, XUI_C_FAINT, s->card_text2, 0, cw - 80);
+            yend = y + h;
+            y = yend + 24;
+        }
+        for (int i = 0; i < s->nrows; i++) {
+            const xui_cfg_row_t *r = &s->rows[i];
+            if (r->head) {
+                if (i > 0) {
+                    int dy = yend + 22;
+                    xui_fill(c, x, dy, w, 1, XUI_C_BUTTON);
+                    y = dy + 30;
+                }
+                xui_text(c, XUI_F_LABEL, x, y, XUI_C_FAINT, r->head, 1, 300);
+                y += 12;
+            } else if (i > 0) {
+                y = yend + (CF_ROW_P - CF_ROW_H);
+            }
+            cf_row(c, y, r, i == s->focus);
+            yend = y + CF_ROW_H;
+            if (r->after && r->after[0]) {   /* até 2 linhas, separadas por \n */
+                const char *p = r->after;
+                int ly = yend + 26, k = 0;
+                while (*p && k < 2) {
+                    const char *e = strchr(p, '\n');
+                    size_t n = e ? (size_t)(e - p) : strlen(p);
+                    char ln[200];
+                    if (n >= sizeof(ln)) n = sizeof(ln) - 1;
+                    memcpy(ln, p, n);
+                    ln[n] = 0;
+                    p = e ? e + 1 : p + strlen(p);
+                    if (!ln[0]) continue;
+                    xui_text(c, XUI_F_LABEL, x, ly, XUI_C_HAZE, ln, 0, w);
+                    ly += 20;
+                    k++;
+                }
+                if (k) yend = ly - 20;
+            }
+        }
+        if (s->text && s->text[0]) {
+            int ty = yend + (s->nrows ? 30 : 4);
+            int n = xui_text_wrap(c, XUI_F_BODY, x, ty, w, 0, 4, 0, XUI_C_DIM, s->text);
+            yend = ty + (n - 1) * xui_line_h(XUI_F_BODY) + 8;
+        }
+        if (s->note && s->note[0]) {
+            int ny = yend + 22, nx = x - 12, nw = w + 24;
+            xui_round_rect(c, nx, ny, nw, 44, 8, XUI_C_BG, 150);
+            xui_text(c, XUI_F_BODY, nx + 18, ny + 28, XUI_C_DIM, s->note, 0, nw - 36);
+        }
+    }
+    if (s->footer && s->footer[0])
+        xui_text(c, XUI_F_LABEL, x, CF_RY + CF_RH - 28, XUI_C_FAINT, s->footer, 0, w);
+    int hb = CF_LY + CF_LH + 36;
+    int hw = (s->hint && s->hint[0]) ? draw_hints(c, 0, 0, s->hint, 1) : 0;
+    if (hw) draw_hints(c, v->w - 64 - hw, hb, s->hint, 0);
+    if (s->notice && s->notice[0]) xui_text(c, XUI_F_BODY, CF_LX, hb, XUI_C_ACCENT, s->notice, 0, v->w - 64 - hw - 40 - CF_LX);
+    if (s->confirm) draw_confirm(v, c, s->confirm);
+}
+
+/* FNV-1a 64 do conteúdo (as notas passam dos 600 B do st_sig) */
+static void cf_hs(uint64_t *h, const char *p) {
+    if (!p) p = "\x01";
+    for (; *p; p++) { *h ^= (unsigned char)*p; *h *= 1099511628211ULL; }
+    *h ^= 0x1f; *h *= 1099511628211ULL;
+}
+static void cf_hi(uint64_t *h, int x) {
+    for (int i = 0; i < 4; i++) { *h ^= (unsigned)(x >> (8 * i)) & 0xff; *h *= 1099511628211ULL; }
+}
+
+static uint64_t cf_hash(const xui_cfg_t *s, int dynamic) {
+    uint64_t h = 1469598103934665603ULL;
+    if (dynamic) {   /* só o que anima na calibração */
+        const xui_calib_t *k = s->calib;
+        if (!k) return h;
+        cf_hi(&h, k->x); cf_hi(&h, k->y); cf_hi(&h, k->pos_pct); cf_hi(&h, k->game_pct); cf_hi(&h, k->ntrail);
+        for (int i = 0; i < k->ntrail && i < XUI_CAL_TRAIL; i++) { cf_hi(&h, k->tx[i]); cf_hi(&h, k->ty[i]); }
+        return h;
+    }
+    for (int i = 0; i < XUI_CFG_NSEC; i++) cf_hs(&h, s->sections[i]);
+    cf_hi(&h, s->item); cf_hi(&h, s->right); cf_hi(&h, s->page); cf_hi(&h, s->ninfo); cf_hi(&h, s->card);
+    cf_hi(&h, s->card_ok); cf_hi(&h, s->card_bars); cf_hi(&h, s->nrows); cf_hi(&h, s->focus); cf_hi(&h, s->scroll);
+    cf_hs(&h, s->crumb); cf_hs(&h, s->title); cf_hs(&h, s->subtitle);
+    for (int i = 0; i < s->ninfo && i < 2; i++) {
+        cf_hs(&h, s->info[i].label); cf_hs(&h, s->info[i].big); cf_hs(&h, s->info[i].small); cf_hi(&h, s->info[i].big_title);
+    }
+    cf_hs(&h, s->card_title); cf_hs(&h, s->card_text); cf_hs(&h, s->card_text2);
+    for (int i = 0; i < s->nrows; i++) {
+        const xui_cfg_row_t *r = &s->rows[i];
+        cf_hs(&h, r->head); cf_hs(&h, r->label); cf_hs(&h, r->detail); cf_hs(&h, r->value); cf_hs(&h, r->tag);
+        cf_hs(&h, r->after); cf_hi(&h, (int)r->flags); cf_hi(&h, r->nchoices); cf_hi(&h, r->choice);
+        for (int j = 0; j < r->nchoices; j++) cf_hs(&h, r->choices[j]);
+    }
+    cf_hs(&h, s->text); cf_hs(&h, s->note); cf_hs(&h, s->notes); cf_hs(&h, s->notes_empty); cf_hs(&h, s->footer);
+    cf_hs(&h, s->notice); cf_hs(&h, s->hint);
+    if (s->calib) {
+        const xui_calib_t *k = s->calib;
+        cf_hi(&h, k->stick); cf_hi(&h, k->dz_pct); cf_hi(&h, k->out_pct); cf_hi(&h, k->focus); cf_hi(&h, k->measuring);
+        cf_hs(&h, k->step); cf_hs(&h, k->next); cf_hs(&h, k->status); cf_hs(&h, k->pad);
+    } else {
+        cf_hi(&h, -1);
+    }
+    if (s->confirm) {
+        cf_hs(&h, s->confirm->title); cf_hs(&h, s->confirm->text); cf_hs(&h, s->confirm->yes); cf_hs(&h, s->confirm->no);
+        cf_hi(&h, s->confirm->focus);
+    } else {
+        cf_hi(&h, -2);
+    }
+    return h;
+}
+
+xui_rect_t xui_cfg_frame(xui_view_t *v, xui_canvas_t *c, const xui_cfg_t *s, const xui_home_data_t *d,
+                         unsigned now_ms, int *animating) {
     xui_rect_t none = { 0, 0, 0, 0 }, full = { 0, 0, v->w, v->h };
     xui_rect_t dirty = none;
-    v->valid = 0;
+    v->valid = 0;   /* voltar pra home redesenha tudo */
     v->last_ms = now_ms;
     v->have_time = 1;
-    char sig[600];
-    int n = 0;
-    sig[0] = 0;
-    char fnum[16];
-    snprintf(fnum, sizeof(fnum), "%d", s->focus);
-    const char *parts[12] = { s->console_short, s->console_full, s->key_masked, s->key_status, s->version,
-                              s->note, s->notice, s->button, s->hint, s->button2, s->button2_note, fnum };
-    for (int i = 0; i < 12; i++) sig_cat(sig, &n, (int)sizeof(sig), parts[i]);
+    char sig[64];
+    unsigned long long hs = cf_hash(s, 0), hd = cf_hash(s, 1);
+    snprintf(sig, sizeof(sig), "cfg:%016llx:%016llx", hs, hd);
     if (!v->hero_valid) { build_hero(v, d, NULL); v->st_valid = 0; }
-    if (!v->st_valid || v->st_kind != ST_KIND_SETTINGS || strcmp(sig, v->st_sig) != 0) dirty = full;
+    int calib_live = s->page == XUI_CFG_CALIB && s->calib && !s->confirm;
+    if (!v->st_valid || v->st_kind != ST_KIND_CFG || strncmp(sig, v->st_sig, 21) != 0) {
+        dirty = full;
+    } else if (strcmp(sig, v->st_sig) != 0) {
+        dirty = calib_live ? xui_cfg_calib_rect() : full;   /* só a posição mexeu */
+    }
     if (!xui_rect_empty(dirty)) {
         xui_set_clip(c, dirty);
-        render_settings(v, c, s, d ? d->version : NULL);
+        render_cfg(v, c, s, d ? d->version : NULL);
         xui_clip_all(c);
         v->stats.frames++;
-        v->stats.full++;
+        if (dirty.w == full.w && dirty.h == full.h) v->stats.full++; else v->stats.partial++;
     }
     v->st_valid = 1;
-    v->st_kind = ST_KIND_SETTINGS;
+    v->st_kind = ST_KIND_CFG;
     v->st_prog = -1;
     v->st_phase = 0;
     scopy(v->st_sig, sizeof(v->st_sig), sig);
-    if (animating) *animating = 0;
+    if (animating) *animating = calib_live;
     return dirty;
 }
 

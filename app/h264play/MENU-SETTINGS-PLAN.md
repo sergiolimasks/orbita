@@ -1,11 +1,55 @@
-# Configurações em menu lateral + botão Guia (PLANO, nada implementado)
+# Configurações em menu lateral + botão Guia
 
-Status (2026-10-27): proposta para discutir. Nenhum arquivo do app mudou. Só existem
-os mockups (`hosttest/ui/settings_v2.c` + `run_settings_v2.sh`, fora do `run.sh` e do
-ELF). PNGs: `~/scratch/menu-mockups/60_…68_*.png` no devbox e
-`Desktop\windows desktop compartilhado\Orbita menu config\` no PC.
+Status (2026-10-27): **implementado na v0.21.33** (branch fase1-latencia, ainda sem
+teste no console). Este arquivo segue como o plano; o que mudou na hora de fazer
+está logo abaixo. Mockups originais (aprovados): `hosttest/ui/settings_v2.c` +
+`run_settings_v2.sh`; as telas pelo código real: cenas `60_`–`69b_` do
+`hosttest/ui/run.sh` (`hosttest/ui/out/`).
 
-## Decisões que faltam (o usuário escolhe)
+## Decisões aprovadas (2026-10-27)
+
+- **D1:** Guia no jogo continua indo pro xCloud como Nexus (nada mudou no
+  `send_pad`/`xc_proto.c`). No menu ela abre/fecha as Configurações pela tabela
+  do §1. Sem "segurar Guia 1 s".
+- **D2:** zona morta global, separada por analógico, `XC360/PAD.TXT`; padrão = os
+  valores de compilação (STICK_DZ/STICK_OUTER/RSTICK_DZ).
+- **D3:** Reiniciar/Desligar também na coluna (ENERGIA); os botões do topo ficam.
+- **D4:** Configurações existem sem chave beta (BETA=0); a linha "Chave beta" some.
+- **D5 (mudou):** seção **Vídeo e Som**; 720p **e** 1080p escolhíveis (sem "EM
+  BREVE"). Escolher grava `VIDEO.TXT` pelo mesmo caminho do X de antes
+  (`xcv_settings_set` + `xcv_save_pending`, vale no próximo boot, LB+RB no boot
+  continua forçando 720p); o X saiu. Som: Volume 100/150/200/250% (esquerda/
+  direita), na hora (`audio_set_volume_pct`) + `VOLUME.TXT`.
+- **D6:** NOTES.TXT gravado na instalação + notas do manifesto quando a publicada
+  = a instalada. **D7:** "Medir sozinho" incluído.
+- Rede: "cabo conectado" = `stream_net_cable()` (DHCP do cabo), nunca o link do PHY.
+- Botões: A confirma; B volta (painel -> coluna, subpágina -> seção, calibração =
+  salva e volta) ou, na coluna, fecha; X nunca; Guia fecha tudo.
+
+## O que ficou diferente do plano (v0.21.33)
+
+- Arquivos: `source/settings/xc_cfgnav.{h,c}` (navegação), `source/settings/xc_cfgview.{h,c}`
+  (estado achatado `xcs_in_t` -> `xui_cfg_t`, opções por seção, calibração
+  `xcs_cal_*`), `source/settings/xc_notes.{h,c}` (NOTES.TXT), `source/input/xc_padcfg.{h,c}`.
+  O `main.c` só preenche o `xcs_in_t` e executa as ações; o mockup do host usa o
+  mesmo `xcs_build` + `xui_cfg_frame`.
+- Ícones da coluna (conta, rede, tela) desenhados com primitivas, como no mockup
+  aprovado (o gerador de assets não mudou).
+- NOTES.TXT: `XCN1` / versão / hora Unix da instalação (`xc_time_now`, -1 se não
+  sabe) / notas. "Instalada em" vem dessa hora.
+- LB+RB segurados no boot também ignoram o PAD.TXT nesta vez (o arquivo fica).
+- Vídeo: com a escolha diferente da saída atual, a linha escolhida mostra "AO
+  REINICIAR"; 1080p apagado fora do HDMI ("só no cabo HDMI") ou sem tabela 1080p
+  ("indisponível neste console"). Volume fora das 4 opções: "Agora: N%,
+  personalizado (VOLUME.TXT)" embaixo da linha. A no Volume = próxima opção.
+- Calibração: LB/RB não saem dela (só B/Guia, que salvam). "Controle N" aparece
+  quando mais de um controle mexe. Medindo: A cancela.
+- Caso de borda "cabo pegou DHCP no boot e foi tirado": não dá pra detectar (o
+  PHY mente no Corona); o texto do cartão do cabo já diz "tire o cabo e reinicie".
+- Trocar chave e o Wi-Fi abertos pelas Configurações: B volta pra seção; a Guia
+  fecha tudo (no Trocar chave, só sem validação em andamento).
+
+## Decisões que faltavam (proposta original; ver "Decisões aprovadas" acima)
 
 | # | Pergunta | Recomendação |
 |---|---|---|

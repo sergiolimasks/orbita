@@ -82,7 +82,12 @@
 #include "webrtc/xc_udp_xenon.h"
 #include "login/xc_port.h"
 #include "video/xc_video.h"     /* HDMI 1080p (VIDEO-1080P.md) */
+#include "video/xc_video_mode.h"   /* v0.21.33: XCV_OVR_* da tela Vídeo e Som */
 #include "dec/xc_decdiag.h"      /* v0.21.25: DIAG.TXT do decoder + [dec] prof + [cpu] (DECODE-PERF.md) */
+#include "input/xc_padcfg.h"     /* v0.21.33: zona morta configurável (XC360/PAD.TXT) */
+#include "settings/xc_cfgnav.h"  /* v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md) */
+#include "settings/xc_cfgview.h"
+#include "settings/xc_notes.h"   /* v0.21.33: XC360/NOTES.TXT */
 extern volatile int xpt_park_new, xpt_parked;   /* deps/xenon-pthread (v0.21.26) */
 static int g_avpack = -1;   /* v0.20.6: cabo de vídeo (ver orbita_video_mode) */
 #ifdef XCLOUD360_AUDIO
@@ -356,48 +361,20 @@ static int convert_bottom_step(void) {
     return 1;
 }
 
-/* v0.15.1: deadzone radial com rescala (limiar 12000 mata o drift). */
-#ifndef STICK_DZ
-#define STICK_DZ 12000
-#endif
-#ifndef STICK_OUTER
-#define STICK_OUTER 31000
-#endif
-static void apply_deadzone(int16_t *x, int16_t *y, float dz) {
-    float fx = *x, fy = *y;
-    float mag = sqrtf(fx * fx + fy * fy);
-    if (mag <= dz) { *x = 0; *y = 0; return; }
-    float m = mag > STICK_OUTER ? STICK_OUTER : mag;
-    float k = (m - dz) / (STICK_OUTER - dz) * 32767.0f / mag;
-    float ox = fx * k, oy = fy * k;
-    if (ox > 32767.0f) ox = 32767.0f; else if (ox < -32767.0f) ox = -32767.0f;
-    if (oy > 32767.0f) oy = 32767.0f; else if (oy < -32767.0f) oy = -32767.0f;
-    *x = (int16_t)ox;
-    *y = (int16_t)oy;
-}
-/* v0.15.3: stick de câmera: m' = ADZ + (GAIN - ADZ) * m^EXPO. */
-#ifndef RSTICK_DZ
-#define RSTICK_DZ 9000
-#endif
-#ifndef RSTICK_ADZ
-#define RSTICK_ADZ 0.20f
-#endif
-#ifndef RSTICK_GAIN
-#define RSTICK_GAIN 0.70f
-#endif
-#ifndef RSTICK_EXPO
-#define RSTICK_EXPO 1.5f
-#endif
-static void apply_curve(int16_t *x, int16_t *y) {
-    float fx = *x, fy = *y;
-    float mag = sqrtf(fx * fx + fy * fy);
-    if (mag < 1.0f) return;
-    float m = mag / 32767.0f;
-    if (m > 1.0f) m = 1.0f;
-    float out = RSTICK_ADZ + (RSTICK_GAIN - RSTICK_ADZ) * powf(m, RSTICK_EXPO);
-    float k = out * 32767.0f / mag;
-    *x = (int16_t)(fx * k);
-    *y = (int16_t)(fy * k);
+/* v0.15.1/v0.15.3: zona morta radial + curva da câmera. v0.21.33: a conta
+ * mudou pra input/xc_padcfg.c (a mesma, testada no host) e os limites vêm
+ * das Configurações > Controles (XC360/PAD.TXT). O main publica, a hw1 lê a
+ * 1 kHz sem lock: cada palavra é atômica no PPC; zona morta e limite trocados
+ * entre duas leituras valem por 1 ms (o xpc_apply nunca divide por zero).
+ * Padrão = STICK_DZ/STICK_OUTER/RSTICK_DZ de compilação, como antes. */
+static volatile int32_t g_padcfg[2][2] = { { STICK_DZ, STICK_OUTER }, { RSTICK_DZ, STICK_OUTER } };
+
+static void padcfg_publish(const xpc_cfg_t *c) {
+    for (int s = 0; s < 2; s++) {
+        g_padcfg[s][0] = c->dz[s];
+        g_padcfg[s][1] = c->outer[s];
+    }
+    __asm__ __volatile__("sync" ::: "memory");
 }
 
 /* Trigger deadzone — analog triggers can rest at 4-8 out of 255. */
@@ -429,9 +406,9 @@ static void send_pad(int port) {
     int16_t sy1 = (d.s1_y == -32768) ? 32767 : -d.s1_y;
     int16_t sx2 = d.s2_x;
     int16_t sy2 = (d.s2_y == -32768) ? 32767 : -d.s2_y;
-    apply_deadzone(&sx1, &sy1, STICK_DZ);
-    apply_deadzone(&sx2, &sy2, RSTICK_DZ);
-    apply_curve(&sx2, &sy2);       /* v0.15.2: câmera mais lenta/fina */
+    /* v0.21.33: limites das Configurações (padrão = os de compilação) */
+    xpc_apply(XPC_LEFT, g_padcfg[XPC_LEFT][0], g_padcfg[XPC_LEFT][1], &sx1, &sy1);
+    xpc_apply(XPC_RIGHT, g_padcfg[XPC_RIGHT][0], g_padcfg[XPC_RIGHT][1], &sx2, &sy2);   /* + curva da câmera (v0.15.2) */
     uint8_t lt = apply_trigger_dz(d.lt);
     uint8_t rt = apply_trigger_dz(d.rt);
     uint8_t buf[24];
@@ -1514,8 +1491,9 @@ report:
 #define MENU_GO_TEST   2
 
 enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET, SCR_LOADING, SCR_FAIL, SCR_UPDATE,
-       SCR_BCHECK, SCR_BKEY, SCR_BMSG, SCR_BSET,    /* v0.20.3: chave beta */
-       SCR_WIFI, SCR_WKEY, SCR_NETWAIT };             /* v0.21.0: Wi-Fi */
+       SCR_BCHECK, SCR_BKEY, SCR_BMSG,               /* v0.20.3: chave beta */
+       SCR_WIFI, SCR_WKEY, SCR_NETWAIT,               /* v0.21.0: Wi-Fi */
+       SCR_CFG };                                     /* v0.21.33: Configurações (o SCR_BSET saiu) */
 
 /* v0.20.0: estado do XUI (MENU-UI.md). */
 static xui_view_t     *g_xv;
@@ -1550,9 +1528,9 @@ static char      g_xbox_err[170] = "";
 /* ---- v0.20.3: chave beta (source/beta, BETA-GATE.md) ----
  * g_bui = tela do beta aberta. Sem autorização (BETA=1) nada além destas
  * telas aparece: nem login, nem capas, nem log. */
-enum { BG_NONE = 0, BG_KEY, BG_MSG, BG_SETTINGS };
+enum { BG_NONE = 0, BG_KEY, BG_MSG };   /* v0.21.33: BG_SETTINGS virou g_cfg (xc_cfgnav) */
 static int        g_bui = BG_NONE;
-static int        g_bchange = 0;          /* trocar chave (veio das Configurações): B volta */
+static int        g_bchange = 0;          /* trocar chave (veio das Configurações): B volta pra elas */
 static int        g_beta_boot = 0;        /* falta o xcb_boot_start (hw 3) */
 static int        g_beta_pend = 0;        /* 1 = validar g_beta_arg, 2 = ler do pendrive: esperando a hw 3 */
 static char       g_beta_arg[16];
@@ -1560,13 +1538,69 @@ static unsigned   g_bseen = 0;
 static xcb_snap_t g_bs;
 static xkp_t      g_kp;
 static char       g_kerr[160];
-static char       g_set_notice[64];
-static char       g_kp_text[16], g_key_status[80], g_ver_line[64];
+static char       g_kp_text[16];
 static xui_key_t      g_kd;
-static xui_settings_t g_sd;
 
 static int beta_ok(void) { return !XCLOUD360_BETA || xcb_authorized(); }
-static int beta_screen_p(int scr) { return scr >= SCR_BCHECK && scr <= SCR_BSET; }
+static int beta_screen_p(int scr) { return scr >= SCR_BCHECK && scr <= SCR_BMSG; }
+
+/* ---- v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md) ----
+ * Modelo da navegação em settings/xc_cfgnav.c, textos/linhas em
+ * settings/xc_cfgview.c (os dois testados no host), desenho no xui_cfg_frame.
+ * Aqui só o estado do app (xcs_in_t) e as ações. Abre pela engrenagem do
+ * topo ou pela Guia (home, carregando, falha, código do login); a Guia em
+ * qualquer tela dela (calibração, Wi-Fi e senha do Wi-Fi abertos por ela,
+ * Trocar chave) fecha tudo. Existe também sem chave beta (D4). */
+static xcf_nav_t  g_cfg;
+static xcs_in_t   g_cfgin;
+static xcs_view_t g_cfgv;
+static xcs_cal_t  g_cal;
+static int        g_notes_scroll = 0;
+static char       g_cfg_notice[96];
+static char       g_cfg_keywhen[48], g_cfg_noteswhen[24];
+/* zona morta: g_pad = em uso (publicada), g_pad_saved = a do PAD.TXT */
+static xpc_cfg_t  g_pad, g_pad_saved;
+/* notas desta versão (NOTES.TXT lido no boot, se for desta versão) */
+static xcn_notes_t g_notes;
+static int        g_notes_ok = 0;
+/* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
+ * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
+static char *volatile g_padsave = NULL;
+static char *volatile g_volsave = NULL;
+
+static void store_pending(char *volatile *slot, const char *text) {
+    char *b = strdup(text);
+    if (!b) return;
+    char *old = __sync_lock_test_and_set(slot, b);
+    free(old);
+}
+
+static void store_flush(char *volatile *slot, const char *name, const char *tag) {
+    char *b = __sync_lock_test_and_set(slot, NULL);
+    if (!b) return;
+    size_t n = strlen(b);
+    int r = xc_store_save(name, b, n);
+    xc_log("%s XC360/%s gravado (%u bytes): %s", tag, name, (unsigned)n, r == 0 ? "ok" : "falhou");
+    free(b);
+}
+
+/* quem pode usar o pendrive agora (main com a hw 3 livre, ou o worker) */
+static void cfg_save_pending(void) {
+    store_flush(&g_padsave, XPC_FILE, "[pad]");
+    store_flush(&g_volsave, "VOLUME.TXT", "[audio]");
+}
+
+static void pad_commit(const xpc_cfg_t *c) {
+    g_pad = *c;
+    padcfg_publish(&g_pad);
+    if (xpc_equal(&g_pad, &g_pad_saved)) return;
+    char t[96];
+    if (xpc_format(&g_pad, t, sizeof(t)) < 0) return;
+    g_pad_saved = g_pad;
+    store_pending(&g_padsave, t);
+    xc_log("[pad] zona morta: esquerdo %d%%/%d%%, direito %d%%/%d%% (PAD.TXT pendente)", xpc_pct(g_pad.dz[0]),
+           xpc_pct(g_pad.outer[0]), xpc_pct(g_pad.dz[1]), xpc_pct(g_pad.outer[1]));
+}
 
 /* unix -> "25/10/2026 22:56" no horário de Brasília (UTC-3, sem verão) */
 static void fmt_brt(char *o, size_t n, long long t) {
@@ -1719,11 +1753,15 @@ static void xbox_login_poll(void) {
     }
 }
 
-typedef struct { int up, down, left, right, a, b, x, y, lb, rb, start; } menu_btn_t;
+/* v0.21.33: + guide (botão Xbox: libxenon põe em controller_data_s.logo
+ * pros 360 com/sem fio e pro GIP). Só o toque conta (borda de subida):
+ * segurar a Guia desliga o controle 360 sem fio. */
+typedef struct { int up, down, left, right, a, b, x, y, lb, rb, start, guide; } menu_btn_t;
 
 /* Controle no menu: D-pad ou stick esquerdo. Sem usb_do_poll aqui quando a
- * thread de rede está de pé (ela é a dona do USB). */
-static void menu_read_buttons(menu_btn_t *b) {
+ * thread de rede está de pé (ela é a dona do USB). v0.21.33: dpad_only = 1 na
+ * calibração (mexer o analógico pra testar não pode andar o foco). */
+static void menu_read_buttons(menu_btn_t *b, int dpad_only) {
     struct controller_data_s d;
     if (!g_input_on_net) usb_do_poll();
     else if (now_us() - g_usb_poll_us > 40000) {
@@ -1732,11 +1770,13 @@ static void menu_read_buttons(menu_btn_t *b) {
         return;
     }
     get_any_pad(&d);
-    b->up    = d.up    || d.s1_y >  20000;   /* libxenon: Y positivo = cima */
-    b->down  = d.down  || d.s1_y < -20000;
-    b->left  = d.left  || d.s1_x < -20000;
-    b->right = d.right || d.s1_x >  20000;
+    int st = !dpad_only;
+    b->up    = d.up    || (st && d.s1_y >  20000);   /* libxenon: Y positivo = cima */
+    b->down  = d.down  || (st && d.s1_y < -20000);
+    b->left  = d.left  || (st && d.s1_x < -20000);
+    b->right = d.right || (st && d.s1_x >  20000);
     b->a = d.a; b->b = d.b; b->x = d.x; b->y = d.y; b->lb = d.lb; b->rb = d.rb; b->start = d.start;
+    b->guide = d.logo;
 }
 
 /* Repetição de tecla segurada: dispara ao apertar, de novo após 400ms e
@@ -1767,10 +1807,9 @@ static char        g_wtarget[MWX_SSID_MAX + 1];
 static int         g_wtarget_len = 0;
 static char        g_wmsg[160];            /* aviso curto da tela (não suportada etc.) */
 static xui_wifi_net_t g_wnets[XW_MAX_BSS];
-static char        g_wtitle[96], g_wtext[200], g_wsaved[48], g_wnote[64], g_wtk_text[160], g_wtk_err[96];
+static char        g_wtitle[96], g_wtext[200], g_wsaved[48], g_wtk_text[160], g_wtk_err[96];
 static xui_wifi_t  g_wd;
 static xui_textkey_t g_wtk;
-static int         g_set_focus = 0;        /* Configurações: 0 Trocar chave, 1 Wi-Fi */
 static int         g_netwait = 0, g_netwait_done = 0;   /* esperando o Wi-Fi salvo no boot */
 /* v0.21.5: decisão de rede do boot (wifi/xw_boot.h) */
 static int         g_bootnet = XWB_GO, g_bootnet_last = -1;
@@ -1805,17 +1844,6 @@ static void wifi_close(void) {
     xtk_wipe(&g_tk);
     g_wui = 0;
     g_wmsg[0] = 0;
-}
-
-/* "Wi-Fi: Casa" etc., pra nota do botão das Configurações */
-static const char *wifi_summary(void) {
-    if (g_ws.link == XW_LINK_UP && g_ws.dhcp_ok) snprintf(g_wnote, sizeof(g_wnote), "Wi-Fi: %.40s", g_ws.ssid);
-    else if (g_ws.present == XW_PRESENT_NO) snprintf(g_wnote, sizeof(g_wnote), "%s", g_ws.cable ? "Cabo de rede" : "Sem Wi-Fi interno");
-    else if (g_ws.dev == XW_DEV_FAILED) snprintf(g_wnote, sizeof(g_wnote), "Wi-Fi com problema");
-    else if (g_ws.cable) snprintf(g_wnote, sizeof(g_wnote), "Cabo de rede");
-    else if (g_ws.link >= XW_LINK_SCAN && g_ws.link <= XW_LINK_UP) snprintf(g_wnote, sizeof(g_wnote), "Conectando…");
-    else snprintf(g_wnote, sizeof(g_wnote), "Desconectado");
-    return g_wnote;
 }
 
 /* A numa rede da lista */
@@ -2028,8 +2056,8 @@ static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
         r = xui_home_frame(g_xv, cv, &g_xd, xui_mm_confirm(&g_xmm, &g_mm), ms, &anim);
     } else if (screen == SCR_BKEY) {
         r = xui_key_frame(g_xv, cv, &g_kd, &g_xd, ms, &anim);   /* v0.20.3 */
-    } else if (screen == SCR_BSET) {
-        r = xui_settings_frame(g_xv, cv, &g_sd, &g_xd, ms, &anim);
+    } else if (screen == SCR_CFG) {
+        r = xui_cfg_frame(g_xv, cv, &g_cfgv.cfg, &g_xd, ms, &anim);   /* v0.21.33 */
     } else if (screen == SCR_WIFI) {
         r = xui_wifi_frame(g_xv, cv, &g_wd, &g_xd, ms, &anim);       /* v0.21.0 */
     } else if (screen == SCR_WKEY) {
@@ -2149,8 +2177,9 @@ static void beta_poll(int *pend_upd) {
             memset(k, 0, sizeof(k));
             if (g_bui == BG_KEY || g_bui == BG_MSG) {
                 if (g_bchange) {
-                    g_bui = BG_SETTINGS;
-                    snprintf(g_set_notice, sizeof(g_set_notice), "Chave trocada");
+                    g_bui = BG_NONE;   /* v0.21.33: volta pra Conta e sobre (g_cfg segue aberta) */
+                    g_bchange = 0;
+                    snprintf(g_cfg_notice, sizeof(g_cfg_notice), "Chave trocada");
                     /* chave nova pode ter acesso ao canal beta (UPDATE.md passo 7) */
                     if (g_cat_src == 1) *pend_upd = 1;
                 } else {
@@ -2178,7 +2207,7 @@ static void beta_poll(int *pend_upd) {
         }
     }
 #endif
-    int son = XCLOUD360_BETA && xcb_authorized();
+    int son = beta_ok();   /* v0.21.33: Configurações também sem chave beta (D4) */
     if (g_mm.settings_on != son) { g_mm.settings_on = son; mm_rows_fix(&g_mm); }
 }
 
@@ -2186,7 +2215,6 @@ static void beta_poll(int *pend_upd) {
 static int beta_screen(void) {
 #if XCLOUD360_BETA
     int busy = g_bs.busy || g_beta_pend || g_beta_boot;
-    if (g_bui == BG_SETTINGS) return SCR_BSET;
     if (g_bui == BG_KEY) return SCR_BKEY;   /* o "Validando…" aparece dentro */
     if (g_bui == BG_MSG) return busy ? SCR_BCHECK : SCR_BMSG;
     if (!xcb_authorized()) return SCR_BCHECK;
@@ -2221,6 +2249,265 @@ static void beta_open_key(int change) {
     g_kerr[0] = 0;
 }
 
+/* ---- v0.21.33: Configurações (estado -> xcs_in_t, ações) ---- */
+static void cfg_open(void) {
+    xcf_open(&g_cfg);
+    g_cfg_notice[0] = 0;
+    g_notes_scroll = 0;
+    printf("[cfg] aberta (%d)\n", g_cfg.sec);
+}
+
+/* fecha tudo (B na coluna, Guia): a calibração aberta salva como o B */
+static void cfg_close_all(void) {
+    if (g_cfg.page == XCF_PG_CALIB) pad_commit(&g_cal.cfg);
+    xcf_close(&g_cfg);
+    g_cfg_notice[0] = 0;
+}
+
+/* "25/10/2026 22:56" -> "25/10 22:56" */
+static void fmt_brt_short(char *o, size_t n, long long t) {
+    char b[32];
+    fmt_brt(b, sizeof(b), t);
+    snprintf(o, n, "%.5s %.5s", b, b + 11);
+}
+
+static void cfg_fill_in(int pend_upd) {
+    xcs_in_t *in = &g_cfgin;
+    memset(in, 0, sizeof(*in));
+    in->beta_build = XCLOUD360_BETA;
+    in->key_row = XCLOUD360_BETA && xcb_authorized();   /* D4: sem chave beta a linha some */
+    in->console_short = xcb_console_short();
+    in->console_full = xcb_console_id();
+    in->version = XCLOUD360_APP_VERSION;
+    in->channel = g_us.channel;
+    if (in->key_row) {
+        in->key_masked = g_bs.key_masked;
+        if (g_bs.last_ok > 0) {
+            char t[24];
+            fmt_brt_short(t, sizeof(t), g_bs.last_ok);
+            snprintf(g_cfg_keywhen, sizeof(g_cfg_keywhen), "%s em %s",
+                     g_bs.phase == XCB_OFFLINE_OK ? "última validação" : "validada", t);
+            in->key_when = g_cfg_keywhen;
+        } else {
+            in->key_when = "validada";
+        }
+    }
+    in->upd_phase = g_us.phase;
+    in->upd_busy = xcu_running() || pend_upd == 1;
+    in->upd_avail = g_us.latest[0] && (g_us.phase == XCU_AVAILABLE || g_us.phase == XCU_FAILED ||
+                                       g_us.phase == XCU_CANCELLED);
+    in->upd_latest = g_us.latest;
+    /* Rede: "cabo com internet" = DHCP do cabo (o PHY diz "sem link" no Corona com cabo) */
+    in->cable = stream_net_cable();
+    in->cable_ip = in->cable ? stream_net_cable_ip() : 0;
+    const xw_status_t *w = &g_ws;
+    if (w->present == XW_PRESENT_NO) in->wifi = XCS_W_NONE;
+    else if (w->dev == XW_DEV_FAILED) in->wifi = XCS_W_FAILED;
+    else if (w->present == XW_PRESENT_UNKNOWN || w->dev < XW_DEV_READY) in->wifi = XCS_W_STARTING;
+    else if (w->link == XW_LINK_UP) in->wifi = XCS_W_UP;
+    else if ((w->link >= XW_LINK_SCAN && w->link <= XW_LINK_KEYS) || w->want) in->wifi = XCS_W_CONNECTING;
+    else in->wifi = XCS_W_DOWN;
+    in->wifi_ssid = w->ssid;
+    in->wifi_rssi = w->rssi;
+    in->wifi_dhcp = w->dhcp_ok;
+    in->wifi_ip = w->ip;
+    /* Vídeo (xcv) */
+    xcv_state_t vs;
+    xcv_settings_state(&vs);
+    in->av_kind = vs.av_kind;
+    in->mode = vs.mode;
+    in->ovr = vs.ovr;
+    in->have_1080p = vs.have_1080p;
+    in->forced_720p = vs.forced_720p;
+#ifdef XCLOUD360_AUDIO
+    in->audio = 1;
+    in->volume = audio_volume_pct();
+#endif
+    in->pad = g_pad;
+    /* Novidades: NOTES.TXT desta versão; senão o manifesto, se a publicada = a instalada */
+    if (g_notes_ok) {
+        in->notes = g_notes.notes;
+        in->notes_from_file = 1;
+        if (g_notes.installed > 0) {
+            char t[32];
+            fmt_brt(t, sizeof(t), g_notes.installed);
+            snprintf(g_cfg_noteswhen, sizeof(g_cfg_noteswhen), "%.10s", t);
+            in->notes_when = g_cfg_noteswhen;
+        }
+    } else if (g_us.latest[0] && !strcmp(g_us.latest, g_us.current) && g_us.notes[0]) {
+        in->notes = g_us.notes;
+    }
+    in->notice = g_cfg_notice[0] ? g_cfg_notice : NULL;
+    for (int sec = 0; sec < XCF_NSEC; sec++) {
+        int ids[XCF_MAX_OPT];
+        unsigned adj;
+        int n = xcs_options(in, sec, ids, &adj);
+        xcf_set_options(&g_cfg, sec, n, adj);
+    }
+}
+
+/* A em "Procurar atualização"/"Atualizar para": a tela de atualização de hoje
+ * (o mesmo caminho do botão do topo); B nela volta pra cá */
+static void cfg_open_update(int *pend_upd) {
+    if (g_native_ok && !xn_can_play()) {
+        snprintf(g_cfg_notice, sizeof(g_cfg_notice), "Feche o jogo aberto antes de atualizar");
+        return;
+    }
+    g_upd_screen = 1;
+    g_next_on = 0;
+    int ph = g_us.phase;
+    if (!xcu_running() && ph != XCU_AVAILABLE && ph != XCU_DONE &&
+        !((ph == XCU_FAILED || ph == XCU_CANCELLED) && g_us.latest[0]))
+        *pend_upd = 1;
+}
+
+/* controle que está com o A apertado agora (quem entrou na calibração) */
+static int pad_port_pressing_a(void) {
+    for (int i = 0; i < MAX_PADS; i++) {
+        struct controller_data_s d;
+        memset(&d, 0, sizeof(d));
+        get_controller_data(&d, i);
+        if (d.a) return i;
+    }
+    return 0;
+}
+
+/* Prévia da calibração: lê UM controle (get_any_pad mistura eixos de
+ * controles diferentes). Se outro mexer bem mais o mesmo analógico, troca
+ * pra ele e a tela mostra "Controle N". */
+static void cfg_cal_poll(uint32_t ms) {
+    int xs[MAX_PADS], ys[MAX_PADS], mg[MAX_PADS];
+    for (int i = 0; i < MAX_PADS; i++) {
+        struct controller_data_s d;
+        memset(&d, 0, sizeof(d));
+        get_controller_data(&d, i);
+        xs[i] = g_cal.stick == XPC_RIGHT ? d.s2_x : d.s1_x;
+        ys[i] = g_cal.stick == XPC_RIGHT ? d.s2_y : d.s1_y;   /* libxenon: Y positivo = cima, como a tela */
+        mg[i] = xpc_mag_pct(xs[i], ys[i]);
+    }
+    int p = g_cal.port;
+    if (p < 0 || p >= MAX_PADS) p = 0;
+    if (g_cal.meas.stage != XPC_M_REST && g_cal.meas.stage != XPC_M_SPIN) {
+        for (int i = 0; i < MAX_PADS; i++)
+            if (i != p && mg[i] >= 50 && mg[i] > mg[p] + 20) p = i;
+    }
+    if (p != g_cal.port) {
+        g_cal.port = p;
+        g_cal.ntrail = 0;
+        g_cal.multi = 1;
+    }
+    for (int i = 0; i < MAX_PADS; i++)
+        if (i != p && mg[i] >= 25) g_cal.multi = 1;
+    if (xcs_cal_feed(&g_cal, ms, xs[p], ys[p]) == XCS_CAL_CHANGED) padcfg_publish(&g_cal.cfg);   /* vale ao vivo */
+}
+
+static void cfg_option(int id, int dir, int *pend_upd) {
+    switch (id) {
+    case XCS_OPT_KEY:
+        beta_open_key(1);   /* o fluxo de hoje; B volta pra cá */
+        break;
+    case XCS_OPT_NOTES:
+        g_notes_scroll = 0;
+        xcf_set_page(&g_cfg, XCF_PG_NOTES);
+        break;
+    case XCS_OPT_UPDATE:
+        cfg_open_update(pend_upd);
+        break;
+    case XCS_OPT_WIFI:
+        wifi_open();   /* B no Wi-Fi volta pra Rede */
+        break;
+    case XCS_OPT_720:
+    case XCS_OPT_1080:
+        /* D5: o mesmo mecanismo do X de antes: VIDEO.TXT pendente, vale no próximo boot */
+        if (xcv_settings_set(id == XCS_OPT_1080 ? XCV_OVR_1080P : XCV_OVR_720P))
+            snprintf(g_cfg_notice, sizeof(g_cfg_notice), "Vídeo: vale ao reiniciar o Xbox");
+        break;
+    case XCS_OPT_VOLUME: {
+#ifdef XCLOUD360_AUDIO
+        int cur = audio_volume_pct(), nv;
+        if (dir) {
+            nv = xcs_vol_step(cur, dir);
+        } else {   /* A: o próximo, dando a volta */
+            int i = xcs_vol_index(cur);
+            nv = i < 0 ? xcs_vol_step(cur, 1) : XCS_VOLUMES[(i + 1) % XCS_NVOL];
+        }
+        if (nv != cur) {
+            char t[16];
+            audio_set_volume_pct(nv);   /* na hora */
+            snprintf(t, sizeof(t), "%d\n", audio_volume_pct());
+            store_pending(&g_volsave, t);
+            xc_log("[audio] volume da saída: %d%% (Configurações; VOLUME.TXT pendente)", audio_volume_pct());
+        }
+#else
+        (void)dir;
+#endif
+        break;
+    }
+    case XCS_OPT_PAD_L:
+    case XCS_OPT_PAD_R:
+        /* a calibração começa sempre pelo esquerdo ("1 de 2") */
+        xcs_cal_begin(&g_cal, &g_pad, pad_port_pressing_a());
+        xcf_set_page(&g_cfg, XCF_PG_CALIB);
+        break;
+    case XCS_OPT_PAD_RESET:
+        xcf_ask(&g_cfg, XCF_CF_PADRESET);
+        break;
+    default:
+        break;
+    }
+}
+
+static void cfg_key(int key, uint32_t ms, int *pend_upd) {
+    xcf_ev_t e = xcf_key(&g_cfg, key);
+    switch (e.act) {
+    case XCF_A_CLOSE:
+        if (e.page == XCF_PG_CALIB) pad_commit(&g_cal.cfg);
+        g_cfg_notice[0] = 0;
+        printf("[cfg] fechada\n");
+        break;
+    case XCF_A_PAGE_BACK:
+        if (e.page == XCF_PG_CALIB) pad_commit(&g_cal.cfg);   /* B = salvar e voltar */
+        break;
+    case XCF_A_REBOOT:
+        power_action(MM_PWR_REBOOT);   /* não volta */
+        break;
+    case XCF_A_SHUTDOWN:
+        power_action(MM_PWR_SHUTDOWN);
+        break;
+    case XCF_A_PADRESET: {
+        xpc_cfg_t d;
+        xpc_defaults(&d);
+        pad_commit(&d);
+        snprintf(g_cfg_notice, sizeof(g_cfg_notice), "Analógicos no padrão");
+        break;
+    }
+    case XCF_A_PAGE:
+        if (e.page == XCF_PG_NOTES) {
+            int mx = xcs_notes_paras(g_cfgin.notes) - 1;
+            if (e.key == XCF_K_UP && g_notes_scroll > 0) g_notes_scroll--;
+            if (e.key == XCF_K_DOWN && g_notes_scroll < mx) g_notes_scroll++;
+        } else if (e.page == XCF_PG_CALIB) {
+            int r = xcs_cal_key(&g_cal, e.key, ms);
+            if (r == XCS_CAL_CHANGED) padcfg_publish(&g_cal.cfg);
+            else if (r == XCS_CAL_DONE) {   /* Concluir */
+                pad_commit(&g_cal.cfg);
+                xcf_set_page(&g_cfg, XCF_PG_MAIN);
+            }
+        }
+        break;
+    case XCF_A_OPTION:
+    case XCF_A_ADJUST: {
+        int ids[XCF_MAX_OPT];
+        unsigned adj;
+        int n = xcs_options(&g_cfgin, e.sec, ids, &adj);
+        if (e.opt >= 0 && e.opt < n) cfg_option(ids[e.opt], e.act == XCF_A_ADJUST ? e.dir : 0, pend_upd);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 /* Loop do menu (main thread). Retorna quando é hora de entrar no pipeline
  * de vídeo: MENU_GO_STREAM (chegou vídeo depois de um PLAY) ou MENU_GO_TEST
  * (X = stream embutido). */
@@ -2245,7 +2532,7 @@ static int menu_loop(int net_ok, const char *msg) {
     /* Botões já apertados na entrada (Back+Start do jogo, A do teste) não
      * contam como clique. */
     memset(&prev, 0, sizeof(prev));
-    menu_read_buttons(&prev);
+    menu_read_buttons(&prev, 0);
 
     for (;;) {
         uint64_t now = now_us();
@@ -2269,7 +2556,8 @@ static int menu_loop(int net_ok, const char *msg) {
          * e XC360/WIFILOG.TXT (as linhas [wifi], pra ler pelo FTP sem internet) */
         if (beta_hw3_free()) {
             catlist_save_pending();   /* v0.21.7: CATLIST.TXT */
-            xcv_save_pending();       /* v0.21.21: XC360/VIDEO.TXT (X nas Configurações) */
+            xcv_save_pending();       /* v0.21.21: XC360/VIDEO.TXT (v0.21.33: Configurações > Vídeo e Som) */
+            cfg_save_pending();       /* v0.21.33: XC360/PAD.TXT e XC360/VOLUME.TXT */
             xw_sys_main_poll();
             if (now >= g_wlog_flush_at && xw_logfile_pending()) {
                 g_wlog_flush_at = now + 5000000;
@@ -2436,6 +2724,7 @@ static int menu_loop(int net_ok, const char *msg) {
                    : g_netwait ? SCR_NETWAIT
                    : bscr >= 0 ? bscr
                    : (g_upd_screen && !waiting) ? SCR_UPDATE   /* v0.20.3: popup antes do login também */
+                   : (g_cfg.open && !waiting) ? SCR_CFG        /* v0.21.33 */
                    : (!waiting && g_xbox_login) ? SCR_LOGIN
                    : waiting ? SCR_WAIT
                    : g_upd_screen ? SCR_UPDATE
@@ -2444,8 +2733,38 @@ static int menu_loop(int net_ok, const char *msg) {
                    : SCR_LIST;
 
         b = prev;
-        menu_read_buttons(&b);
+        menu_read_buttons(&b, screen == SCR_CFG && g_cfg.page == XCF_PG_CALIB);
 #define PRESSED(f) (b.f && !prev.f)
+        /* v0.21.33: Guia (MENU-SETTINGS-PLAN.md "Regra proposta da Guia"). No
+         * jogo ela continua indo pro xCloud como Nexus (D1, send_pad). Aqui:
+         * home/carregando/falha/código do login abrem as Configurações; o
+         * Wi-Fi/senha e o Trocar chave abertos por elas fecham tudo; fila,
+         * atualização, confirmação de energia e o boot do Wi-Fi: nada. Dentro
+         * das Configurações quem trata é o xc_cfgnav (abaixo). */
+        if (PRESSED(guide) && !waiting && screen != SCR_CFG) {
+            int used = 0;
+            if (!g_cfg.open && !g_mm.confirm &&
+                (screen == SCR_LIST || screen == SCR_LOADING || screen == SCR_FAIL || screen == SCR_LOGIN)) {
+                cfg_open();
+                used = 1;
+            } else if (g_cfg.open && (screen == SCR_WIFI || screen == SCR_WKEY) && !g_wforced) {
+                wifi_close();   /* senha: apaga o digitado (xtk_wipe) */
+                cfg_close_all();
+                used = 1;
+            } else if (g_cfg.open && g_bchange && (screen == SCR_BKEY || screen == SCR_BMSG) && !g_bs.busy &&
+                       !g_beta_pend) {
+                g_bui = BG_NONE;
+                g_bchange = 0;
+                xkp_clear(&g_kp);
+                g_kerr[0] = 0;
+                cfg_close_all();
+                used = 1;
+            }
+            if (used) {   /* o resto deste quadro não vê o toque */
+                prev = b;
+                continue;
+            }
+        }
         /* v0.19.3/v0.20.0: A num jogo -> entra assim que a hw 3 (worker) e a
          * sessão anterior liberarem. O mesmo jogo aberto = volta na hora. */
         if (g_next_on && !waiting && screen == SCR_LIST && !xcc_bg_running() && !lt_running()) {
@@ -2525,9 +2844,7 @@ static int menu_loop(int net_ok, const char *msg) {
                 if (act == MM_A_REBOOT || act == MM_A_SHUTDOWN) {
                     power_action(act == MM_A_REBOOT ? MM_PWR_REBOOT : MM_PWR_SHUTDOWN);
                 } else if (act == MM_A_SETTINGS) {
-                    g_bui = BG_SETTINGS;   /* v0.20.3 */
-                    g_bchange = 0;
-                    g_set_notice[0] = 0;
+                    cfg_open();   /* v0.21.33 (v0.20.3: tela única) */
                 } else if (act == MM_A_UPDATE) {
                     /* v0.20.1: tela de atualização; procura de novo se não há
                      * versão nova conhecida (e nada rodando) */
@@ -2572,7 +2889,7 @@ static int menu_loop(int net_ok, const char *msg) {
                 g_next_on = 0;
                 snprintf(notice, sizeof(notice), "Cancelado");
             }
-        } else if (screen != SCR_BKEY && screen != SCR_BSET && screen != SCR_WIFI && screen != SCR_WKEY) {
+        } else if (screen != SCR_BKEY && screen != SCR_CFG && screen != SCR_WIFI && screen != SCR_WKEY) {
             rep_up = rep_dn = rep_lf = rep_rt = 0;
         }
         /* ---- v0.20.3: telas da chave beta ---- */
@@ -2591,7 +2908,7 @@ static int menu_loop(int net_ok, const char *msg) {
             }
             if (PRESSED(start) && xkp_complete(&g_kp)) beta_submit_typed();
             if (PRESSED(y)) beta_from_file();
-            if (PRESSED(b) && !xkp_backspace(&g_kp) && g_bchange) g_bui = BG_SETTINGS;
+            if (PRESSED(b) && !xkp_backspace(&g_kp) && g_bchange) { g_bui = BG_NONE; g_bchange = 0; }   /* volta pra Conta e sobre */
         } else if (screen == SCR_BMSG) {
             int ph = g_bs.phase;
             if (ph == XCB_NOCONN || ph == XCB_ERROR) {
@@ -2604,17 +2921,24 @@ static int menu_loop(int net_ok, const char *msg) {
             } else if (PRESSED(a)) {
                 beta_open_key(g_bchange);   /* revogada / bloqueada: só outra chave */
             }
-            if (PRESSED(b) && g_bchange) g_bui = BG_SETTINGS;
-        } else if (screen == SCR_BSET) {
-            /* v0.21.0: Trocar chave | Wi-Fi */
-            if (key_repeat(b.left, now, &rep_lf)) g_set_focus = 0;
-            if (key_repeat(b.right, now, &rep_rt)) g_set_focus = 1;
-            if (PRESSED(a)) {
-                if (g_set_focus == 1) wifi_open();
-                else beta_open_key(1);
-            }
-            if (PRESSED(x)) snprintf(g_set_notice, sizeof(g_set_notice), "%s", xcv_settings_cycle());   /* vídeo */
-            if (PRESSED(b)) { g_bui = BG_NONE; g_bchange = 0; g_set_notice[0] = 0; g_set_focus = 0; }
+            if (PRESSED(b) && g_bchange) { g_bui = BG_NONE; g_bchange = 0; }
+        } else if (screen == SCR_CFG) {
+            /* v0.21.33: Configurações. A confirma, B volta/fecha, Guia fecha
+             * tudo; X não faz nada aqui. Na calibração só o D-pad navega
+             * (menu_read_buttons com dpad_only). */
+            uint32_t ms = (uint32_t)(now / 1000);
+            cfg_fill_in(pend_upd);
+            if (g_cfg.page == XCF_PG_CALIB) cfg_cal_poll(ms);
+            if (key_repeat(b.up, now, &rep_up))    cfg_key(XCF_K_UP, ms, &pend_upd);
+            if (key_repeat(b.down, now, &rep_dn))  cfg_key(XCF_K_DOWN, ms, &pend_upd);
+            if (key_repeat(b.left, now, &rep_lf))  cfg_key(XCF_K_LEFT, ms, &pend_upd);
+            if (key_repeat(b.right, now, &rep_rt)) cfg_key(XCF_K_RIGHT, ms, &pend_upd);
+            if (PRESSED(a))     cfg_key(XCF_K_A, ms, &pend_upd);
+            if (PRESSED(y))     cfg_key(XCF_K_Y, ms, &pend_upd);
+            if (PRESSED(lb))    cfg_key(XCF_K_LB, ms, &pend_upd);
+            if (PRESSED(rb))    cfg_key(XCF_K_RB, ms, &pend_upd);
+            if (PRESSED(b))     cfg_key(XCF_K_B, ms, &pend_upd);
+            if (PRESSED(guide)) cfg_key(XCF_K_GUIDE, ms, &pend_upd);
         } else if (screen == SCR_WIFI) {
             int dy = 0, dx = 0;
             if (key_repeat(b.up, now, &rep_up))    dy = -1;
@@ -2753,7 +3077,7 @@ static int menu_loop(int net_ok, const char *msg) {
             }
         }
         if (!waiting && PRESSED(x) && screen != SCR_LOGIN && screen != SCR_LOADING && !beta_screen_p(screen) &&
-            !wifi_screen_p(screen) &&
+            !wifi_screen_p(screen) && screen != SCR_CFG &&
             !(screen == SCR_UPDATE && g_us.mandatory)) {
             if (lt_login_running()) {
                 snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda está carregando o catálogo");
@@ -3015,31 +3339,11 @@ static int menu_loop(int net_ok, const char *msg) {
                       : "A:Digitar|B:Apagar|Y:Ler do pendrive|Start:Confirmar";
             break;
         }
-        case SCR_BSET: {
-            memset(&g_sd, 0, sizeof(g_sd));
-            if (g_bs.last_ok > 0) {
-                char t[32];
-                fmt_brt(t, sizeof(t), g_bs.last_ok);
-                snprintf(g_key_status, sizeof(g_key_status), "%s em %s", g_bs.phase == XCB_OFFLINE_OK
-                         ? "última validação" : "validada", t);
-            } else {
-                snprintf(g_key_status, sizeof(g_key_status), "validada");
-            }
-            snprintf(g_ver_line, sizeof(g_ver_line), "orbita %s  ·  versão beta", XCLOUD360_APP_VERSION);
-            g_sd.console_short = xcb_console_short();
-            g_sd.console_full = xcb_console_id();
-            g_sd.key_masked = g_bs.key_masked;
-            g_sd.key_status = g_key_status;
-            g_sd.version = xcv_settings_version(g_ver_line);   /* + vídeo (X troca) */
-            g_sd.note = "Para reportar um bug, envie um print desta tela junto.";
-            g_sd.notice = g_set_notice[0] ? g_set_notice : NULL;
-            g_sd.button = "Trocar chave";
-            g_sd.button2 = "Wi-Fi";              /* v0.21.0 */
-            g_sd.button2_note = wifi_summary();
-            g_sd.focus = g_set_focus;
-            g_sd.hint = g_set_focus ? "A:Abrir o Wi-Fi|B:Voltar" : "A:Trocar chave|B:Voltar";
+        case SCR_CFG:   /* v0.21.33 */
+            cfg_fill_in(pend_upd);
+            xcs_build(&g_cfgv, &g_cfgin, &g_cfg, g_cfg.page == XCF_PG_CALIB ? &g_cal : NULL, g_notes_scroll,
+                      (unsigned)(now / 1000));
             break;
-        }
         case SCR_WIFI:
             wifi_fill_status();
             break;
@@ -3160,6 +3464,7 @@ static int worker_extra_step(void) {
      * do main no pendrive (a lista do catálogo, a rede Wi-Fi nova) */
     catlist_save_pending();
     xcv_save_pending();   /* v0.21.21: XC360/VIDEO.TXT */
+    cfg_save_pending();   /* v0.21.33: XC360/PAD.TXT e VOLUME.TXT */
     xw_sys_main_poll();
     return xlu_step();
 }
@@ -3172,6 +3477,33 @@ static void menu_main(int gpu_on) {
     /* v0.20.1: log beta (junta em RAM; o worker da hw 3 lê a chave e envia) */
     xlu_init(XCLOUD360_APP_VERSION);
     xw_logfile_boot(XCLOUD360_BUILD_VERSION);   /* v0.21.5: XC360/WIFILOG.TXT */
+    /* v0.21.33: zona morta (XC360/PAD.TXT; ruim/ausente = padrão de compilação).
+     * LB+RB segurados no boot = padrão nesta vez (a mesma fuga do 720p). */
+    {
+        char pb[128];
+        int pn = xc_store_load(XPC_FILE, pb, sizeof(pb) - 1);
+        xpc_defaults(&g_pad);
+        const char *why = "padrão";
+        if (pn > 0 && xcv_boot_forced()) {
+            why = "PAD.TXT ignorado (LB+RB no boot)";
+        } else if (pn > 0) {
+            pb[pn] = 0;
+            why = xpc_parse(pb, (size_t)pn, &g_pad) == 0 ? "PAD.TXT" : "PAD.TXT ruim: padrão";
+        }
+        g_pad_saved = g_pad;
+        padcfg_publish(&g_pad);
+        xc_log("[pad] zona morta: esquerdo %d%%/%d%%, direito %d%%/%d%% (%s)", xpc_pct(g_pad.dz[0]),
+               xpc_pct(g_pad.outer[0]), xpc_pct(g_pad.dz[1]), xpc_pct(g_pad.outer[1]), why);
+    }
+    /* v0.21.33: notas desta versão (gravadas pela atualização que a instalou) */
+    {
+        static char nb[XCN_FILE_MAX];
+        int nn = xc_store_load(XCN_FILE, nb, sizeof(nb) - 1);
+        if (nn > 0 && xcn_notes_parse(nb, (size_t)nn, &g_notes) == 0 && !strcmp(g_notes.version, XCLOUD360_BUILD_VERSION))
+            g_notes_ok = 1;
+        xc_log("[cfg] NOTES.TXT: %s", g_notes_ok ? "desta versão" : nn > 0 ? "de outra versão (ignorado)" : "ausente");
+    }
+    xcf_init(&g_cfg);
     BOOT_STEP("8 network_init...");
     int net_ok = stream_init() == 0 && stream_net_up();
     BOOT_STEP(net_ok ? "9 rede ok" : "9 SEM rede");

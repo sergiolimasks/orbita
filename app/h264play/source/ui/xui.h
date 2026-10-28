@@ -277,22 +277,75 @@ typedef struct {
     const char *hint;
 } xui_key_t;
 
-/* v0.20.3: Configurações (topo, engrenagem). */
+/* v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md; o
+ * xui_settings_t da v0.20.3 saiu). Coluna de seções + ENERGIA à esquerda,
+ * painel da seção à direita. Os dados vêm de settings/xc_cfgview.c. */
+enum {
+    XUI_CR_ARROW   = 1 << 0,   /* chevron à direita */
+    XUI_CR_DIM     = 1 << 1,   /* indisponível (não recebe foco) */
+    XUI_CR_WARN    = 1 << 2,   /* valor em Flare + ponto (versão nova) */
+    XUI_CR_RADIO   = 1 << 3,   /* rádio à esquerda */
+    XUI_CR_ON      = 1 << 4,   /* rádio marcado */
+    XUI_CR_CHOICES = 1 << 5,   /* pílulas (choices/nchoices/choice) à direita */
+    XUI_CR_CENTER  = 1 << 6,   /* rótulo centrado (botão) */
+};
 typedef struct {
-    const char *console_short;  /* "A1B2-C3D4-E5F6" */
-    const char *console_full;   /* 32 hex */
-    const char *key_masked;     /* "*****-**HJK" */
-    const char *key_status;     /* "Validada em 25/10 22:56" */
-    const char *version;        /* "orbita v0.20.3 (beta)" */
-    const char *note;           /* "Para reportar um bug, envie um print desta tela junto" */
-    const char *notice;         /* aviso curto (ex. "Chave trocada") */
-    const char *button;         /* "Trocar chave" */
+    const char *head;       /* rótulo do grupo antes da linha ("VÍDEO"); do 2o grupo em diante, com divisória */
+    const char *label;
+    const char *detail;     /* depois do rótulo, menor ("1280 × 720  ·  60 Hz") */
+    const char *value;      /* à direita */
+    const char *tag;        /* etiqueta à direita ("EM USO") */
+    const char *after;      /* texto pequeno depois da linha (até 2 linhas) */
+    unsigned    flags;      /* XUI_CR_* */
+    const char *const *choices;
+    int         nchoices;
+    int         choice;     /* -1 = nenhuma marcada */
+} xui_cfg_row_t;
+
+/* calibração de um analógico (círculo ao vivo + sliders) */
+#define XUI_CAL_TRAIL 8
+typedef struct {
+    int         stick;               /* 0 esquerdo, 1 direito */
+    int         dz_pct, out_pct;     /* zona morta / limite máximo */
+    int         x, y;                /* posição bruta (-32768..32767, Y positivo = cima) */
+    int         tx[XUI_CAL_TRAIL], ty[XUI_CAL_TRAIL], ntrail;   /* rastro, mais novo primeiro */
+    int         pos_pct, game_pct;   /* "Posição" / "Jogo recebe" */
+    int         focus;               /* 0 zona morta, 1 limite, 2 Medir sozinho, 3 Próximo/Concluir */
+    const char *step;                /* "1 de 2" */
+    const char *next;                /* "Próximo: direito" / "Concluir" */
+    const char *status;              /* Medir sozinho em andamento / resultado (NULL = explicação) */
+    int         measuring;
+    const char *pad;                 /* "Controle 2" (mais de um controle) ou NULL */
+} xui_calib_t;
+
+enum { XUI_CFG_ROWS = 0, XUI_CFG_NOTES, XUI_CFG_CALIB };
+#define XUI_CFG_NSEC 4
+typedef struct {
+    const char *sections[XUI_CFG_NSEC];
+    int         item;          /* item da coluna destacado: 0..3 seções, 4 Reiniciar, 5 Desligar */
+    int         right;         /* 1 = foco no painel (o item vira pílula cinza com barrinha) */
+    int         page;          /* XUI_CFG_* */
+    const char *crumb;         /* "CONTROLES / CALIBRAR" (subpáginas) */
+    const char *title, *subtitle;
+    struct { const char *label, *big, *small; int big_title; } info[2];   /* blocos (Conta e sobre) */
+    int         ninfo;
+    int         card;          /* cartão de estado: 0 nenhum, 1 ponto, 2 barras do Wi-Fi */
+    int         card_ok, card_bars;
+    const char *card_title, *card_text, *card_text2;
+    const xui_cfg_row_t *rows;
+    int         nrows;
+    int         focus;         /* linha em foco (-1 = nenhuma) */
+    const char *text;          /* parágrafo depois das linhas */
+    const char *note;          /* caixa ("Para reportar um bug…") */
+    const char *notes;         /* XUI_CFG_NOTES: parágrafos separados por \n */
+    const char *notes_empty;   /* sem notas */
+    int         scroll;        /* parágrafos pulados */
+    const char *footer;        /* linha pequena no pé do painel */
+    const xui_calib_t   *calib;
+    const xui_confirm_t *confirm;
+    const char *notice;        /* aviso curto (Sky) à esquerda das dicas */
     const char *hint;
-    /* v0.21.0: segundo botão ("Wi-Fi") e qual está em foco (0 = button, 1 = button2) */
-    const char *button2;
-    const char *button2_note;   /* linha curta ao lado (ex. "Cabo de rede", "Casa · conectado") */
-    int         focus;
-} xui_settings_t;
+} xui_cfg_t;
 
 /* ---- v0.21.0: Wi-Fi (WIFI.md) ---- */
 typedef struct {
@@ -376,8 +429,12 @@ xui_rect_t  xui_wifi_frame(xui_view_t *v, xui_canvas_t *c, const xui_wifi_t *w,
                            const xui_home_data_t *d, unsigned now_ms, int *animating);
 xui_rect_t  xui_textkey_frame(xui_view_t *v, xui_canvas_t *c, const xui_textkey_t *k,
                               const xui_home_data_t *d, unsigned now_ms, int *animating);
-xui_rect_t  xui_settings_frame(xui_view_t *v, xui_canvas_t *c, const xui_settings_t *s,
-                               const xui_home_data_t *d, unsigned now_ms, int *animating);
+/* v0.21.33: Configurações. Conteúdo mudou = tela inteira; na calibração,
+ * quando só a posição do analógico (e a leitura) mexe, só o quadrado do
+ * círculo + a leitura (xui_cfg_calib_rect). *animating = 1 na calibração. */
+xui_rect_t  xui_cfg_frame(xui_view_t *v, xui_canvas_t *c, const xui_cfg_t *s,
+                          const xui_home_data_t *d, unsigned now_ms, int *animating);
+xui_rect_t  xui_cfg_calib_rect(void);
 
 /* Medidas pra testes/bench. */
 typedef struct {

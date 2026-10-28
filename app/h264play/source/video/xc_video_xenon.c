@@ -51,14 +51,14 @@ struct edid *xenos_get_edid();
 static int  g_av = -1, g_ovr = XCV_OVR_AUTO, g_mode = XCV_HDMI_720P, g_have = 0, g_board = 0;
 static unsigned g_flags = 0;
 static int  g_booted = 0, g_applied = 0;
+static int  g_forced = 0;   /* v0.21.33: LB+RB no boot */
 static char g_l_av[160], g_l_edid[320], g_l_mode[200], g_l_scl[200];
-static char g_line[96], g_ver[200];
 /* v0.21.21: estado dos registradores logo depois da troca (só UART no boot;
  * o menu_main repete pro upload, junto com uma leitura nova) */
 #define XCV_REGLINES 10
 static char g_reg[XCV_REGLINES][192];
 static int  g_nreg = 0;
-/* v0.21.21: X nas Configurações não grava mais do main (travava): fica
+/* v0.21.21: a troca nas Configurações não grava do main (travava): fica
  * pendente e quem é dono do pendrive grava (xcv_save_pending). ovr+1, 0 = nada */
 static volatile int g_save_pend = 0;
 
@@ -254,6 +254,7 @@ void xcv_boot(int avpack) {
     int n = xc_store_load(VIDEO_FILE, b, sizeof(b) - 1);
     if (n > 0) { b[n] = 0; g_ovr = xcv_ovr_parse_ex(b, (size_t)n, &g_flags); }
     int force = pads_lb_rb();
+    g_forced = force;
 
     xc_edid_info_t ei;
     int got = -1;
@@ -300,28 +301,26 @@ void xcv_log_summary(void) {
     xc_log("%s", o);
 }
 
-const char *xcv_settings_line(void) {
-    const char *now = g_mode == XCV_HDMI_1080P ? "1080p" : "720p";
-    if (g_av >= 0 && xcv_av_kind(g_av) != XCV_AV_HDMI) {
-        snprintf(g_line, sizeof(g_line), "Só no HDMI (agora %s)", xcv_mode_name(g_mode));
-    } else if (g_ovr == XCV_OVR_AUTO) {
-        snprintf(g_line, sizeof(g_line), "Automático (agora %s)", now);
-    } else if (g_ovr == XCV_OVR_1080P && !g_have) {
-        snprintf(g_line, sizeof(g_line), "1080p (ainda indisponível neste console: %s)", now);
-    } else {
-        snprintf(g_line, sizeof(g_line), "%s (agora %s)", xcv_ovr_name(g_ovr), now);
-    }
-    return g_line;
+void xcv_settings_state(xcv_state_t *o) {
+    o->av_kind = g_av >= 0 ? xcv_av_kind(g_av) : -1;
+    o->mode = g_mode;
+    o->ovr = g_ovr;
+    o->have_1080p = g_have;
+    o->forced_720p = g_forced;
 }
+
+int xcv_boot_forced(void) { return g_forced; }
 
 /* Só memória: nada de pendrive aqui (a v0.21.19 travava gravando do main
  * com o worker das capas/hw1 no USB). Grava em xcv_save_pending. */
-const char *xcv_settings_cycle(void) {
-    g_ovr = xcv_ovr_next(g_ovr);
+int xcv_settings_set(int ovr) {
+    if (ovr != XCV_OVR_720P && ovr != XCV_OVR_1080P) return 0;
+    if (ovr == g_ovr) return 0;   /* mesma escolha: não mexe (nem nas letras de diagnóstico do VIDEO.TXT) */
+    g_ovr = ovr;
     g_flags = 0;
     __sync_lock_test_and_set(&g_save_pend, g_ovr + 1);
-    xc_log("[video] VIDEO.TXT -> %s (pendente; vale no proximo boot)", xcv_ovr_name(g_ovr));
-    return "Vídeo: vale ao reiniciar";
+    xc_log("[video] VIDEO.TXT -> %s (Configurações; pendente, vale no proximo boot)", xcv_ovr_name(g_ovr));
+    return 1;
 }
 
 void xcv_save_pending(void) {
@@ -331,9 +330,4 @@ void xcv_save_pending(void) {
     int len = snprintf(b, sizeof(b), "%s\n", xcv_ovr_name(p - 1));
     int r = xc_store_save(VIDEO_FILE, b, (size_t)len);
     xc_log("[video] XC360/" VIDEO_FILE " = %s: %s", xcv_ovr_name(p - 1), r == 0 ? "gravado" : "falhou");
-}
-
-const char *xcv_settings_version(const char *v) {
-    snprintf(g_ver, sizeof(g_ver), "%s  ·  vídeo: %s (X troca)", v ? v : "", xcv_settings_line());
-    return g_ver;
 }

@@ -132,8 +132,9 @@ Sem conexão na chave beta (sem cabo, sem Wi-Fi salvo), a tela de erro tem
 
 ## Tela
 
-Configurações -> botão **Wi-Fi** (esquerda/direita escolhe; `X` continua
-trocando o vídeo). Esquerda: estado (Cabo de rede / Wi-Fi: SSID com IP e sinal
+Configurações > **Rede** > **Wi-Fi** (v0.21.33; antes um 2º botão na tela única;
+só aparece sem cabo com internet e com o adaptador; `B` no Wi-Fi volta pra Rede,
+Guia fecha tudo e apaga a senha digitada). Esquerda: estado (Cabo de rede / Wi-Fi: SSID com IP e sinal
 / Conectando... / Desconectado / erro), rede salva, **Procurar redes**,
 **Esquecer rede**. Direita: redes (barras de sinal, cadeado, Conectada / Salva
 / Não suportada), 6 visíveis com rolagem. `A` conecta (aberta: direto; salva:
@@ -214,8 +215,8 @@ full speed no OHCI do Xenon), o firmware real e um roteador real.
 - **Rotas:** com cabo sem DHCP o `en` continua com o IP estático do libxenon
   (192.168.1.99); o `wl` fica na frente da lista do lwIP, então a mesma sub-rede
   sai pelo Wi-Fi, mas um destino 192.168.1.x numa LAN Wi-Fi diferente sairia pelo cabo.
-- **Build `BETA=0`:** a engrenagem das Configurações só existe com chave beta;
-  na versão pública o Wi-Fi precisa de outra entrada (não feito).
+- **Build `BETA=0`:** desde a v0.21.33 a engrenagem (e a Guia) abrem as
+  Configurações também sem chave beta, então o Wi-Fi tem entrada na versão pública.
 
 ## v0.21.1 — primeiro teste real (Slim Corona) e o caminho high speed
 

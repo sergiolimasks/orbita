@@ -21,6 +21,8 @@ extern "C" {
 int    stream_init(void);
 /* v0.21.0: 1 se o cabo pegou DHCP no boot (Wi-Fi não liga sozinho). */
 int    stream_net_cable(void);
+/* v0.21.33: IP do cabo ((a<<24)|..|d; 0 = nenhum), pro cartão da Rede nas Configurações */
+uint32_t stream_net_cable_ip(void);
 /* v0.21.5: link físico no cabo (do enet_init); pedir DHCP do cabo de novo
  * (a thread de rede faz; stream_net_cable vira 1 quando fechar). */
 int    stream_net_link(void);
