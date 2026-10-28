@@ -1,4 +1,4 @@
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/h264.c ffmpeg-xenon-mt-altivec/libavcodec/h264.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/h264.c ffmpeg-xenon-mt-altivec/libavcodec/h264.c
 --- ffmpeg-xenon/libavcodec/h264.c	2026-09-07 19:08:53.433574501 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/h264.c	2026-10-27 03:01:10.326844498 -0300
 @@ -36,6 +36,7 @@
@@ -130,7 +130,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  
                      return 0;
                  } else {
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/Makefile ffmpeg-xenon-mt-altivec/libavcodec/Makefile
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/Makefile ffmpeg-xenon-mt-altivec/libavcodec/Makefile
 --- ffmpeg-xenon/libavcodec/Makefile	2026-09-07 19:08:53.416044052 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/Makefile	2026-10-23 23:24:22.691361154 -0300
 @@ -808,3 +808,6 @@
@@ -140,7 +140,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +
 +# XCloud360: newlib so expoe tipos pthread com _POSIX_THREADS
 +$(SUBDIR)pthread.o: CPPFLAGS += -D_POSIX_THREADS=1
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/dsputil_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/dsputil_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/dsputil_altivec.c	2026-09-07 19:08:53.445882322 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_altivec.c	2026-10-24 01:18:19.948665174 -0300
 @@ -29,6 +29,9 @@
@@ -208,7 +208,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
      if (CONFIG_VORBIS_DECODER)
          c->vorbis_inverse_coupling = vorbis_inverse_coupling_altivec;
  }
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/dsputil_ppc.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_ppc.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/dsputil_ppc.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_ppc.c
 --- ffmpeg-xenon/libavcodec/ppc/dsputil_ppc.c	2026-09-07 19:08:53.445970391 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/dsputil_ppc.c	2026-10-24 01:17:13.169883494 -0300
 @@ -23,6 +23,7 @@
@@ -250,7 +250,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  
      }
  #endif /* HAVE_ALTIVEC */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/gmc_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/gmc_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/gmc_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/gmc_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/gmc_altivec.c	2026-09-07 19:08:53.446195130 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/gmc_altivec.c	2026-10-24 01:17:13.170776861 -0300
 @@ -25,6 +25,10 @@
@@ -270,7 +270,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  }
 +
 +#endif /* !XCLOUD360_VMX_SAFE */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/h264_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/h264_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/h264_altivec.c	2026-09-07 19:08:53.446240852 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_altivec.c	2026-10-27 03:29:57.096396079 -0300
 @@ -27,6 +27,27 @@
@@ -418,7 +418,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  #undef dspfunc
      }
      }
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/h264_qpel8_xenon.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_qpel8_xenon.h
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/h264_qpel8_xenon.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_qpel8_xenon.h
 --- ffmpeg-xenon/libavcodec/ppc/h264_qpel8_xenon.h	1969-12-31 21:00:00.000000000 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_qpel8_xenon.h	2026-10-27 03:23:32.727911853 -0300
 @@ -0,0 +1,170 @@
@@ -592,7 +592,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +H264_MC(avg_, 8, altivec)
 +#undef ff_put_pixels8_altivec
 +#undef ff_avg_pixels8_altivec
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/h264_template_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_template_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/h264_template_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_template_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/h264_template_altivec.c	2026-09-07 19:08:53.446320510 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/h264_template_altivec.c	2026-10-24 01:19:56.313296728 -0300
 @@ -26,6 +26,7 @@
@@ -999,7 +999,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  
          ASSERT_ALIGNED(dst);
          vdst = vec_ld(0, dst);
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/idct_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/idct_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/idct_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/idct_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/idct_altivec.c	2026-09-07 19:08:53.446368932 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/idct_altivec.c	2026-10-24 01:17:13.171698325 -0300
 @@ -45,6 +45,10 @@
@@ -1019,7 +1019,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  }
 +
 +#endif /* !XCLOUD360_VMX_SAFE */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/int_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/int_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/int_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/int_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/int_altivec.c	2026-09-07 19:08:53.446408179 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/int_altivec.c	2026-10-24 01:17:13.171876065 -0300
 @@ -34,6 +34,10 @@
@@ -1039,7 +1039,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  }
 +
 +#endif /* !XCLOUD360_VMX_SAFE */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/mpegvideo_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/mpegvideo_altivec.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/mpegvideo_altivec.c ffmpeg-xenon-mt-altivec/libavcodec/ppc/mpegvideo_altivec.c
 --- ffmpeg-xenon/libavcodec/ppc/mpegvideo_altivec.c	2026-09-07 19:08:53.446512674 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/mpegvideo_altivec.c	2026-10-24 01:17:13.172179544 -0300
 @@ -479,6 +479,9 @@
@@ -1070,7 +1070,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +#endif
      }
  }
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/types_altivec.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/types_altivec.h
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/types_altivec.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/types_altivec.h
 --- ffmpeg-xenon/libavcodec/ppc/types_altivec.h	2026-09-08 08:54:29.715685145 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/types_altivec.h	2026-10-24 01:18:49.833861096 -0300
 @@ -21,11 +21,58 @@
@@ -1137,7 +1137,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  
  /***********************************************************************
   * Vector types
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/xcloud360_vmx.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/xcloud360_vmx.h
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/xcloud360_vmx.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/xcloud360_vmx.h
 --- ffmpeg-xenon/libavcodec/ppc/xcloud360_vmx.h	1969-12-31 21:00:00.000000000 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/xcloud360_vmx.h	2026-10-24 01:17:13.173585510 -0300
 @@ -0,0 +1,30 @@
@@ -1171,7 +1171,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +#endif
 +
 +#endif /* AVCODEC_PPC_XCLOUD360_VMX_H */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/ppc/xen_altivec_asm.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/xen_altivec_asm.h
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/ppc/xen_altivec_asm.h ffmpeg-xenon-mt-altivec/libavcodec/ppc/xen_altivec_asm.h
 --- ffmpeg-xenon/libavcodec/ppc/xen_altivec_asm.h	2026-09-08 08:57:54.288487501 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/ppc/xen_altivec_asm.h	1969-12-31 21:00:00.000000000 -0300
 @@ -1,312 +0,0 @@
@@ -1487,10 +1487,10 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 -#endif /* XEN_ALTIVEC_MACRO_DISPATCH */
 -
 -#endif /* XEN_ALTIVEC_ASM_H */
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/pthread.c ffmpeg-xenon-mt-altivec/libavcodec/pthread.c
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/pthread.c ffmpeg-xenon-mt-altivec/libavcodec/pthread.c
 --- ffmpeg-xenon/libavcodec/pthread.c	2026-09-07 19:08:53.447339610 -0300
-+++ ffmpeg-xenon-mt-altivec/libavcodec/pthread.c	2026-10-27 03:01:10.327266412 -0300
-@@ -51,6 +51,7 @@
++++ ffmpeg-xenon-mt-altivec/libavcodec/pthread.c	2026-10-28 09:20:35.134926293 -0300
+@@ -51,9 +51,21 @@
  #endif
  
  #include "avcodec.h"
@@ -1498,7 +1498,48 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  #include "internal.h"
  #include "thread.h"
  
-@@ -378,7 +379,11 @@
++/* XCloud360 v0.21.35 (deps/xenon-pthread): XPT_SITE marca em que linha esta
++ * hw thread vai esperar (o vigia do app mostra no travamento);
++ * xpt_dec_abort solta a espera de progresso de quadro (ff_thread_await_progress)
++ * quando o app vê o decode parado: deadlock do frame threading do 0.10 com um
++ * quadro de referência que nunca termina. O app reabre o decoder em seguida. */
++extern volatile int xpt_site[8];
++extern volatile int xpt_dec_abort;
++extern volatile unsigned int xpt_dec_released;
++static inline int xpt_pir_(void) { unsigned v; __asm__ __volatile__("mfspr %0, 1023" : "=r"(v)); return v & 7; }
++#define XPT_SITE() (xpt_site[xpt_pir_()] = __LINE__)
++
+ #if HAVE_PTHREADS
+ #include <pthread.h>
+ #elif HAVE_W32THREADS
+@@ -213,7 +225,7 @@
+             if (c->current_job == thread_count + c->job_count)
+                 pthread_cond_signal(&c->last_job_cond);
+ 
+-            pthread_cond_wait(&c->current_job_cond, &c->current_job_lock);
++            XPT_SITE(), pthread_cond_wait(&c->current_job_cond, &c->current_job_lock);
+             our_job = self_id;
+ 
+             if (c->done) {
+@@ -233,7 +245,7 @@
+ 
+ static av_always_inline void avcodec_thread_park_workers(ThreadContext *c, int thread_count)
+ {
+-    pthread_cond_wait(&c->last_job_cond, &c->current_job_lock);
++    XPT_SITE(), pthread_cond_wait(&c->last_job_cond, &c->current_job_lock);
+     pthread_mutex_unlock(&c->current_job_lock);
+ }
+ 
+@@ -369,7 +381,7 @@
+     while (1) {
+         int i;
+             while (p->state == STATE_INPUT_READY && !fctx->die)
+-                pthread_cond_wait(&p->input_cond, &p->mutex);
++                XPT_SITE(), pthread_cond_wait(&p->input_cond, &p->mutex);
+ 
+         if (fctx->die) break;
+ 
+@@ -378,7 +390,11 @@
  
          avcodec_get_frame_defaults(&p->frame);
          p->got_frame = 0;
@@ -1511,7 +1552,34 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  
          if (p->state == STATE_SETTING_UP) ff_thread_finish_setup(avctx);
  
-@@ -693,12 +698,19 @@
+@@ -542,7 +558,7 @@
+         if (prev_thread->state == STATE_SETTING_UP) {
+             pthread_mutex_lock(&prev_thread->progress_mutex);
+             while (prev_thread->state == STATE_SETTING_UP)
+-                pthread_cond_wait(&prev_thread->progress_cond, &prev_thread->progress_mutex);
++                XPT_SITE(), pthread_cond_wait(&prev_thread->progress_cond, &prev_thread->progress_mutex);
+             pthread_mutex_unlock(&prev_thread->progress_mutex);
+         }
+ 
+@@ -574,7 +590,7 @@
+         while (p->state != STATE_SETUP_FINISHED && p->state != STATE_INPUT_READY) {
+             pthread_mutex_lock(&p->progress_mutex);
+             while (p->state == STATE_SETTING_UP)
+-                pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
++                XPT_SITE(), pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
+ 
+             if (p->state == STATE_GET_BUFFER) {
+                 p->result = p->avctx->get_buffer(p->avctx, p->requested_frame);
+@@ -634,7 +650,7 @@
+         if (p->state != STATE_INPUT_READY) {
+             pthread_mutex_lock(&p->progress_mutex);
+             while (p->state != STATE_INPUT_READY)
+-                pthread_cond_wait(&p->output_cond, &p->progress_mutex);
++                XPT_SITE(), pthread_cond_wait(&p->output_cond, &p->progress_mutex);
+             pthread_mutex_unlock(&p->progress_mutex);
+         }
+ 
+@@ -693,12 +709,20 @@
      if (f->owner->debug&FF_DEBUG_THREADS)
          av_log(f->owner, AV_LOG_DEBUG, "thread awaiting %d field %d from %p\n", n, field, progress);
  
@@ -1522,8 +1590,9 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +    {   /* XCloud360 v0.21.25: time blocked on another frame thread */
 +        uint64_t xcp_t_ = xcp_t0();
 +        pthread_mutex_lock(&p->progress_mutex);
-+        while (progress[field] < n)
-+            pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
++        while (progress[field] < n && !xpt_dec_abort)
++            XPT_SITE(), pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
++        if (progress[field] < n) xpt_dec_released++;   /* XCloud360 v0.21.35: solto pelo app */
 +        pthread_mutex_unlock(&p->progress_mutex);
 +        xcp_add(XCP_AWAIT, xcp_t_);
 +    }
@@ -1535,7 +1604,25 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
  void ff_thread_finish_setup(AVCodecContext *avctx) {
      PerThreadContext *p = avctx->thread_opaque;
  
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/libavcodec/xc_prof.h ffmpeg-xenon-mt-altivec/libavcodec/xc_prof.h
+@@ -725,7 +749,7 @@
+         if (p->state != STATE_INPUT_READY) {
+             pthread_mutex_lock(&p->progress_mutex);
+             while (p->state != STATE_INPUT_READY)
+-                pthread_cond_wait(&p->output_cond, &p->progress_mutex);
++                XPT_SITE(), pthread_cond_wait(&p->output_cond, &p->progress_mutex);
+             pthread_mutex_unlock(&p->progress_mutex);
+         }
+         p->got_frame = 0;
+@@ -981,7 +1005,7 @@
+         pthread_cond_broadcast(&p->progress_cond);
+ 
+         while (p->state != STATE_SETTING_UP)
+-            pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
++            XPT_SITE(), pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
+ 
+         err = p->result;
+ 
+diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' -x '*.pre-v02135' ffmpeg-xenon/libavcodec/xc_prof.h ffmpeg-xenon-mt-altivec/libavcodec/xc_prof.h
 --- ffmpeg-xenon/libavcodec/xc_prof.h	1969-12-31 21:00:00.000000000 -0300
 +++ ffmpeg-xenon-mt-altivec/libavcodec/xc_prof.h	2026-10-27 03:00:58.820436225 -0300
 @@ -0,0 +1,60 @@
@@ -1599,7 +1686,7 @@ diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.
 +#define XCP_V(kind, stmt) do { uint64_t xcp_t_ = xcp_t0(); stmt; xcp_add(kind, xcp_t_); } while (0)
 +
 +#endif
-diff -ruN -x '*.o' -x '*.a' -x '*.d' -x 'config.*' -x '*.pc' -x xcloud360 -x '*.patch' -x orig-prof -x '*.so*' -x .depend -x '*.ver' -x '*.log' ffmpeg-xenon/README-XCLOUD360.md ffmpeg-xenon-mt-altivec/README-XCLOUD360.md
+diff -ruN ffmpeg-xenon/README-XCLOUD360.md ffmpeg-xenon-mt-altivec/README-XCLOUD360.md
 --- ffmpeg-xenon/README-XCLOUD360.md	1969-12-31 21:00:00.000000000 -0300
 +++ ffmpeg-xenon-mt-altivec/README-XCLOUD360.md	2026-10-24 01:49:05.882306100 -0300
 @@ -0,0 +1,183 @@

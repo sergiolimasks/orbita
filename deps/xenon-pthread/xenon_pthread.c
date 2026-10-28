@@ -174,14 +174,32 @@ static inline uint64_t xpt_tb(void) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+/* XCloud360 v0.21.35: quem espera onde. xpt_site = linha do pthread.c do
+ * libavcodec que vai esperar (o chamador põe antes); xpt_wait_* = a espera em
+ * curso por hw thread (tb de início, 0 = não espera). Só leitura pro vigia.
+ * xpt_dec_abort: o app manda soltar as esperas de progresso do decoder
+ * (deadlock do frame threading); xpt_abort_gen acorda quem já está esperando
+ * (acordar a mais é permitido: todo cond_wait do libavcodec está num laço
+ * que reconfere o predicado). */
+volatile int xpt_site[8];
+volatile int xpt_wait_site[8];
+volatile uint64_t xpt_wait_tb[8];
+volatile int xpt_dec_abort = 0;
+volatile unsigned int xpt_abort_gen = 0;
+volatile unsigned int xpt_dec_released = 0;
+
 int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
     unsigned int gen = *(volatile pthread_cond_t *)c;
+    unsigned int agen = xpt_abort_gen;
+    int me = cur_pir() & 7;
     pthread_mutex_unlock(m);
     unsigned int spins = 0;
     uint64_t t0 = xpt_tb();
+    xpt_wait_site[me] = xpt_site[me];
+    xpt_wait_tb[me] = t0;
     int low = xpt_spin_low;
     if (low) __asm__ __volatile__("or 1,1,1");
-    while (*(volatile pthread_cond_t *)c == gen) {
+    while (*(volatile pthread_cond_t *)c == gen && xpt_abort_gen == agen) {
         spin_pause();
         if ((++spins & 0x3fff) == 0) {
             void (*h)(void) = xpt_idle_hook;
@@ -189,7 +207,9 @@ int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
         }
     }
     if (low) __asm__ __volatile__("or 2,2,2");
-    xpt_idle_tb[cur_pir() & 7] += xpt_tb() - t0;
+    xpt_wait_tb[me] = 0;
+    xpt_site[me] = 0;
+    xpt_idle_tb[me] += xpt_tb() - t0;
     pthread_mutex_lock(m);
     return 0;
 }

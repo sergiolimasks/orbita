@@ -555,6 +555,26 @@ extern void console_set_colors(unsigned int background, unsigned int foreground)
 extern void console_set_cursor(int x, int y);
 extern void console_putch(const char c);
 extern void putch(unsigned char c);
+/* v0.21.35: esperas do frame threading (deps/xenon-pthread + pthread.c do libavcodec) */
+extern volatile int xpt_wait_site[8];
+extern volatile uint64_t xpt_wait_tb[8];
+extern volatile int xpt_dec_abort;
+extern volatile unsigned int xpt_abort_gen, xpt_dec_released;
+/* " hw0 L642 8100 ms, hw4 L705 8100 ms" (linha do pthread.c do libavcodec) */
+static void xpt_waits_text(char *o, size_t n) {
+    uint64_t now = mftb();
+    size_t k = 0;
+    o[0] = 0;
+    for (int i = 0; i < 6 && k + 1 < n; i++) {
+        uint64_t t = xpt_wait_tb[i];
+        if (!t || now < t) continue;
+        int w = snprintf(o + k, n - k, " hw%d L%d %u ms", i, xpt_wait_site[i],
+                         (unsigned)((now - t) / (PPC_TIMEBASE_FREQ / 1000ULL)));
+        if (w < 0) break;
+        k += (size_t)w;
+    }
+    if (!o[0]) snprintf(o, n, " nenhuma");
+}
 static volatile int g_trip_screen = 0;
 void xwd_trip_report(const char *line, int slot) {
     const char *lb = xwd_label(XWD_NET), *cr = xwd_crumb_of(XWD_NET);
@@ -594,6 +614,16 @@ void xwd_trip_report(const char *line, int slot) {
         for (const char *p = l2; *p; p++) putch((unsigned char)*p);
         putch('\n');
     }
+    /* v0.21.35: main parada: em que espera do decoder cada hw thread está */
+    if (slot == XWD_MAIN) {
+        char l5[300], w[220];
+        xpt_waits_text(w, sizeof(w));
+        snprintf(l5, sizeof(l5), "[wdog] decoder: esperas%s; soltas %u, pedido de soltar %s", w, xpt_dec_released,
+                 xpt_dec_abort ? "sim" : "não");
+        if (raw_ok && !xc_hang_busy()) xc_hang_write(l5);
+        for (const char *p = l5; *p; p++) putch((unsigned char)*p);
+        putch('\n');
+    }
     for (const char *p = line; *p; p++) putch((unsigned char)*p);
     putch('\n');
     /* tela: duas linhas no alto, vermelho */
@@ -624,6 +654,49 @@ static void wdt_start(void) {
     __asm__ __volatile__("sync" ::: "memory");
     xenon_run_thread_task(WDT_HW, g_wdt_stack + sizeof(g_wdt_stack) - 0x100, (void *)wdt_task);
 }
+/* v0.21.35: main dentro do avcodec_decode_video2 desde (ms; 0 = fora).
+ * Parado lá DEC_STALL_MS = deadlock do frame threading (as threads esperam o
+ * progresso de um quadro que nunca termina): solta as esperas de progresso e
+ * o main reabre o decoder (esperando IDR). Roda nas esperas ociosas (a hw 0
+ * parada também espera num cond, então sempre tem alguém girando aqui). */
+#define DEC_STALL_MS 2500
+static volatile uint64_t g_dec_in_ms = 0;
+static char g_dec_abort_line[320];
+static unsigned g_dec_unstuck = 0;
+static void dec_stall_check(void) {
+    static volatile int busy = 0;
+    uint64_t t = g_dec_in_ms;
+    if (!t || xpt_dec_abort) return;
+    uint64_t now = xwd_now_ms();
+#ifdef ORBITA_TEST_UNSTICK
+    /* teste: força o caminho de soltar + reabrir a cada 30 s de jogo */
+    static uint64_t t_force = 0;
+    if (!t_force) t_force = now;
+    if (now - t_force >= 30000) { t_force = now; t = now - DEC_STALL_MS; }
+#endif
+    if (now < t || now - t < DEC_STALL_MS) return;
+    if (__sync_lock_test_and_set(&busy, 1)) return;
+#ifdef ORBITA_TEST_UNSTICK
+    if (g_dec_in_ms && !xpt_dec_abort) {
+#else
+    if (g_dec_in_ms == t && !xpt_dec_abort) {
+#endif
+        char w[220];
+        xpt_waits_text(w, sizeof(w));
+        snprintf(g_dec_abort_line, sizeof(g_dec_abort_line),
+                 "[dec] decoder parado há %u ms dentro do decode (esperas%s): soltando e reabrindo",
+                 (unsigned)(now - t), w);
+        __asm__ __volatile__("sync" ::: "memory");
+        xpt_dec_abort = 1;
+        __sync_fetch_and_add(&xpt_abort_gen, 1);
+    }
+    __sync_lock_release(&busy);
+}
+static void idle_hook(void) {
+    xwd_tripwire();
+    dec_stall_check();
+}
+
 static void wdt_stop(void) {
     g_wdt_stop = 1;
     __asm__ __volatile__("sync" ::: "memory");
@@ -1178,10 +1251,12 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         if (!g_input_on_net) audio_service();   /* v0.18: sem thread de rede */
 #endif
 #ifdef XCLOUD360_GPU
+        xwd_crumb("gpu poll");   /* v0.21.35: onde o main está no jogo (HANG.TXT) */
         if (gpu_on) gpu_present_poll();
 #endif
 
         if (live) {
+            xwd_crumb("pegando AU");
             int pulled = pull_next_au(&out_data, &out_size);
             if (pulled <= 0) {
                 uint64_t i0 = mftb();
@@ -1236,8 +1311,26 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         pkt.data = out_data; pkt.size = out_size;
         uint64_t t_a = now_us();
         int got = 0;
+        xwd_crumb("decode");
+        g_dec_in_ms = xwd_now_ms();   /* v0.21.35: vigiado pelo dec_stall_check */
         int r = avcodec_decode_video2(ctx, frame, &got, &pkt);
+        g_dec_in_ms = 0;
         uint64_t t_b = now_us();
+        if (xpt_dec_abort) {
+            /* v0.21.35: as esperas foram soltas: o quadro não vale e o decoder
+             * reabre do zero (o close espera as threads terminarem; com o
+             * pedido ainda ligado nenhuma volta a esperar progresso) */
+            char ul[360];
+            snprintf(ul, sizeof(ul), "%s (#%u desde o boot)", g_dec_abort_line, ++g_dec_unstuck);
+            np_log_line(ul);
+            xwd_crumb("reabrindo decoder");
+            AVCodecContext *nc = dec_reopen(codec, ctx, ctx->thread_count);
+            __asm__ __volatile__("sync" ::: "memory");
+            xpt_dec_abort = 0;
+            ctx = nc;
+            if (!ctx) { exit_reason = EXIT_STREAM_END; break; }
+            continue;
+        }
         if (r < 0) {
             /* v0.12.0: referência quebrada = espera o próximo IDR. */
             if (live) {
@@ -1274,6 +1367,7 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
                 g_trace[(int)(trace_au_seq % TRACE_HISTORY)].t_dispatch = t_c;
             }
 #endif
+            xwd_crumb("gpu present");
             gpu_present_frame(frame->data, frame->linesize, gW, gH, tag);
             t_d = now_us();
             acc_cvt += (t_d - t_c);
@@ -3608,7 +3702,7 @@ static void menu_main(int gpu_on) {
         }
         stream_set_idle_hook(net_hook);
         stream_set_pump_extra(pump_wifi);   /* v0.21.10: Wi-Fi também nas esperas do WebRTC */
-        xpt_idle_hook = xwd_tripwire;       /* v0.21.12: tripwire nas esperas ociosas do decoder */
+        xpt_idle_hook = idle_hook;          /* v0.21.12: tripwire nas esperas ociosas do decoder (v0.21.35: + decode parado) */
         /* Daqui em diante a thread de rede também dá printf: o console do
          * libxenon não aguenta duas threads; stdout só pra UART. */
         quiet_stdout_install();
