@@ -168,3 +168,23 @@
 
 /* /jogos: jogo que fecha ao abrir */
 .fpill.gs-noopen{color:#ff9b9b;background:rgba(232,72,72,.14);border-color:rgba(232,72,72,.45)}
+
+/* ajuda (/ajuda) */
+.help-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.help-card{display:flex;flex-direction:column;gap:8px;margin:0;color:inherit}
+.help-card:hover{text-decoration:none;outline:1px solid var(--primary)}
+.help-card h2{font-size:1.15rem;margin:0}
+.help-card p{margin:0;color:var(--muted)}
+.help-ico{color:var(--primary)}
+.help-more{margin-top:auto;color:var(--primary);font-weight:600}
+.help-art h1{margin:.2em 0 .3em}
+.help-art h2{margin-top:32px}
+.help-art p,.help-art li{color:#d7dbe0;max-width:44em}
+.help-ul{padding-left:20px}
+.help-ul li{margin:6px 0}
+.help-tip{display:flex;gap:10px;align-items:flex-start;background:var(--surface);border-left:3px solid var(--primary);border-radius:8px;padding:12px 14px;margin:16px 0}
+.help-tip p{margin:0}
+.help-tip .icon{flex:none;color:var(--primary);margin-top:2px}
+.help-link{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+/* celular: com a Ajuda o menu não cabe numa linha; vai pra linha de baixo */
+@media(max-width:560px){.top{flex-wrap:wrap;row-gap:8px}.topnav{order:3;width:100%;margin-left:0;justify-content:flex-start;overflow-x:auto}}

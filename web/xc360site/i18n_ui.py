@@ -462,6 +462,16 @@ M = {
 
     # ---- /jogos: progresso dos testes (público) + painel
     "gm.nav": ("Jogos", "Games", "Juegos"),
+    # ajuda (matérias em help_articles.py)
+    "hp.nav": ("Ajuda", "Help", "Ayuda"),
+    "hp.title": ("Ajuda", "Help", "Ayuda"),
+    "hp.lead": ("Guias rápidos para as dúvidas que mais aparecem.", "Quick guides for the most common questions.",
+                "Guías rápidas para las dudas más comunes."),
+    "hp.read": ("Ler", "Read", "Leer"),
+    "hp.back": ("Ajuda", "Help", "Ayuda"),
+    "hp.others": ("Outras matérias", "Other articles", "Otros artículos"),
+    "hp.all": ("Todas as matérias", "All articles", "Todos los artículos"),
+    "hp.updated": ("Atualizado em {d}", "Updated on {d}", "Actualizado el {d}"),
     "gm.title": ("Progresso dos testes", "Test progress", "Progreso de las pruebas"),
     "gm.lead": ("Quais jogos os testadores da beta já jogaram no {name}, como rodaram e o que deu errado. "
                 "Atualiza sozinho a partir dos registros enviados pelos consoles.",

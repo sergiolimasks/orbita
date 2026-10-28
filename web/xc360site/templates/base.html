@@ -25,6 +25,7 @@
     <span class="langs">{% for l in LANGS %}<a href="?lang={{ l }}" class="{{ 'on' if l == lang }}" hreflang="{{ l }}">{{ LANG_LABEL[l] }}</a>{% endfor %}</span>
     <a class="navlink{{ ' on' if request.endpoint in ('public.status', 'public.release_note') }}" href="{{ url_for('public.status') }}">{{ _('st.nav') }}</a>
     <a class="navlink{{ ' on' if request.endpoint == 'public.games' }}" href="{{ url_for('public.games') }}">{{ _('gm.nav') }}</a>
+    <a class="navlink{{ ' on' if request.endpoint in ('public.help', 'public.help_article') }}" href="{{ url_for('public.help') }}">{{ _('hp.nav') }}</a>
     <a class="navlink" href="{{ brand.repo }}" target="_blank" rel="noopener">{{ icon('github', 15) }}<span>GitHub</span></a>
     {% if user %}
       {% if user.role == 'admin' %}<a class="btn ghost sm" href="{{ url_for('admin.overview') }}">{{ _('nav.admin') }}</a>{% endif %}

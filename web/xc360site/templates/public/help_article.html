@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ a.title }} — {{ brand.name }}{% endblock %}
+{% block main %}
+<section class="wrap">
+  <a class="back-link" href="{{ url_for('public.help') }}">← {{ _('hp.back') }}</a>
+  <div class="rn-layout">
+    <article class="help-art">
+      <span class="eyebrow">{{ icon(a.icon, 14) }}{{ _('hp.nav') }}</span>
+      <h1>{{ a.title }}</h1>
+      <p class="lead">{{ a.lead }}</p>
+      {% for kind, val in a.blocks %}
+        {% if kind == 'h' %}<h2>{{ val }}</h2>
+        {% elif kind == 'p' %}<p>{{ val }}</p>
+        {% elif kind == 'steps' %}<ol class="steps">{% for s in val %}<li>{{ s }}</li>{% endfor %}</ol>
+        {% elif kind == 'list' %}<ul class="help-ul">{% for s in val %}<li>{{ s }}</li>{% endfor %}</ul>
+        {% elif kind == 'tip' %}<div class="help-tip" role="note">{{ icon('alert', 18) }}<p>{{ val }}</p></div>
+        {% elif kind == 'link' %}<p><a class="help-link" href="{{ val[1] }}" target="_blank" rel="noopener">{{ val[0] }} {{ icon('external', 14) }}</a></p>
+        {% endif %}
+      {% endfor %}
+      <p class="muted small mt">{{ _('hp.updated', d=a.updated) }}</p>
+    </article>
+    <aside>
+      <h3>{{ _('hp.others') }}</h3>
+      <nav class="side-list">{% for o in others %}<a href="{{ url_for('public.help_article', slug=o.slug) }}"><span>{{ o.title }}</span></a>{% endfor %}</nav>
+      <p class="mt"><a href="{{ url_for('public.help') }}">{{ _('hp.all') }} →</a></p>
+    </aside>
+  </div>
+</section>
+{% endblock %}

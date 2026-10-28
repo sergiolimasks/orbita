@@ -2,8 +2,8 @@ import re
 
 from flask import Blueprint, Response, abort, current_app, g, redirect, render_template, request, url_for
 
-from .. import db, plays, releases, ui
-from ..i18n import OPEN_STATUSES
+from .. import db, help_articles, plays, releases, ui
+from ..i18n import LANGS, OPEN_STATUSES
 
 bp = Blueprint("public", __name__)
 COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -90,6 +90,27 @@ def games():
 @bp.get("/games")
 def games_alias():
     return redirect(url_for("public.games"), 301)
+
+
+# ------------------------------------------------------------------ ajuda (matérias)
+def _help_list():
+    idx = LANGS.index(g.lang) if getattr(g, "lang", None) in LANGS else 0
+    name = current_app.config["BRAND"]["name"]
+    return [help_articles.localized(a, idx, name) for a in help_articles.ARTICLES]
+
+
+@bp.get("/ajuda")
+def help():
+    return render_template("public/help.html", articles=_help_list())
+
+
+@bp.get("/ajuda/<slug>")
+def help_article(slug):
+    if slug not in help_articles.BY_SLUG:
+        abort(404)
+    arts = _help_list()
+    a = next(x for x in arts if x["slug"] == slug)
+    return render_template("public/help_article.html", a=a, others=[x for x in arts if x["slug"] != slug])
 
 
 @bp.get("/download/stable")
