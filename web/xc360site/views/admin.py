@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request,
                    url_for)
 
-from .. import bridgekeys, db, logindex, plays, releases, security as sec, ui
+from .. import bridgekeys, db, logindex, plays, releases, security as sec, ui, waitlist
 from ..i18n import OPEN_STATUSES, STATUSES, gettext as _
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
@@ -148,7 +148,7 @@ def _blocked():
 def _testers_ctx(**extra):
     q = request.args.get("q", "").strip()[:80]
     st = request.args.get("status", "")
-    where, args = ["true"], []
+    where, args = ["u.wait <> 'waiting'"], []   # quem está na lista de espera fica na página dela
     if q:
         where.append("(u.name ILIKE %s OR u.email ILIKE %s OR u.handle ILIKE %s"
                      " OR EXISTS (SELECT 1 FROM invites i WHERE i.used_by=u.id AND i.note ILIKE %s))")
@@ -183,7 +183,7 @@ def _testers_ctx(**extra):
                        count(*) FILTER (WHERE active AND NOT EXISTS (SELECT 1 FROM beta_keys k WHERE k.user_id=users.id
                                         AND k.revoked_at IS NULL)) AS nokey,
                        count(*) FILTER (WHERE active AND EXISTS (SELECT 1 FROM beta_keys k WHERE k.user_id=users.id
-                                        AND k.revoked_at IS NULL AND k.dup_at IS NOT NULL)) AS blocked FROM users""")
+                                        AND k.revoked_at IS NULL AND k.dup_at IS NOT NULL)) AS blocked FROM users WHERE wait <> 'waiting'""")
     return dict(users=us, page=pg, q=q, st=st, counts=counts, **extra)
 
 
@@ -750,3 +750,35 @@ def report_public(rid):
     sec.audit("report.public", "%d %s" % (rid, "hide" if hidden else "show"))
     flash(_("gm.rep_hidden" if hidden else "gm.rep_visible"))
     return redirect(url_for("admin.report_detail", rid=rid))
+
+
+# ------------------------------------------------------------------ lista de espera pública (waitlist.py)
+@bp.get("/waitlist")
+def waitlist_page():
+    waitlist.expire()
+    c = dict(waitlist.counts())
+    c["done"] = db.row("SELECT count(*) AS n FROM users WHERE reddit <> '' AND wait = ''")["n"]
+    released = db.rows("SELECT u.id, u.name, u.reddit, u.released_at, "
+                       "u.released_at + make_interval(hours => %s) AS deadline, "
+                       "EXISTS (SELECT 1 FROM beta_keys k WHERE k.user_id=u.id AND k.revoked_at IS NULL) AS has_key "
+                       "FROM users u WHERE u.wait='released' ORDER BY u.released_at, u.id", waitlist.DEADLINE_H)
+    waiting = db.rows("SELECT id, name, reddit, created_at FROM users WHERE wait='waiting' AND active "
+                      "ORDER BY created_at DESC LIMIT 300")
+    return render_template("admin/waitlist.html", c=c, released=released, waiting=waiting,
+                           deadline_h=waitlist.DEADLINE_H, release_max=waitlist.RELEASE_MAX,
+                           public_url=current_app.config["BASE_URL"] + url_for("auth.waitlist_signup"))
+
+
+@bp.post("/waitlist/release")
+def waitlist_release():
+    try:
+        n = int(request.form.get("n", ""))
+    except ValueError:
+        n = 0
+    if not 1 <= n <= waitlist.RELEASE_MAX:
+        flash(_("wl.release_bad"))
+        return redirect(url_for("admin.waitlist_page"))
+    ids = waitlist.release(n)
+    sec.audit("waitlist.release", "%d de %d" % (len(ids), n))
+    flash(_("wl.released_n", n=len(ids)))
+    return redirect(url_for("admin.waitlist_page"))

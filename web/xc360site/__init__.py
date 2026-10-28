@@ -32,6 +32,7 @@ def _nav_counts():
             (SELECT count(*) FROM reports WHERE status='new') AS new_reports,
             (SELECT count(*) FROM invites WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at > now()) AS invites,
             (SELECT count(*) FROM promotion_requests WHERE done_at IS NULL) AS promotions,
+            (SELECT count(*) FROM users WHERE wait='waiting' AND active) AS waitlist,
             (SELECT count(*) FROM beta_keys k JOIN users u ON u.id=k.user_id
               WHERE k.revoked_at IS NULL AND k.dup_at IS NOT NULL AND u.active) AS blocked_keys""")
     elif u:

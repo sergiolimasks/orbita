@@ -4,7 +4,7 @@ import psycopg
 import segno
 from flask import Blueprint, abort, current_app, g, redirect, render_template, request, session, url_for
 
-from .. import bridgekeys, countries, db, security as sec
+from .. import bridgekeys, countries, db, security as sec, waitlist
 from ..i18n import gettext as _
 
 bp = Blueprint("auth", __name__)
@@ -31,6 +31,7 @@ def login():
     nxt = sec.safe_next(request.values.get("next"))
     if request.method == "GET":
         return render_template("login.html", next=nxt)
+    waitlist.expire()   # liberados da lista que passaram do prazo saem antes de conferir a conta
     if sec.ip_blocked("login"):
         abort(429)
     email = (request.form.get("email") or "").strip().lower()[:320]
@@ -95,18 +96,8 @@ def _invite(tok):
                   "AND expires_at > now()", sec.sha256(tok or ""))
 
 
-@bp.route("/invite/<tok>", methods=["GET", "POST"])
-def signup(tok):
-    if len(tok) > 100:
-        abort(404)
-    inv = _invite(tok)
-    if not inv:
-        return render_template("message.html", title=_("signup.invalid_title"), text=_("signup.invalid")), 410
-    clist = countries.countries(g.lang)
-    if request.method == "GET":
-        return render_template("signup.html", inv=inv, countries=clist, f={})
-    if sec.ip_blocked("signup"):
-        abort(429)
+def _signup_fields():
+    """Campos do cadastro (convite e lista de espera): (f, senha, erros)."""
     f = {k: (request.form.get(k) or "").strip() for k in ("name", "email", "phone", "country")}
     f["email"] = f["email"].lower()
     f["accept"] = request.form.get("accept") == "1"   # não desmarca o aceite quando o formulário volta com erro
@@ -128,6 +119,22 @@ def signup(tok):
         errs.append(("accept", _("err.accept")))
     if not errs and db.row("SELECT 1 FROM users WHERE email=%s", f["email"]):
         errs.append(("email", _("err.email_taken")))
+    return f, pw, errs
+
+
+@bp.route("/invite/<tok>", methods=["GET", "POST"])
+def signup(tok):
+    if len(tok) > 100:
+        abort(404)
+    inv = _invite(tok)
+    if not inv:
+        return render_template("message.html", title=_("signup.invalid_title"), text=_("signup.invalid")), 410
+    clist = countries.countries(g.lang)
+    if request.method == "GET":
+        return render_template("signup.html", inv=inv, countries=clist, f={})
+    if sec.ip_blocked("signup"):
+        abort(429)
+    f, pw, errs = _signup_fields()
     if errs:
         sec.record_attempt("signup", False)
         return render_template("signup.html", inv=inv, countries=clist, f=f, errors=[e for _k, e in errs], ferr=dict(errs)), 400
@@ -152,6 +159,39 @@ def signup(tok):
     g.user = u
     from .tester import _area_ctx
     return render_template("area.html", new_key=new_key, **_area_ctx())
+
+
+# ------------------------------------------------------------------ lista de espera pública (waitlist.py)
+@bp.route("/lista", methods=["GET", "POST"])
+def waitlist_signup():
+    """Cadastro sem convite: a conta espera o sorteio do admin (sem chave, sem download)."""
+    if g.user:
+        return redirect(url_for("tester.area"))
+    clist = countries.countries(g.lang)
+    if request.method == "GET":
+        return render_template("signup.html", inv=None, wl=True, countries=clist, f={})
+    if sec.ip_blocked("signup") or waitlist.ip_full(sec.client_ip()):
+        abort(429)
+    f, pw, errs = _signup_fields()
+    f["reddit"] = waitlist.clean_reddit(request.form.get("reddit"))
+    if not waitlist.REDDIT_RE.match(f["reddit"]):
+        errs.append(("reddit", _("wl.err_reddit")))
+    elif waitlist.reddit_taken(f["reddit"]):
+        errs.append(("reddit", _("wl.err_reddit_taken")))
+    if errs:
+        sec.record_attempt("signup", False)
+        return render_template("signup.html", inv=None, wl=True, countries=clist, f=f,
+                               errors=[e for _k, e in errs], ferr=dict(errs)), 400
+    try:
+        u = db.row("INSERT INTO users(role, name, email, phone, country, handle, pw_hash, reddit, wait) "
+                   "VALUES ('tester',%s,%s,%s,%s,%s,%s,%s,'waiting') RETURNING *",
+                   f["name"], f["email"], f["phone"], f["country"], make_handle(f["name"]), sec.hash_pw(pw), f["reddit"])
+    except psycopg.errors.UniqueViolation:
+        return render_template("signup.html", inv=None, wl=True, countries=clist, f=f, errors=[_("err.email_taken")],
+                               ferr={"email": _("err.email_taken")}), 400
+    sec.record_attempt("waitlist", True)
+    sec.start_session(u)
+    return redirect(url_for("tester.area"))
 
 
 # ------------------------------------------------------------------ configuração do admin (link de uso único)

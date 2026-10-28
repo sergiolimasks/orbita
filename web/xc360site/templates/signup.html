@@ -1,17 +1,19 @@
 {% extends "auth/_layout.html" %}{% from "_ui.html" import errors as errs, csrf, field, pw_field with context %}
-{% block title %}{{ _('signup.title') }}{% endblock %}
+{% block title %}{{ _('wl.title') if wl else _('signup.title') }}{% endblock %}
 {% block card_class %} wide{% endblock %}
 {% block content %}
 {% set ferr = ferr or {} %}
-<div class="stepper" aria-hidden="true"><span class="st done"><i>{{ icon('check', 12) }}</i>{{ _('ui.step_invite') }}</span><span class="bar"></span><span class="st on"><i>2</i>{{ _('ui.step_account') }}</span><span class="bar"></span><span class="st"><i>3</i>{{ _('ui.step_key') }}</span></div>
-<h1>{{ _('signup.title') }}</h1>
-<p class="a-lead">{{ _('signup.intro') }}</p>
-<div class="alert info mt-4">{{ icon('clock', 16) }}<div>{{ _('signup.expires', d=inv.expires_at|dt) }}</div></div>
+{% if not wl %}<div class="stepper" aria-hidden="true"><span class="st done"><i>{{ icon('check', 12) }}</i>{{ _('ui.step_invite') }}</span><span class="bar"></span><span class="st on"><i>2</i>{{ _('ui.step_account') }}</span><span class="bar"></span><span class="st"><i>3</i>{{ _('ui.step_key') }}</span></div>{% endif %}
+<h1>{{ _('wl.title') if wl else _('signup.title') }}</h1>
+<p class="a-lead">{{ _('wl.intro') if wl else _('signup.intro') }}</p>
+{% if wl %}<div class="alert info mt-4" id="wl-how">{{ icon('info', 16) }}<div>{{ _('wl.how', h=48) }}</div></div>
+{% else %}<div class="alert info mt-4">{{ icon('clock', 16) }}<div>{{ _('signup.expires', d=inv.expires_at|dt) }}</div></div>{% endif %}
 {{ errs(errors) }}
 <form method="post" novalidate>
   {{ csrf() }}
   <div class="form-grid">
     <div class="span-2">{{ field('name', _('signup.name'), f.name, err=ferr.name, attrs='required maxlength="80" autocomplete="name"') }}</div>
+    {% if wl %}<div class="span-2">{{ field('reddit', _('wl.reddit'), f.reddit, err=ferr.reddit, help=_('wl.reddit_help'), attrs='required maxlength="60" autocomplete="off" placeholder="u/seu_usuario"') }}</div>{% endif %}
     <div class="span-2">{{ field('email', _('login.email'), f.email, 'email', err=ferr.email, help=_('ui.email_help'), attrs='required maxlength="254" autocomplete="email"') }}</div>
     {{ field('phone', _('signup.phone'), f.phone, 'tel', err=ferr.phone, attrs='required maxlength="24" autocomplete="tel" placeholder="+55 11 91234-5678"') }}
     {% call field('country', _('signup.country'), err=ferr.country) %}
@@ -31,7 +33,7 @@
     <label class="check"><input type="checkbox" name="accept" value="1" required {{ 'checked' if f.accept }}{% if ferr.accept %} aria-invalid="true"{% endif %}> <span>{{ _('signup.accept') }}</span></label>
     {% if ferr.accept %}<span class="err-msg">{{ icon('alert', 12) }}{{ ferr.accept }}</span>{% endif %}
   </div>
-  <button class="btn primary lg block">{{ _('signup.submit') }}</button>
+  <button class="btn primary lg block">{{ _('wl.submit') if wl else _('signup.submit') }}</button>
 </form>
 <p class="auth-foot">{{ _('ui.have_account') }} <a href="{{ url_for('auth.login') }}">{{ _('login.submit') }}</a></p>
 {% endblock %}

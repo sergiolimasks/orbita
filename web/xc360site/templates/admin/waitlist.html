@@ -1,0 +1,75 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import csrf, crumb, metric, empty with context %}
+{% block title %}{{ _('wl.nav') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('wl.nav')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('wl.nav') }}</h1><p class="lead">{{ _('wl.adm_lead', h=deadline_h) }}</p></div>
+</div>
+
+<section class="card hl mb-4" aria-labelledby="wl-link">
+  <div class="card-body stack-sm">
+    <h2 id="wl-link" class="small muted">{{ _('wl.adm_link') }}</h2>
+    <div class="copy-line"><code id="wllink">{{ public_url }}</code><button type="button" class="btn primary sm" data-copy="#wllink" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('ui.copy_link') }}</span></button></div>
+  </div>
+</section>
+
+<div class="grid g-4 keep-2">
+  {{ metric(_('wl.m_waiting'), c.waiting, 'users', None, '', None) }}
+  {{ metric(_('wl.m_released'), c.released, 'clock', None, 'violet', None, foot=_('wl.m_released_foot', h=deadline_h)) }}
+  {{ metric(_('wl.m_done'), c.done, 'user-check', None, 'ok', None) }}
+  {{ metric(_('wl.m_expired'), c.expired, 'user-x', None, 'flare', None) }}
+</div>
+
+<section class="card section" aria-labelledby="wl-rel">
+  <div class="card-body">
+    <h2 id="wl-rel">{{ _('wl.release_title') }}</h2>
+    <p class="muted mt-2">{{ _('wl.release_help', h=deadline_h) }}</p>
+    <form method="post" action="{{ url_for('admin.waitlist_release') }}" class="row mt-3"
+          data-confirm="{{ _('wl.release_confirm', h=deadline_h) }}" data-confirm-title="{{ _('wl.release_btn') }}?" data-confirm-ok="{{ _('wl.release_btn') }}">
+      {{ csrf() }}
+      <label class="sr-only" for="f-n">{{ _('wl.release_n') }}</label>
+      <input id="f-n" type="number" name="n" value="10" min="1" max="{{ release_max }}" required>
+      <button class="btn primary"{% if not c.waiting %} disabled{% endif %}>{{ icon('send', 16) }}{{ _('wl.release_btn') }}</button>
+    </form>
+  </div>
+</section>
+
+<section class="card section" aria-labelledby="wl-pend">
+  <div class="card-head"><h2 id="wl-pend">{{ _('wl.pending_title') }}</h2><span class="sub">{{ released|length }}</span></div>
+  {% if released %}
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('signup.name') }}</th><th>Reddit</th><th>{{ _('wl.released_at') }}</th><th>{{ _('wl.deadline') }}</th><th>{{ _('wl.key') }}</th></tr></thead>
+    <tbody>
+    {% for u in released %}
+    <tr>
+      <td class="lead-cell"><a href="{{ url_for('admin.tester_detail', uid=u.id) }}"><b>{{ u.name }}</b></a></td>
+      <td data-label="Reddit" class="mono">u/{{ u.reddit }}</td>
+      <td data-label="{{ _('wl.released_at') }}" class="nowrap">{{ u.released_at|dt }}</td>
+      <td data-label="{{ _('wl.deadline') }}" class="nowrap">{{ u.deadline|when }}</td>
+      <td data-label="{{ _('wl.key') }}">{{ _('wl.key_yes') if u.has_key else _('wl.key_no') }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="card-body">{{ empty(_('wl.pending_empty')) }}</div>{% endif %}
+</section>
+
+<section class="card section" aria-labelledby="wl-list">
+  <div class="card-head"><h2 id="wl-list">{{ _('wl.list_title') }}</h2><span class="sub">{{ c.waiting }}</span></div>
+  {% if waiting %}
+  <table class="table cards-sm">
+    <thead><tr><th>{{ _('signup.name') }}</th><th>Reddit</th><th>{{ _('wl.signed_at') }}</th></tr></thead>
+    <tbody>
+    {% for u in waiting %}
+    <tr>
+      <td class="lead-cell"><b>{{ u.name }}</b></td>
+      <td data-label="Reddit" class="mono">u/{{ u.reddit }}</td>
+      <td data-label="{{ _('wl.signed_at') }}" class="nowrap">{{ u.created_at|dt }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if c.waiting > waiting|length %}<div class="card-foot"><span class="muted small">{{ _('wl.list_more', n=waiting|length) }}</span></div>{% endif %}
+  {% else %}<div class="card-body">{{ empty(_('wl.list_empty')) }}</div>{% endif %}
+</section>
+{% endblock %}

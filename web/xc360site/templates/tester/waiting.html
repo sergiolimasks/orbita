@@ -1,0 +1,17 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb with context %}
+{% block title %}{{ _('wl.wait_title') }}{% endblock %}
+{% block crumbs %}{{ crumb(_('ui.home')) }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ _('area.hello', n=user.name.split(' ')[0]) }}</h1></div>
+</div>
+<section class="card" aria-labelledby="wl-wait" id="wl-waiting">
+  <div class="card-body stack-sm">
+    <span class="badge beta"><span class="dot"></span>{{ _('wl.wait_badge') }}</span>
+    <h2 id="wl-wait" class="mt-2">{{ _('wl.wait_title') }}</h2>
+    <p>{{ _('wl.wait_text') }}</p>
+    <p>{{ _('wl.wait_rule', h=deadline_h) }}</p>
+    <p class="muted small">{{ _('wl.wait_meta', r=user.reddit, d=user.created_at|dt) }}</p>
+  </div>
+</section>
+{% endblock %}

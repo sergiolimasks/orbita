@@ -10,6 +10,9 @@
 {% if key_blocked and not new_key %}
 <div class="alert error mb-4" role="alert" id="key-blocked">{{ icon('ban', 18) }}<div><b>{{ _('key.blocked_title') }}</b> {{ _('key.blocked_text') }}</div></div>
 {% endif %}
+{% if wl_deadline %}
+<div class="alert warn mb-4" role="alert" id="wl-released">{{ icon('clock', 18) }}<div><b>{{ _('wl.rel_title') }}</b> {{ _('wl.rel_text', d=wl_deadline|dt) }}</div></div>
+{% endif %}
 {% if new_key %}
 <div class="alert warn mb-4" role="alert">{{ icon('alert', 18) }}<div><b>{{ _('ui.key_new_title') }}</b> {{ _('area.key_once') }}</div></div>
 {% endif %}

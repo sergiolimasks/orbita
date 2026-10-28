@@ -249,3 +249,10 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS public_hidden boolean NOT NULL DEFA
 
 -- v2 do parser: motivo de fim mandado pelo servidor (KickFor...)
 ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS kick text NOT NULL DEFAULT '';
+
+-- lista de espera pública (2026-10-28, xc360site/waitlist.py)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reddit text NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS wait text NOT NULL DEFAULT '';        -- '' | waiting | released | expired
+ALTER TABLE users ADD COLUMN IF NOT EXISTS released_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS users_reddit_key ON users (lower(reddit)) WHERE reddit <> '';
+CREATE INDEX IF NOT EXISTS users_wait ON users (wait) WHERE wait <> '';

@@ -1,13 +1,22 @@
 import json
 import re, secrets
+from datetime import timedelta
 
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request,
                    url_for)
 
-from .. import bridgekeys, db, images, releases, security as sec
+from .. import bridgekeys, db, images, releases, security as sec, waitlist
 from ..i18n import OPEN_STATUSES, gettext as _
 
 bp = Blueprint("tester", __name__)
+
+
+@bp.before_request
+def _waitlist_gate():
+    """Lista de espera: quem ainda espera o sorteio só vê o aviso (sem chave, download nem relatos)."""
+    u = g.get("user")
+    if u and u.get("wait") == "waiting" and request.endpoint != "tester.area":
+        return redirect(url_for("tester.area"))
 
 VER_FIELD = re.compile(r"^[0-9A-Za-z.+-]{0,32}$")
 CONSOLE_FIELD = re.compile(r"^[0-9A-Fa-f-]{0,64}$")
@@ -53,8 +62,11 @@ def _area_ctx():
                     "count(*) FILTER (WHERE status='fixed') AS fixed FROM reports WHERE user_id=%s",
                     list(OPEN_STATUSES), g.user["id"])
     key = _key()
+    u = g.user
+    wl_deadline = (u["released_at"] + timedelta(hours=waitlist.DEADLINE_H)
+                   if u.get("wait") == "released" and u.get("released_at") else None)
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
-                reports=reps, counts=counts, test_build=_test_build(g.user["id"]))
+                reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline)
 
 
 def _form_ctx(form=None, errors=None):
@@ -68,6 +80,8 @@ def _form_ctx(form=None, errors=None):
 @bp.get("/area")
 @sec.login_required
 def area():
+    if g.user.get("wait") == "waiting":
+        return render_template("tester/waiting.html", deadline_h=waitlist.DEADLINE_H)
     # chave nova gerada pelo admin (ex.: depois de uma derrubada): aparece aqui uma vez só
     k = bridgekeys.take_pending(g.user["id"])
     return render_template("area.html", new_key=k, **_area_ctx())

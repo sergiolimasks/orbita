@@ -161,5 +161,10 @@ def start_thread(app):
                     sync(app.extensions["storage"])
                 except Exception as e:
                     app.logger.warning("sync de logs falhou: %s", e)
+                try:
+                    from . import waitlist
+                    waitlist.expire()
+                except Exception as e:
+                    app.logger.warning("expiração da lista de espera falhou: %s", e)
             time.sleep(interval)
     threading.Thread(target=loop, name="logsync", daemon=True).start()

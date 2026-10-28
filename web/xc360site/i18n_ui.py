@@ -588,6 +588,89 @@ M = {
     "gm.rep_show": ("Mostrar em /jogos", "Show on /jogos", "Mostrar en /jogos"),
     "gm.rep_hidden": ("Escondido da página pública.", "Hidden from the public page.", "Oculto de la página pública."),
     "gm.rep_visible": ("Aparece na página pública.", "Shown on the public page.", "Aparece en la página pública."),
+    # lista de espera pública (waitlist.py)
+    "wl.nav": ("Lista de espera", "Waitlist", "Lista de espera"),
+    "wl.title": ("Entrar na lista da beta", "Join the beta waitlist", "Entrar en la lista de la beta"),
+    "wl.intro": ("Cadastre-se para concorrer a uma vaga na beta fechada.", "Sign up for a chance at a spot in the closed beta.",
+                 "Regístrate para participar por un lugar en la beta cerrada."),
+    "wl.how": ("As vagas são liberadas aos poucos, por sorteio entre todos da lista: a ordem de chegada não conta. "
+               "Não mandamos aviso; entre no site de vez em quando para ver. Quando a sua vaga for liberada, você terá "
+               "{h} horas para gerar a chave e usar no Xbox, senão perde a vaga.",
+               "Spots are released a few at a time, drawn at random from everyone on the list: signing up first doesn't count. "
+               "We don't send notices; check the site now and then. When your spot is released you'll have {h} hours to "
+               "create your key and use it on the Xbox, or you lose the spot.",
+               "Los lugares se liberan de a poco, por sorteo entre todos los de la lista: el orden de llegada no cuenta. "
+               "No enviamos avisos; entra al sitio de vez en cuando para ver. Cuando se libere tu lugar tendrás {h} horas "
+               "para generar la clave y usarla en la Xbox, o pierdes el lugar."),
+    "wl.reddit": ("Seu usuário do Reddit", "Your Reddit username", "Tu usuario de Reddit"),
+    "wl.reddit_help": ("O mesmo com que você fala com a gente no Reddit.", "The one you use to talk to us on Reddit.",
+                       "El mismo con el que hablas con nosotros en Reddit."),
+    "wl.submit": ("Entrar na lista", "Join the list", "Entrar en la lista"),
+    "wl.err_reddit": ("Usuário do Reddit inválido (3 a 20 letras, números, _ ou -).",
+                      "Invalid Reddit username (3 to 20 letters, digits, _ or -).",
+                      "Usuario de Reddit inválido (3 a 20 letras, números, _ o -)."),
+    "wl.err_reddit_taken": ("Esse usuário do Reddit já está cadastrado.", "That Reddit username is already registered.",
+                            "Ese usuario de Reddit ya está registrado."),
+    "wl.wait_badge": ("Na lista de espera", "On the waitlist", "En la lista de espera"),
+    "wl.wait_title": ("Você está na lista", "You're on the list", "Estás en la lista"),
+    "wl.wait_text": ("As vagas são liberadas aos poucos, por sorteio entre todos da lista (a ordem de chegada não conta). "
+                     "Não mandamos aviso: entre aqui de vez em quando para ver se a sua foi liberada.",
+                     "Spots are released a few at a time, drawn at random from everyone on the list (signing up first doesn't "
+                     "count). We don't send notices: check back here now and then to see if yours was released.",
+                     "Los lugares se liberan de a poco, por sorteo entre todos los de la lista (el orden de llegada no cuenta). "
+                     "No enviamos avisos: vuelve aquí de vez en cuando para ver si se liberó el tuyo."),
+    "wl.wait_rule": ("Quando for liberada, você terá {h} horas para gerar a chave e usar no Xbox. Se a chave não for usada "
+                     "num console nesse prazo, o acesso é cancelado.",
+                     "Once released, you'll have {h} hours to create your key and use it on the Xbox. If the key isn't used on "
+                     "a console in that time, access is cancelled.",
+                     "Cuando se libere, tendrás {h} horas para generar la clave y usarla en la Xbox. Si la clave no se usa en "
+                     "una consola en ese plazo, el acceso se cancela."),
+    "wl.wait_meta": ("Reddit: u/{r} · na lista desde {d}", "Reddit: u/{r} · on the list since {d}",
+                     "Reddit: u/{r} · en la lista desde {d}"),
+    "wl.rel_title": ("Sua vaga foi liberada!", "Your spot was released!", "¡Se liberó tu lugar!"),
+    "wl.rel_text": ("Gere sua chave e use no Xbox até {d}. Se ela não for usada num console até lá, o acesso é cancelado.",
+                    "Create your key and use it on the Xbox by {d}. If it isn't used on a console by then, access is cancelled.",
+                    "Genera tu clave y úsala en la Xbox antes de {d}. Si no se usa en una consola para entonces, el acceso se cancela."),
+    "wl.adm_lead": ("Cadastro público, sem convite. Você libera vagas por sorteio; quem é liberado tem {h} h para usar a chave "
+                    "num console, senão sai de vez.",
+                    "Public sign-up, no invite. You release spots by random draw; whoever is released has {h} h to use the key "
+                    "on a console, or they're out for good.",
+                    "Registro público, sin invitación. Liberas lugares por sorteo; quien es liberado tiene {h} h para usar la "
+                    "clave en una consola, o sale definitivamente."),
+    "wl.adm_link": ("Link público da lista (para o post do Reddit)", "Public waitlist link (for the Reddit post)",
+                    "Enlace público de la lista (para el post de Reddit)"),
+    "wl.m_waiting": ("Na lista", "On the list", "En la lista"),
+    "wl.m_released": ("Liberados no prazo", "Released, within deadline", "Liberados en plazo"),
+    "wl.m_released_foot": ("têm {h} h para usar a chave", "have {h} h to use the key", "tienen {h} h para usar la clave"),
+    "wl.m_done": ("Já usando", "Already using", "Ya usando"),
+    "wl.m_expired": ("Perderam o prazo", "Missed the deadline", "Perdieron el plazo"),
+    "wl.release_title": ("Liberar vagas", "Release spots", "Liberar lugares"),
+    "wl.release_help": ("Sorteia essa quantidade entre todos da lista, sem olhar a ordem de chegada. Ninguém é avisado; "
+                        "o prazo de {h} h começa agora.",
+                        "Draws this many at random from everyone on the list, regardless of sign-up order. Nobody is "
+                        "notified; the {h} h deadline starts now.",
+                        "Sortea esta cantidad entre todos los de la lista, sin mirar el orden de llegada. Nadie recibe aviso; "
+                        "el plazo de {h} h empieza ahora."),
+    "wl.release_n": ("Quantidade", "How many", "Cantidad"),
+    "wl.release_btn": ("Liberar por sorteio", "Release by draw", "Liberar por sorteo"),
+    "wl.release_confirm": ("As pessoas sorteadas terão {h} horas, a partir de agora, para usar a chave num console.",
+                           "The people drawn will have {h} hours, starting now, to use the key on a console.",
+                           "Las personas sorteadas tendrán {h} horas, desde ahora, para usar la clave en una consola."),
+    "wl.release_bad": ("Escolha uma quantidade entre 1 e 500.", "Pick a number between 1 and 500.",
+                       "Elige una cantidad entre 1 y 500."),
+    "wl.released_n": ("{n} vagas liberadas.", "{n} spots released.", "{n} lugares liberados."),
+    "wl.pending_title": ("Liberados aguardando o primeiro uso", "Released, waiting for first use",
+                         "Liberados esperando el primer uso"),
+    "wl.pending_empty": ("Ninguém liberado aguardando.", "Nobody released and waiting.", "Nadie liberado esperando."),
+    "wl.released_at": ("Liberado em", "Released", "Liberado el"),
+    "wl.deadline": ("Prazo", "Deadline", "Plazo"),
+    "wl.key": ("Chave", "Key", "Clave"),
+    "wl.key_yes": ("gerada", "created", "generada"),
+    "wl.key_no": ("ainda não", "not yet", "todavía no"),
+    "wl.list_title": ("Na lista", "On the list", "En la lista"),
+    "wl.signed_at": ("Cadastro", "Signed up", "Registro"),
+    "wl.list_more": ("Mostrando os {n} mais recentes.", "Showing the {n} most recent.", "Mostrando los {n} más recientes."),
+    "wl.list_empty": ("Ninguém na lista.", "Nobody on the list.", "Nadie en la lista."),
     "gm.rep_dup_note": ("Relatos marcados como duplicados não aparecem.", "Reports marked as duplicate are not shown.",
                         "Los reportes marcados como duplicados no aparecen."),
 }

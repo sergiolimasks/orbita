@@ -745,3 +745,70 @@ def test_media_env_rejects_site_media_prefix(monkeypatch):
     from xc360site import config
     monkeypatch.setenv("VIDEO_FILE", "/media/orbita-beta.mp4")
     assert config._media("VIDEO_FILE") == ""
+
+
+
+# ------------------------------------------------------------------ lista de espera pública
+def _wl_join(client, email, reddit):
+    return post(client, "/lista", dict(SIGNUP, email=email, reddit=reddit))
+
+
+def test_waitlist_signup_waits_without_access(app, client):
+    r = client.get("/lista")
+    assert r.status_code == 200 and 'name="reddit"' in r.get_data(as_text=True)
+    r = _wl_join(client, "w1@example.com", "u/Fulano_1")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/area")
+    u = db.row("SELECT * FROM users WHERE email='w1@example.com'")
+    assert u["wait"] == "waiting" and u["reddit"] == "Fulano_1" and u["active"]
+    assert 'id="wl-waiting"' in client.get("/area").get_data(as_text=True)
+    # sem chave, download nem relatos enquanto espera
+    assert client.post("/area/key", data={"csrf": csrf(client, "/area")}).status_code == 302
+    assert db.row("SELECT count(*) AS n FROM beta_keys")["n"] == 0
+    assert client.get("/area/download/beta").status_code == 302
+    assert client.get("/area/report").status_code == 302
+    # mesmo usuário do Reddit (com outro formato) não entra de novo
+    other = app.test_client()
+    assert _wl_join(other, "w2@example.com", "https://www.reddit.com/user/fulano_1/").status_code == 400
+    assert _wl_join(other, "w2@example.com", "x").status_code == 400
+
+
+def test_waitlist_release_draw_and_deadline(app, client):
+    from xc360site import waitlist
+    for i in range(3):
+        assert _wl_join(app.test_client(), "w%d@example.com" % i, "red_%d" % i).status_code == 302
+    login_admin(client, app)
+    assert "red_0" in client.get("/admin/waitlist").get_data(as_text=True)
+    assert "red_0" not in client.get("/admin/testers").get_data(as_text=True)   # a lista não mistura com testadores
+    r = post(client, "/admin/waitlist/release", {"n": "2"}, page="/admin/waitlist")
+    assert r.status_code == 302
+    rel = db.rows("SELECT * FROM users WHERE wait='released' ORDER BY id")
+    assert len(rel) == 2 and db.row("SELECT count(*) AS n FROM users WHERE wait='waiting'")["n"] == 1
+    # liberado: vê o prazo e gera a chave
+    a, b = rel
+    ca = app.test_client()
+    login(ca, a["email"], SIGNUP["password"])
+    html = ca.get("/area").get_data(as_text=True)
+    assert 'id="wl-released"' in html
+    ka = _newkey(post(ca, "/area/key", {}, page="/area"))
+    assert bcheck(client, ka) == "ok"              # usou num console: vira testador normal
+    # o outro não usou: 49 h depois sai de vez, com a chave revogada
+    cb = app.test_client()
+    login(cb, b["email"], SIGNUP["password"])
+    kb = _newkey(post(cb, "/area/key", {}, page="/area"))
+    db.run("UPDATE users SET released_at = now() - interval '49 hours' WHERE id IN (%s, %s)", a["id"], b["id"])
+    assert waitlist.expire() == [b["id"]]
+    ua, ub = (db.row("SELECT * FROM users WHERE id=%s", x["id"]) for x in (a, b))
+    assert ua["wait"] == "" and ua["active"]
+    assert ub["wait"] == "expired" and not ub["active"]
+    assert bcheck(client, kb) != "ok"
+    assert cb.get("/area").status_code == 302      # sessão encerrada
+    assert login(app.test_client(), b["email"], SIGNUP["password"]).status_code != 302   # conta desativada não entra
+    assert post(client, "/admin/waitlist/release", {"n": "0"}, page="/admin/waitlist").status_code == 302
+
+
+def test_waitlist_ip_limit(app):
+    from xc360site import waitlist
+    c = app.test_client()
+    for i in range(waitlist.PER_IP_DAY):
+        assert _wl_join(app.test_client(), "ip%d@example.com" % i, "ipuser_%d" % i).status_code == 302
+    assert _wl_join(c, "ipx@example.com", "ipuser_x").status_code == 429

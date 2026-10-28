@@ -38,6 +38,7 @@
         {{ sb_link('admin.overview', 'dashboard', _('adm.overview'), ep == 'admin.overview') }}
         {{ sb_link('admin.testers', 'users', _('adm.testers'), ep.startswith('admin.tester'), nc.blocked_keys, True, href=url_for('admin.testers', status='blocked') if nc.blocked_keys else None) }}
         {{ sb_link('admin.invites', 'mail', _('adm.invites'), ep.startswith('admin.invite'), nc.invites) }}
+        {{ sb_link('admin.waitlist_page', 'inbox', _('wl.nav'), ep.startswith('admin.waitlist'), nc.waitlist) }}
         {{ sb_link('admin.reports', 'bug', _('adm.reports'), ep.startswith('admin.report'), nc.new_reports, True) }}
         {{ sb_link('admin.logs', 'terminal', _('adm.logs'), ep in ('admin.logs', 'admin.log_view')) }}
         {{ sb_link('admin.versions', 'package', _('adm.versions'), ep in ('admin.versions',), nc.promotions, True) }}
