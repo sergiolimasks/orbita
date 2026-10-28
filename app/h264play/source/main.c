@@ -88,6 +88,10 @@
 #include "input/xc_padcfg.h"     /* v0.21.33: zona morta configurável (XC360/PAD.TXT) */
 #include "settings/xc_cfgnav.h"  /* v0.21.33: Configurações em menu lateral (MENU-SETTINGS-PLAN.md) */
 #include "settings/xc_cfgview.h"
+#include "ui/xc_i18n.h"   /* v0.21.38 */
+/* v0.21.38: idioma dos jogos (session/xc_session.c) */
+void        xs_set_play_locale(const char *loc);
+const char *xs_play_locale(void);
 #include "settings/xc_notes.h"   /* v0.21.33: XC360/NOTES.TXT */
 extern volatile int xpt_park_new, xpt_parked;   /* deps/xenon-pthread (v0.21.26) */
 static int g_avpack = -1;   /* v0.20.6: cabo de vídeo (ver orbita_video_mode) */
@@ -1764,6 +1768,8 @@ static int        g_notes_ok = 0;
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
 static char *volatile g_padsave = NULL;
 static char *volatile g_volsave = NULL;
+static char *volatile g_langsave = NULL;   /* v0.21.38: LANG.TXT */
+static char *volatile g_uilangsave = NULL;   /* v0.21.38: UILANG.TXT */
 
 static void store_pending(char *volatile *slot, const char *text) {
     char *b = strdup(text);
@@ -1785,6 +1791,8 @@ static void store_flush(char *volatile *slot, const char *name, const char *tag)
 static void cfg_save_pending(void) {
     store_flush(&g_padsave, XPC_FILE, "[pad]");
     store_flush(&g_volsave, "VOLUME.TXT", "[audio]");
+    store_flush(&g_langsave, "LANG.TXT", "[idioma]");
+    store_flush(&g_uilangsave, "UILANG.TXT", "[idioma]");
 }
 
 static void pad_commit(const xpc_cfg_t *c) {
@@ -2519,6 +2527,8 @@ static void cfg_fill_in(int pend_upd) {
 #ifdef XCLOUD360_AUDIO
     in->audio = 1;
     in->volume = audio_volume_pct();
+    in->lang = xs_play_locale();   /* v0.21.38 */
+    in->ui_lang = xi_lang;
 #endif
     in->pad = g_pad;
     /* Novidades: NOTES.TXT desta versão; senão o manifesto, se a publicada = a instalada */
@@ -2622,6 +2632,31 @@ static void cfg_option(int id, int dir, int *pend_upd) {
         if (xcv_settings_set(id == XCS_OPT_1080 ? XCV_OVR_1080P : XCV_OVR_720P))
             snprintf(g_cfg_notice, sizeof(g_cfg_notice), "Vídeo: vale ao reiniciar o Xbox");
         break;
+    case XCS_OPT_ULANG: case XCS_OPT_ULANG + 1: case XCS_OPT_ULANG + 2: {   /* v0.21.38: idioma do app, na hora */
+        int i = id - XCS_OPT_ULANG;
+        if (dir || i < 0 || i >= XI_NLANG) break;
+        static const char *const k_game[XI_NLANG] = { "pt-BR", "en-US", "es-MX" };   /* o mesmo idioma nos jogos */
+        xi_lang = i;
+        xs_set_play_locale(k_game[i]);
+        char t[16];
+        snprintf(t, sizeof(t), "%s\n", XI_CODES[i]);
+        store_pending(&g_uilangsave, t);
+        snprintf(t, sizeof(t), "%s\n", k_game[i]);
+        store_pending(&g_langsave, t);
+        xc_log("[idioma] aplicativo em %s, jogos em %s (Configurações; UILANG/LANG.TXT pendentes)", XI_CODES[i], k_game[i]);
+        break;
+    }
+    case XCS_OPT_LANG: case XCS_OPT_LANG + 1: case XCS_OPT_LANG + 2: case XCS_OPT_LANG + 3: {
+        /* v0.21.38: idioma dos jogos (a lista); vale no próximo play */
+        int i = id - XCS_OPT_LANG;
+        if (dir || i < 0 || i >= XCS_NLANG) break;
+        xs_set_play_locale(XCS_LANG_CODES[i]);
+        char t[16];
+        snprintf(t, sizeof(t), "%s\n", XCS_LANG_CODES[i]);
+        store_pending(&g_langsave, t);
+        xc_log("[idioma] jogos em %s (Configurações; LANG.TXT pendente)", XCS_LANG_CODES[i]);
+        break;
+    }
     case XCS_OPT_VOLUME: {
 #ifdef XCLOUD360_AUDIO
         int cur = audio_volume_pct(), nv;
@@ -3791,6 +3826,26 @@ static void menu_main(int gpu_on) {
                 xc_log("[xn] teto do vídeo: %d kbps (%s)", xc.video_kbps, kn > 0 ? "KBPS.TXT" : "padrão");
             }
 #ifdef XCLOUD360_AUDIO
+            {   /* v0.21.38: XC360/UILANG.TXT = idioma do aplicativo (pt, en, es) */
+                char ub[8];
+                int un = xc_store_load("UILANG.TXT", ub, sizeof(ub) - 1);
+                if (un > 0) {
+                    ub[un] = 0;
+                    for (int i = 0; i < XI_NLANG; i++)
+                        if (!strncmp(ub, XI_CODES[i], 2)) xi_lang = i;
+                }
+                xc_log("[idioma] aplicativo em %s (%s)", XI_CODES[xi_lang], un > 0 ? "UILANG.TXT" : "padrão");
+            }
+            {   /* v0.21.38: XC360/LANG.TXT = idioma dos jogos (pt-BR, pt-PT, en-US, es-MX) */
+                char lb[16];
+                int ln = xc_store_load("LANG.TXT", lb, sizeof(lb) - 1);
+                if (ln > 0) {
+                    lb[ln] = 0;
+                    lb[strcspn(lb, "\r\n ")] = 0;
+                    if (!strcmp(lb, XCS_LANG_CODES[xcs_lang_index(lb)])) xs_set_play_locale(lb);
+                }
+                xc_log("[idioma] jogos em %s (%s)", xs_play_locale(), ln > 0 ? "LANG.TXT" : "padrão");
+            }
             {   /* v0.21.31: XC360/VOLUME.TXT = volume da saída do console em % (50..400) */
                 char vb[16];
                 int vn = xc_store_load("VOLUME.TXT", vb, sizeof(vb) - 1);
@@ -4008,6 +4063,7 @@ int main(void) {
     BOOT_STEP("2 speed ok");
     xenon_thread_startup();
     BOOT_STEP("3 threads ok");
+    xi_init();   /* v0.21.38: tabela de tradução (L) */
     usb_init();
     BOOT_STEP("4 usb_init ok");
     /* Warm-up drain: RF unit + wireless controller take ~500-2000ms to

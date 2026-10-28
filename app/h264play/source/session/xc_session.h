@@ -48,6 +48,9 @@ enum {
 
 #define XS_TOKEN_FILE   "TOKEN.TXT"        /* = LF_TOKEN_FILE */
 #define XS_LOCALE       "en-US"            /* = default do GssvSession */
+/* v0.21.38: idioma pedido ao xCloud no play (pt-BR, pt-PT, en-US, es-MX) */
+void        xs_set_play_locale(const char *loc);
+const char *xs_play_locale(void);
 #define XS_MAX_REAUTH   3                  /* re-logins por credencial */
 #define XS_CAND_LEN     256
 #define XS_MAX_CANDS    24

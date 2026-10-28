@@ -23,12 +23,14 @@
  * byte pelo hosttest/session (golden.h, gerado do próprio json.hpp). */
 /* build de teste (o Genshin fecha com "android"?): TRACE_CFLAGS+=-DORBITA_TEST_OS_WINDOWS */
 /* build de teste: idioma/fuso de um navegador no Brasil (o Genshin escolhe a região por eles?) */
-#ifdef ORBITA_TEST_BR
-#define XS_PLAY_LOCALE "pt-BR"
-#define XS_TZ_OFFSET 180
-#else
+/* v0.21.38: o jogo abre no idioma pedido aqui (relato 96: tudo em inglês). A beta
+ * é quase toda do Brasil: pt-BR e o fuso de Brasília (getTimezoneOffset = +180). */
+#ifdef ORBITA_TEST_EN
 #define XS_PLAY_LOCALE XS_LOCALE
 #define XS_TZ_OFFSET 120
+#else
+#define XS_PLAY_LOCALE "pt-BR"
+#define XS_TZ_OFFSET 180
 #endif
 #ifdef ORBITA_TEST_OS_WINDOWS
 #define XS_OS_NAME "windows"
@@ -276,6 +278,13 @@ static int sess_path(const xs_session_t *s, const char *suffix, char *out, size_
 }
 
 /* ------------------------------------------------------------ builders */
+
+/* v0.21.38: idioma do jogo escolhido nas Configurações (LANG.TXT); só o main grava */
+static char g_play_locale[8] = XS_PLAY_LOCALE;
+void xs_set_play_locale(const char *loc) {
+    if (loc && loc[0] && strlen(loc) < sizeof(g_play_locale)) snprintf(g_play_locale, sizeof(g_play_locale), "%s", loc);
+}
+const char *xs_play_locale(void) { return g_play_locale; }
 
 char *xs_build_play_body(const char *title_id, const char *locale) {
     /* chaves em ordem alfabética = o que o nlohmann::json do green-nx manda */
@@ -656,7 +665,7 @@ void xs_sdp_ufrag(const char *sdp, char *out, size_t cap) {
 void xs_init(xs_session_t *s, xs_creds_t *c) {
     memset(s, 0, sizeof(*s));
     s->creds = c;
-    snprintf(s->locale, sizeof(s->locale), "%s", XS_PLAY_LOCALE);
+    snprintf(s->locale, sizeof(s->locale), "%s", g_play_locale);
 }
 
 void xs_attach(xs_session_t *s, const char *path, const char *title_id) {

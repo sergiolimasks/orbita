@@ -1,6 +1,7 @@
 /*
  * orbita — o que as Configurações mostram (v0.21.33). Ver xc_cfgview.h.
  */
+#include "../ui/xc_i18n.h"   /* v0.21.38 */
 #include "xc_cfgview.h"
 #include "../video/xc_video_mode.h"
 #include "../update/xc_update.h"
@@ -10,8 +11,15 @@
 #include <string.h>
 
 const int XCS_VOLUMES[XCS_NVOL] = { 100, 150, 200, 250 };
+const char *const XCS_LANG_CODES[XCS_NLANG] = { "pt-BR", "pt-PT", "en-US", "es-MX" };
+static const char *const k_lang_txt[XCS_NLANG] = { "Português (BR)", "Português (PT)", "English", "Español" };
+int xcs_lang_index(const char *code) {
+    for (int i = 0; i < XCS_NLANG; i++)
+        if (code && !strcmp(code, XCS_LANG_CODES[i])) return i;
+    return 0;
+}
 static const char *const k_vol_txt[XCS_NVOL] = { "100%", "150%", "200%", "250%" };
-static const char *const k_sections[XCF_NSEC] = { "Conta e sobre", "Rede", "Vídeo e Som", "Controles" };
+static const char *const k_sections[XCF_NSEC] = { "Conta e sobre", "Rede", "Vídeo e Som", "Controles", "Idioma" };
 
 int xcs_vol_index(int pct) {
     for (int i = 0; i < XCS_NVOL; i++)
@@ -34,7 +42,7 @@ int xcs_vol_step(int pct, int dir) {
 const char *xcs_out_text(int mode) {
     switch (mode) {
     case XCV_HDMI_1080P: return "HDMI  ·  1080p  ·  60 Hz";
-    case XCV_YUV_720P:   return "Componente  ·  720p  ·  60 Hz";
+    case XCV_YUV_720P:   return L("Componente  ·  720p  ·  60 Hz");
     case XCV_VGA_720P:   return "VGA  ·  1280 × 720";
     default:             return "HDMI  ·  720p  ·  60 Hz";
     }
@@ -59,6 +67,9 @@ int xcs_options(const xcs_in_t *in, int sec, int *ids, unsigned *adj) {
         if (in->key_row) ids[n++] = XCS_OPT_KEY;
         ids[n++] = XCS_OPT_NOTES;
         ids[n++] = XCS_OPT_UPDATE;
+        break;
+    case XCF_SEC_LANG:   /* v0.21.38 */
+        for (int i = 0; i < XI_NLANG; i++) ids[n++] = XCS_OPT_ULANG + i;   /* app + jogos juntos */
         break;
     case XCF_SEC_NET:
         if (!in->cable && in->wifi != XCS_W_NONE) ids[n++] = XCS_OPT_WIFI;
@@ -96,21 +107,21 @@ static void ipstr(char *o, size_t n, uint32_t ip) {
 
 static int wifi_bars(int rssi) { return rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1; }
 static const char *wifi_quality(int rssi) {
-    return rssi >= -55 ? "ótimo" : rssi >= -65 ? "bom" : rssi >= -75 ? "fraco" : "muito fraco";
+    return rssi >= -55 ? L("ótimo") : rssi >= -65 ? L("bom") : rssi >= -75 ? L("fraco") : L("muito fraco");
 }
 
 /* ---------------------------------------------------------------- seções */
 
 static void sec_account(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_t *s = &o->cfg;
-    s->title = "Conta e sobre";
+    s->title = L("Conta e sobre");
     s->ninfo = 2;
-    s->info[0].label = "ID DO CONSOLE";
+    s->info[0].label = L("ID DO CONSOLE");
     s->info[0].big = in->console_short ? in->console_short : "—";
     s->info[0].small = in->console_full;
     s->info[0].big_title = 1;
     snprintf(o->b_info1, sizeof(o->b_info1), "orbita %s", in->version ? in->version : "");
-    s->info[1].label = "VERSÃO";
+    s->info[1].label = L("VERSÃO");
     s->info[1].big = o->b_info1;
     if (in->beta_build) {
         const char *ch = in->channel && in->channel[0] ? (strcmp(in->channel, "stable") ? "canal beta" : "canal estável")
@@ -123,14 +134,14 @@ static void sec_account(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_row_t *r;
     if (in->key_row) {
         r = &o->rows[(*nr)++];
-        r->label = "Chave beta";
+        r->label = L("Chave beta");
         snprintf(o->b_key, sizeof(o->b_key), "%s%s%s", in->key_masked ? in->key_masked : "—",
                  in->key_when ? "  ·  " : "", in->key_when ? in->key_when : "");
         r->value = o->b_key;
         r->flags = XUI_CR_ARROW;
     }
     r = &o->rows[(*nr)++];
-    r->label = "Novidades desta versão";
+    r->label = L("Novidades desta versão");
     r->value = in->version;
     r->flags = XUI_CR_ARROW;
     r = &o->rows[(*nr)++];
@@ -138,40 +149,54 @@ static void sec_account(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     if (in->upd_avail && in->upd_latest && in->upd_latest[0]) {
         snprintf(o->b_upd, sizeof(o->b_upd), "Atualizar para v%.24s", in->upd_latest);
         r->label = o->b_upd;
-        r->value = "nova versão disponível";
+        r->value = L("nova versão disponível");
         r->flags |= XUI_CR_WARN;
     } else {
-        r->label = "Procurar atualização";
-        r->value = in->upd_busy || in->upd_phase == XCU_CHECKING ? "procurando…"
-                 : in->upd_phase == XCU_UP_TO_DATE ? "você está na versão mais nova"
-                 : in->upd_phase == XCU_DONE ? "instalada: reinicie o Xbox"
-                 : in->upd_phase == XCU_FAILED ? "não deu pra procurar agora"
+        r->label = L("Procurar atualização");
+        r->value = in->upd_busy || in->upd_phase == XCU_CHECKING ? L("procurando…")
+                 : in->upd_phase == XCU_UP_TO_DATE ? L("você está na versão mais nova")
+                 : in->upd_phase == XCU_DONE ? L("instalada: reinicie o Xbox")
+                 : in->upd_phase == XCU_FAILED ? L("não deu pra procurar agora")
                  : NULL;
     }
-    s->note = "Para reportar um bug, envie uma foto desta tela junto.";
+    s->note = L("Para reportar um bug, envie uma foto desta tela junto.");
+}
+
+static void sec_lang(xcs_view_t *o, const xcs_in_t *in, int *nr) {   /* v0.21.38 */
+    static const char *const k_ui_txt[XI_NLANG] = { "Português", "English", "Español" };
+    xui_cfg_t *s = &o->cfg;
+    s->title = L("Idioma");
+    s->subtitle = L("Idioma do aplicativo e dos jogos");
+    for (int i = 0; i < XI_NLANG; i++) {
+        xui_cfg_row_t *r = &o->rows[(*nr)++];
+        r->label = k_ui_txt[i];
+        r->flags = XUI_CR_RADIO | (i == in->ui_lang ? XUI_CR_ON : 0);
+        if (i == in->ui_lang) r->tag = L("EM USO");
+    }
+    s->text = L("Os menus mudam na hora. O jogo abre no idioma escolhido a partir do próximo jogo aberto.");
 }
 
 static void sec_net(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_t *s = &o->cfg;
-    s->title = "Rede";
-    s->subtitle = "Como o Xbox está ligado à internet";
+    s->title = L("Rede");
+    s->subtitle = L("Como o Xbox está ligado à internet");
     char ip[24];
     if (in->cable) {
         s->card = 1;
         s->card_ok = 1;
-        s->card_title = "Cabo de rede  ·  conectado à internet";
+        s->card_title = L("Cabo de rede  ·  conectado à internet");
         ipstr(ip, sizeof(ip), in->cable_ip);
         snprintf(o->b_card_x, sizeof(o->b_card_x), "IP na rede local: %s", in->cable_ip ? ip : "—");
         s->card_text = o->b_card_x;
-        s->text = "Com o cabo ligado, o orbita usa só o cabo e o Wi-Fi fica desligado. "
-                  "Para usar o Wi-Fi, tire o cabo e reinicie o Xbox.";
+        s->text = L("Com o cabo ligado, o orbita usa só o cabo e o Wi-Fi fica desligado. "
+                  "Para usar o Wi-Fi, tire o cabo e reinicie o Xbox.");
         return;
     }
-    s->card_text2 = "Cabo de rede: não conectado";
+    s->card_text2 = L("Cabo de rede: não conectado");
     if (in->wifi == XCS_W_NONE) {
         s->card = 1;
-        s->card_title = "Sem Wi-Fi interno";
-        s->card_text = "Este Xbox não tem Wi-Fi interno (só 360 S/E). Use o cabo de rede.";
+        s->card_title = L("Sem Wi-Fi interno");
+        s->card_text = L("Este Xbox não tem Wi-Fi interno (só 360 S/E). Use o cabo de rede.");
         return;
     }
     s->card = 2;
@@ -202,39 +227,39 @@ static void sec_net(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     s->card_text = o->b_card_x;
     xui_cfg_row_t *r = &o->rows[(*nr)++];
     r->label = "Wi-Fi";
-    r->value = "procurar, conectar ou esquecer";
+    r->value = L("procurar, conectar ou esquecer");
     r->flags = XUI_CR_ARROW;
 }
 
 static void sec_av(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_t *s = &o->cfg;
-    s->title = "Vídeo e Som";
-    s->subtitle = in->audio ? "Imagem enviada à TV e volume do som" : "Imagem enviada à TV";
+    s->title = L("Vídeo e Som");
+    s->subtitle = in->audio ? L("Imagem enviada à TV e volume do som") : L("Imagem enviada à TV");
     int sel = res_selected(in), use = res_of_mode(in->mode), ok1080 = can_1080(in);
     if (!ok1080) sel = 720;
     xui_cfg_row_t *r = &o->rows[(*nr)++];
-    r->head = "VÍDEO";
+    r->head = L("VÍDEO");
     r->label = "720p";
     r->detail = "1280 × 720  ·  60 Hz";
     r->flags = XUI_CR_RADIO | (sel == 720 ? XUI_CR_ON : 0);
-    r->tag = use == 720 ? "EM USO" : sel == 720 ? "AO REINICIAR" : NULL;
+    r->tag = use == 720 ? L("EM USO") : sel == 720 ? L("AO REINICIAR") : NULL;
     r = &o->rows[(*nr)++];
     r->label = "1080p";
     r->detail = "1920 × 1080  ·  60 Hz";
     r->flags = XUI_CR_RADIO | (sel == 1080 ? XUI_CR_ON : 0) | (ok1080 ? 0 : XUI_CR_DIM);
     if (!ok1080)
-        r->value = in->av_kind != XCV_AV_HDMI ? "só no cabo HDMI" : "indisponível neste console";
+        r->value = in->av_kind != XCV_AV_HDMI ? L("só no cabo HDMI") : L("indisponível neste console");
     else
-        r->tag = use == 1080 ? "EM USO" : sel == 1080 ? "AO REINICIAR" : NULL;
+        r->tag = use == 1080 ? L("EM USO") : sel == 1080 ? L("AO REINICIAR") : NULL;
     snprintf(o->b_after, sizeof(o->b_after), "Saída atual: %s%s\n%s", xcs_out_text(in->mode),
-             sel != use ? "  ·  a troca vale ao reiniciar o Xbox" : "",
-             in->forced_720p ? "LB+RB segurados ao ligar: 720p forçado desta vez."
-             : in->av_kind == XCV_AV_HDMI ? "Se a TV ficar sem imagem, segure LB+RB ao ligar o Xbox: volta pra 720p."
+             sel != use ? L("  ·  a troca vale ao reiniciar o Xbox") : "",
+             in->forced_720p ? L("LB+RB segurados ao ligar: 720p forçado desta vez.")
+             : in->av_kind == XCV_AV_HDMI ? L("Se a TV ficar sem imagem, segure LB+RB ao ligar o Xbox: volta pra 720p.")
              : "");
     r->after = o->b_after;
     if (!in->audio) return;
     r = &o->rows[(*nr)++];
-    r->head = "SOM";
+    r->head = L("SOM");
     r->label = "Volume";
     r->flags = XUI_CR_CHOICES;
     r->choices = k_vol_txt;
@@ -244,31 +269,31 @@ static void sec_av(xcs_view_t *o, const xcs_in_t *in, int *nr) {
         snprintf(o->b_vol, sizeof(o->b_vol), "Agora: %d%%, personalizado (VOLUME.TXT)", in->volume);
         r->after = o->b_vol;
     }
-    s->text = "Se o volume estiver baixo, aumente aqui (por exemplo, fone ligado na saída de áudio e vídeo "
-              "atrás do Xbox 360 S/E). Vale na hora.";
+    s->text = L("Se o volume estiver baixo, aumente aqui (por exemplo, fone ligado na saída de áudio e vídeo "
+              "atrás do Xbox 360 S/E). Vale na hora.");
 }
 
 static void sec_pads(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_t *s = &o->cfg;
-    s->title = "Controles";
-    s->subtitle = "Zona morta dos analógicos (vale para todos os controles)";
+    s->title = L("Controles");
+    s->subtitle = L("Zona morta dos analógicos (vale para todos os controles)");
     xui_cfg_row_t *r = &o->rows[(*nr)++];
-    r->label = "Analógico esquerdo";
+    r->label = L("Analógico esquerdo");
     snprintf(o->b_lpad, sizeof(o->b_lpad), "mínimo %d%%  ·  máximo %d%%", xpc_pct(in->pad.dz[XPC_LEFT]),
              xpc_pct(in->pad.outer[XPC_LEFT]));
     r->value = o->b_lpad;
     r->flags = XUI_CR_ARROW;
     r = &o->rows[(*nr)++];
-    r->label = "Analógico direito";
+    r->label = L("Analógico direito");
     snprintf(o->b_rpad, sizeof(o->b_rpad), "mínimo %d%%  ·  máximo %d%%", xpc_pct(in->pad.dz[XPC_RIGHT]),
              xpc_pct(in->pad.outer[XPC_RIGHT]));
     r->value = o->b_rpad;
     r->flags = XUI_CR_ARROW;
     r = &o->rows[(*nr)++];
-    r->label = "Restaurar padrão";
-    r->value = xpc_is_default(&in->pad) ? "em uso" : NULL;
-    s->text = "Zona morta mínima: movimentos menores que isso são ignorados (tira o drift). "
-              "Limite máximo: daqui pra fora o jogo recebe o analógico inteiro.";
+    r->label = L("Restaurar padrão");
+    r->value = xpc_is_default(&in->pad) ? L("em uso") : NULL;
+    s->text = L("Zona morta mínima: movimentos menores que isso são ignorados (tira o drift). "
+              "Limite máximo: daqui pra fora o jogo recebe o analógico inteiro.");
 }
 
 /* ---------------------------------------------------------------- calibração */
@@ -385,18 +410,18 @@ int xcs_cal_feed(xcs_cal_t *k, uint32_t now_ms, int x, int y) {
 
 static const char *hint_for(const xcs_in_t *in, const xcf_nav_t *nav, int opt_id, const xcs_cal_t *cal) {
     (void)in;
-    if (nav->confirm) return "A:Selecionar|B:Cancelar";
-    if (nav->page == XCF_PG_NOTES) return "B:Voltar|LB/RB:Seção|Guia:Fechar";
+    if (nav->confirm) return L("A:Selecionar|B:Cancelar");
+    if (nav->page == XCF_PG_NOTES) return L("B:Voltar|LB/RB:Seção|Guia:Fechar");
     if (nav->page == XCF_PG_CALIB) {
-        if (cal && measuring(cal)) return "A:Cancelar|B:Salvar e voltar";
-        return cal && cal->focus >= 2 ? "A:Selecionar|Y:Padrão|B:Salvar e voltar" : "D-pad:Ajustar|Y:Padrão|B:Salvar e voltar";
+        if (cal && measuring(cal)) return L("A:Cancelar|B:Salvar e voltar");
+        return cal && cal->focus >= 2 ? L("A:Selecionar|Y:Padrão|B:Salvar e voltar") : L("D-pad:Ajustar|Y:Padrão|B:Salvar e voltar");
     }
     if (!nav->right) {
-        if (nav->item >= XCF_NSEC) return "A:Selecionar|LB/RB:Seção|B:Fechar";
-        return nav->nopt[nav->sec] > 0 ? "A:Selecionar|LB/RB:Seção|B:Fechar" : "LB/RB:Seção|B:Fechar";
+        if (nav->item >= XCF_NSEC) return L("A:Selecionar|LB/RB:Seção|B:Fechar");
+        return nav->nopt[nav->sec] > 0 ? L("A:Selecionar|LB/RB:Seção|B:Fechar") : L("LB/RB:Seção|B:Fechar");
     }
-    if (opt_id == XCS_OPT_VOLUME) return "Esq/Dir:Volume|B:Voltar|LB/RB:Seção|Guia:Fechar";
-    return "A:Selecionar|B:Voltar|LB/RB:Seção|Guia:Fechar";
+    if (opt_id == XCS_OPT_VOLUME) return L("Esq/Dir:Volume|B:Voltar|LB/RB:Seção|Guia:Fechar");
+    return L("A:Selecionar|B:Voltar|LB/RB:Seção|Guia:Fechar");
 }
 
 void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xcs_cal_t *cal, int scroll,
@@ -404,7 +429,7 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
     (void)now_ms;
     memset(o, 0, sizeof(*o));
     xui_cfg_t *s = &o->cfg;
-    for (int i = 0; i < XCF_NSEC; i++) s->sections[i] = k_sections[i];
+    for (int i = 0; i < XCF_NSEC; i++) s->sections[i] = L(k_sections[i]);
     s->item = nav->right || nav->page != XCF_PG_MAIN ? nav->sec : nav->item;
     s->right = nav->right || nav->page != XCF_PG_MAIN;
     s->focus = -1;
@@ -416,7 +441,7 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
     int opt_id = nav->right && nav->focus[nav->sec] < nopt ? ids[nav->focus[nav->sec]] : XCS_OPT_NONE;
     if (nav->page == XCF_PG_NOTES) {
         s->page = XUI_CFG_NOTES;
-        s->crumb = "CONTA E SOBRE / NOVIDADES";
+        s->crumb = L("CONTA E SOBRE / NOVIDADES");
         snprintf(o->b_title, sizeof(o->b_title), "Novidades da %s", in->version ? in->version : "versão");
         s->title = o->b_title;
         if (in->notes && in->notes[0]) {
@@ -429,13 +454,13 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
             s->subtitle = o->b_sub;
         }
         s->notes = in->notes;
-        s->notes_empty = "As notas desta versão não estão neste console. Elas aparecem na próxima atualização.";
+        s->notes_empty = L("As notas desta versão não estão neste console. Elas aparecem na próxima atualização.");
         s->scroll = scroll;
-        s->footer = "As notas vêm do manifesto assinado da atualização (guardadas em XC360/NOTES.TXT).";
+        s->footer = L("As notas vêm do manifesto assinado da atualização (guardadas em XC360/NOTES.TXT).");
     } else if (nav->page == XCF_PG_CALIB && cal) {
         s->page = XUI_CFG_CALIB;
-        s->crumb = "CONTROLES / CALIBRAR";
-        s->title = cal->stick == XPC_RIGHT ? "Calibrar analógico direito" : "Calibrar analógico esquerdo";
+        s->crumb = L("CONTROLES / CALIBRAR");
+        s->title = cal->stick == XPC_RIGHT ? L("Calibrar analógico direito") : L("Calibrar analógico esquerdo");
         xui_calib_t *k = &o->cal;
         k->stick = cal->stick;
         k->dz_pct = xpc_pct(cal->cfg.dz[cal->stick]);
@@ -447,8 +472,8 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
         k->pos_pct = xpc_mag_pct(cal->x, cal->y);
         k->game_pct = xpc_out_pct(cal->stick, cal->cfg.dz[cal->stick], cal->cfg.outer[cal->stick], cal->x, cal->y);
         k->focus = cal->focus;
-        k->step = cal->stick == XPC_RIGHT ? "2 de 2" : "1 de 2";
-        k->next = cal->stick == XPC_RIGHT ? "Concluir" : "Próximo: direito";
+        k->step = cal->stick == XPC_RIGHT ? L("2 de 2") : L("1 de 2");
+        k->next = cal->stick == XPC_RIGHT ? L("Concluir") : L("Próximo: direito");
         k->measuring = measuring(cal);
         if (cal->status[0]) {
             snprintf(o->b_cal_status, sizeof(o->b_cal_status), "%s", cal->status);
@@ -466,6 +491,7 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
         case XCF_SEC_ACCOUNT: sec_account(o, in, &nr); break;
         case XCF_SEC_NET: sec_net(o, in, &nr); break;
         case XCF_SEC_AV: sec_av(o, in, &nr); break;
+        case XCF_SEC_LANG: sec_lang(o, in, &nr); break;
         default: sec_pads(o, in, &nr); break;
         }
         s->nrows = nr;
@@ -478,21 +504,21 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
     if (nav->confirm) {
         xui_confirm_t *c = &o->confirm;
         if (nav->confirm == XCF_CF_PADRESET) {
-            c->title = "Restaurar o padrão?";
+            c->title = L("Restaurar o padrão?");
             xpc_cfg_t d;
             xpc_defaults(&d);
             snprintf(o->b_conf, sizeof(o->b_conf), "A zona morta e o limite máximo dos dois analógicos voltam ao "
                      "padrão (esquerdo %d%% / %d%%, direito %d%% / %d%%).", xpc_pct(d.dz[XPC_LEFT]),
                      xpc_pct(d.outer[XPC_LEFT]), xpc_pct(d.dz[XPC_RIGHT]), xpc_pct(d.outer[XPC_RIGHT]));
             c->text = o->b_conf;
-            c->yes = "Restaurar";
+            c->yes = L("Restaurar");
         } else {
             int reboot = nav->confirm == XCF_CF_REBOOT;
-            c->title = reboot ? "Reiniciar o Xbox?" : "Desligar o Xbox?";
-            c->text = "Se houver uma sessão na nuvem aberta, ela é encerrada antes (até 3 s).";
-            c->yes = reboot ? "Reiniciar" : "Desligar";
+            c->title = reboot ? L("Reiniciar o Xbox?") : L("Desligar o Xbox?");
+            c->text = L("Se houver uma sessão na nuvem aberta, ela é encerrada antes (até 3 s).");
+            c->yes = reboot ? L("Reiniciar") : L("Desligar");
         }
-        c->no = "Cancelar";
+        c->no = L("Cancelar");
         c->focus = nav->confirm_yes;
         s->confirm = c;
     }

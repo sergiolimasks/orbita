@@ -12,6 +12,7 @@
  */
 #ifndef XC_CFGVIEW_H
 #define XC_CFGVIEW_H
+#include "../ui/xc_i18n.h"   /* v0.21.38 */
 #include <stdint.h>
 
 #include "../ui/xui.h"
@@ -34,13 +35,18 @@ enum {
     XCS_OPT_VOLUME,     /* 100/150/200/250% (esquerda/direita) */
     XCS_OPT_PAD_L,      /* calibração (começa sempre pelo esquerdo) */
     XCS_OPT_PAD_R,
-    XCS_OPT_PAD_RESET
+    XCS_OPT_PAD_RESET,
+    XCS_OPT_LANG,       /* v0.21.38: idioma dos jogos: LANG + índice (lista, A escolhe) */
+    XCS_OPT_ULANG = XCS_OPT_LANG + 8   /* v0.21.38: idioma do app: ULANG + XI_* */
 };
 
 /* Wi-Fi como a seção Rede mostra */
 enum { XCS_W_NONE = 0, XCS_W_STARTING, XCS_W_FAILED, XCS_W_UP, XCS_W_CONNECTING, XCS_W_DOWN };
 
 #define XCS_NVOL 4
+#define XCS_NLANG 4
+extern const char *const XCS_LANG_CODES[XCS_NLANG];   /* pt-BR, pt-PT, en-US, es-MX */
+int xcs_lang_index(const char *code);
 extern const int XCS_VOLUMES[XCS_NVOL];   /* 100, 150, 200, 250 */
 
 typedef struct {
@@ -73,6 +79,8 @@ typedef struct {
     /* Som */
     int         audio;                      /* build com áudio */
     int         volume;                     /* % (50..400) */
+    const char *lang;                       /* v0.21.38: idioma dos jogos (código) */
+    int         ui_lang;                    /* v0.21.38: XI_* */
     /* Controles */
     xpc_cfg_t   pad;
     /* Novidades */
