@@ -229,7 +229,11 @@ int xn_init(const xn_platform_t *p, const xn_cfg_t *cfg) {
     g_xcfg.video_w = 1280;
     g_xcfg.video_h = 720;
     g_xcfg.video_fps = 30;
+#ifdef ORBITA_TEST_RES_AUTO
+    g_xcfg.resolution_alias = "Auto";   /* teste Genshin: igual ao xbox.com/play */
+#else
     g_xcfg.resolution_alias = "720";
+#endif
     g_xcfg.stun_url = NULL;                 /* host candidate only, like the PC path */
     g_xcfg.consent_interval_ms = g_cfg.consent_ms;
     g_xcfg.on_video_au = cb_au;
