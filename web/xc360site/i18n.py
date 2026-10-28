@@ -148,6 +148,10 @@ M = {
     "login.disabled_launch": ("Sua conta da beta foi desativada. Agora você vai precisar esperar o lançamento oficial para continuar jogando.",
                               "Your beta account was disabled. You will now need to wait for the official release to keep playing.",
                               "Tu cuenta de la beta fue desactivada. Ahora tendrás que esperar el lanzamiento oficial para seguir jugando."),
+    "key.show": ("Mostrar a chave", "Show the key", "Mostrar la clave"),
+    "key.show_help": ("Esta é a sua chave atual. Use sempre a mesma: gerar outra cancela esta.",
+                      "This is your current key. Always use the same one: generating another cancels this one.",
+                      "Esta es tu clave actual. Usa siempre la misma: generar otra cancela esta."),
     "key.limit_title": ("Limite de 5 chaves por dia atingido", "Daily limit of 5 keys reached", "Límite de 5 claves por día alcanzado"),
     "key.limit_text": ("Use a chave que você já tem: ela continua valendo no seu console. Se o app pede a chave toda vez que liga, "
                        "o pendrive não está gravando: coloque-o numa porta USB de trás e digite a MESMA chave. "

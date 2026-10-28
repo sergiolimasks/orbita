@@ -21,7 +21,7 @@ def disable(ids, reason):
             "UPDATE users SET active=false, disabled_reason=%s WHERE id = ANY(%s) AND role='tester' RETURNING id",
             (reason, ids)).fetchall()]
         if out:
-            c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL "
+            c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL "
                       "WHERE user_id = ANY(%s) AND revoked_at IS NULL", (out,))
             c.execute("DELETE FROM sessions WHERE user_id = ANY(%s)", (out,))
     return out

@@ -254,6 +254,7 @@ ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS kick text NOT NULL DEFAULT ''
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reddit text NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS wait text NOT NULL DEFAULT '';        -- '' | waiting | released | expired
 ALTER TABLE users ADD COLUMN IF NOT EXISTS released_at timestamptz;
+ALTER TABLE beta_keys ADD COLUMN IF NOT EXISTS key_enc text;   -- v0.21.38: o dono vê a chave atual de novo
 CREATE TABLE IF NOT EXISTS console_info (
     console    text PRIMARY KEY,
     board      text NOT NULL DEFAULT '',

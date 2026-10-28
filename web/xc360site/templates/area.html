@@ -77,7 +77,16 @@
             <button type="button" class="btn primary" data-copy="#betakey" data-done="{{ _('common.copied') }}">{{ icon('copy', 16) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
         {% elif key %}
           <div class="betakey-box"><code class="betakey masked" aria-label="{{ _('area.key_active', h=key.key_hint, d=key.created_at|dt) }}">•••••-•••{{ key.key_hint }}</code></div>
+          {% if key_plain %}
+          <details class="key-reveal"><summary class="btn secondary sm">{{ icon('eye', 14) }}{{ _('key.show') }}</summary>
+            <div class="betakey-box mt-2"><code class="betakey" id="betakey-cur">{{ key_plain }}</code>
+              <button type="button" class="btn primary sm" data-copy="#betakey-cur" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
+            <p class="help">{{ _('key.show_help') }}</p>
+          </details>
+          <p class="help">{{ _('ui.key_created', d=key.created_at|dt) }}</p>
+          {% else %}
           <p class="help">{{ _('ui.key_created', d=key.created_at|dt) }} · {{ _('ui.key_hidden') }}</p>
+          {% endif %}
           {% if key.console_id and not key_blocked %}<p class="help">{{ icon('monitor', 12) }} {{ _('key.bound_to', c=key.console_id[:8] ~ '…', d=key.bound_at|dt) }}</p>{% endif %}
         {% else %}
           <p class="muted">{{ _('area.key_none') }}</p>

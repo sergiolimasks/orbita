@@ -207,7 +207,7 @@ def test_invite_signup_flow(app, client):
     assert key not in json.dumps([dict(r) for r in db.rows("SELECT * FROM beta_keys")], default=str)
     assert bcheck(anon, key) == "ok"
     # depois, na área, só aparece o final
-    assert key not in anon.get("/area").get_data(as_text=True)
+    assert 'id="betakey">%s<' % key not in anon.get("/area").get_data(as_text=True)   # v0.21.38: só no Mostrar
     # uso único
     anon2 = app.test_client()
     assert anon2.get(link.replace("https://x360.test", "")).status_code == 410
@@ -365,7 +365,7 @@ def test_admin_new_key_after_duplicate_tester_sees_once(app, client):
     assert k2 not in json.dumps([dict(x) for x in db.rows("SELECT * FROM beta_keys")], default=str)   # só cifrada
     html = tc.get("/area?lang=pt-BR").get_data(as_text=True)
     assert 'id="betakey">%s<' % k2 in html and 'id="key-blocked"' not in html
-    assert k2 not in tc.get("/area").get_data(as_text=True)            # só uma vez
+    assert 'id="betakey">%s<' % k2 not in tc.get("/area").get_data(as_text=True)   # destaque só uma vez (v0.21.38: depois, no Mostrar)
     assert bcheck(client, k2, CON_B) == "ok"
     assert 'id="blocked-keys"' not in client.get("/admin/").get_data(as_text=True)
 

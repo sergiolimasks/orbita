@@ -43,10 +43,11 @@ def new_key(user, conn=None, by_admin=None):
     k = _gen()
 
     def work(c):
-        old = c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
+        old = c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
                         "RETURNING id, dup_at", (user["id"],)).fetchall()
-        new = c.execute("INSERT INTO beta_keys(user_id, key_sha256, key_hint, pending_enc) VALUES (%s,%s,%s,%s) RETURNING id",
-                        (user["id"], key_hash(k), k[-2:], enc(k) if by_admin else None)).fetchone()
+        new = c.execute("INSERT INTO beta_keys(user_id, key_sha256, key_hint, pending_enc, key_enc) "
+                        "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                        (user["id"], key_hash(k), k[-2:], enc(k) if by_admin else None, enc(k))).fetchone()
         if by_admin:
             c.execute("INSERT INTO key_events(key_id, user_id, kind, by_user, note) VALUES (%s,%s,'new_by_admin',%s,%s)",
                       (new["id"], user["id"], by_admin["id"],
@@ -61,7 +62,7 @@ def new_key(user, conn=None, by_admin=None):
 
 
 def revoke_user_keys(user_id):
-    return len(db.rows("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
+    return len(db.rows("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
                        "RETURNING id", user_id))
 
 
@@ -70,6 +71,18 @@ def current(user_id):
     return db.row("SELECT id, key_hint, created_at, console_id, bound_at, last_used_at, dup_at, dup_console, dup_ip_h, "
                   "pending_enc IS NOT NULL AS pending FROM beta_keys WHERE user_id=%s AND revoked_at IS NULL "
                   "ORDER BY id DESC LIMIT 1", user_id)
+
+
+def reveal(user_id):
+    """v0.21.38: a chave vigente em claro (só pro dono, na área dele). None = chave antiga, sem cópia."""
+    r = db.row("SELECT key_enc FROM beta_keys WHERE user_id=%s AND revoked_at IS NULL AND key_enc IS NOT NULL "
+               "ORDER BY id DESC LIMIT 1", user_id)
+    if not r:
+        return None
+    try:
+        return dec(r["key_enc"])
+    except Exception:
+        return None
 
 
 def take_pending(user_id):

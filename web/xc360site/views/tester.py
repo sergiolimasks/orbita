@@ -66,6 +66,7 @@ def _area_ctx():
     wl_deadline = (u["released_at"] + timedelta(hours=waitlist.DEADLINE_H)
                    if u.get("wait") == "released" and u.get("released_at") else None)
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
+                key_plain=bridgekeys.reveal(u["id"]) if key and not key["dup_at"] else None,
                 reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline,
                 key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY)
 

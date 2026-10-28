@@ -65,7 +65,7 @@ def expire():
             "UPDATE users SET wait='expired', active=false WHERE wait='released' "
             "AND released_at < now() - make_interval(hours => %s) RETURNING id", (DEADLINE_H,)).fetchall()]
         if ids:
-            c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL "
+            c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL "
                       "WHERE user_id = ANY(%s) AND revoked_at IS NULL", (ids,))
             c.execute("DELETE FROM sessions WHERE user_id = ANY(%s)", (ids,))
     return ids
