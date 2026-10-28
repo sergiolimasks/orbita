@@ -724,17 +724,24 @@ def test_admin_logs_dev_key_belongs_to_admin(app, client):
 
 
 def test_home_video_file(app, client, monkeypatch):
-    app.config["VIDEO_FILE"] = "/media/orbita-beta.mp4"
-    app.config["VIDEO_POSTER"] = "/media/orbita-beta-capa.jpg"
+    app.config["VIDEO_FILE"] = "/v/orbita-beta.mp4"
+    app.config["VIDEO_POSTER"] = "/v/orbita-beta-capa.jpg"
     html = client.get("/").get_data(as_text=True)
-    assert 'preload="none"' in html and 'src="/media/orbita-beta.mp4"' in html and 'poster="/media/orbita-beta-capa.jpg"' in html
+    assert 'preload="none"' in html and 'src="/v/orbita-beta.mp4"' in html and 'poster="/v/orbita-beta-capa.jpg"' in html
 
 
 def test_media_env_only_media_paths(monkeypatch):
     from xc360site import config
     monkeypatch.setenv("VIDEO_FILE", "https://evil.example/x.mp4")
     assert config._media("VIDEO_FILE") == ""
-    monkeypatch.setenv("VIDEO_FILE", "/media/../x")
+    monkeypatch.setenv("VIDEO_FILE", "/v/../x")
     assert config._media("VIDEO_FILE") == ""
+    monkeypatch.setenv("VIDEO_FILE", "/v/orbita-beta.mp4")
+    assert config._media("VIDEO_FILE") == "/v/orbita-beta.mp4"
+
+
+def test_media_env_rejects_site_media_prefix(monkeypatch):
+    # /media/ é do site (fotos dos relatos); o vídeo fica em /v/
+    from xc360site import config
     monkeypatch.setenv("VIDEO_FILE", "/media/orbita-beta.mp4")
-    assert config._media("VIDEO_FILE") == "/media/orbita-beta.mp4"
+    assert config._media("VIDEO_FILE") == ""

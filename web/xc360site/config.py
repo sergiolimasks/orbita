@@ -19,9 +19,9 @@ VIDEO_PREFIXES = ("https://www.youtube-nocookie.com/embed/", "https://www.youtub
 
 
 def _media(name):
-    """Arquivo do serviço media da stack (nginx em /media/, ver deploy/stack.yml); fora disso, vazio."""
+    """Arquivo do serviço media da stack (nginx em /v/, ver deploy/stack.yml; /media/ é do site); fora disso, vazio."""
     v = os.environ.get(name, "").strip()
-    return v if v.startswith("/media/") and ".." not in v else ""
+    return v if v.startswith("/v/") and ".." not in v else ""
 
 
 def load():
