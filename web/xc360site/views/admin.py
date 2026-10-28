@@ -205,7 +205,7 @@ def tester_active(uid):
     if u["id"] == g.user["id"]:
         abort(400)
     on = request.form.get("on") == "1"
-    db.run("UPDATE users SET active=%s WHERE id=%s", on, uid)
+    db.run("UPDATE users SET active=%s, disabled_reason='' WHERE id=%s", on, uid)
     if not on:
         sec.kill_sessions(uid)
         bridgekeys.revoke_user_keys(uid)   # reativar exige gerar chave nova

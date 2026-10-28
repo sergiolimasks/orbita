@@ -173,7 +173,7 @@
 .help-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
 .help-card{display:flex;flex-direction:column;gap:8px;margin:0;color:inherit}
 .help-card:hover{text-decoration:none;outline:1px solid var(--primary)}
-.help-card h2{font-size:1.15rem;margin:0}
+.help-card h2,.help-card h3{font-size:1.15rem;margin:0}
 .help-card p{margin:0;color:var(--muted)}
 .help-ico{color:var(--primary)}
 .help-more{margin-top:auto;color:var(--primary);font-weight:600}

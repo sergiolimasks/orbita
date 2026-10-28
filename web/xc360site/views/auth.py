@@ -4,7 +4,7 @@ import psycopg
 import segno
 from flask import Blueprint, abort, current_app, g, redirect, render_template, request, session, url_for
 
-from .. import bridgekeys, countries, db, security as sec, waitlist
+from .. import beta_prune, bridgekeys, countries, db, security as sec, waitlist
 from ..i18n import gettext as _
 
 bp = Blueprint("auth", __name__)
@@ -41,6 +41,9 @@ def login():
         sec.check_pw(None, pw)
         sec.record_attempt("login", False)
         return render_template("login.html", next=nxt, error=_("login.locked"), email=email), 429
+    if u and not u["active"] and u.get("disabled_reason") in beta_prune.REASONS and sec.check_pw(u["pw_hash"], pw):
+        sec.record_attempt("login", False)
+        return render_template("login.html", next=nxt, error=_("login.disabled_" + u["disabled_reason"]), email=email), 403
     if not u or not u["active"] or not sec.check_pw(u["pw_hash"], pw):
         if u:
             sec.register_fail(u)

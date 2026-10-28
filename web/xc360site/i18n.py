@@ -133,6 +133,21 @@ M = {
     "login.password": ("Senha", "Password", "Contraseña"),
     "login.submit": ("Entrar", "Log in", "Entrar"),
     "login.invite_only": ("O acesso é só por convite.", "Access is invite-only.", "El acceso es solo por invitación."),
+    "login.disabled_noreport": ("Sua conta da beta foi desativada: você estava jogando sem enviar relatos dos problemas que apareceram. "
+                                "A beta é para quem testa e avisa. Agora você vai precisar esperar o lançamento oficial para continuar jogando.",
+                                "Your beta account was disabled: you were playing without reporting the problems that came up. "
+                                "The beta is for people who test and report. You will now need to wait for the official release to keep playing.",
+                                "Tu cuenta de la beta fue desactivada: estabas jugando sin reportar los problemas que aparecieron. "
+                                "La beta es para quien prueba y avisa. Ahora tendrás que esperar el lanzamiento oficial para seguir jugando."),
+    "login.disabled_inactive": ("Sua conta da beta foi desativada porque o app não foi usado nos primeiros 7 dias. "
+                                "Agora você vai precisar esperar o lançamento oficial.",
+                                "Your beta account was disabled because the app was not used in the first 7 days. "
+                                "You will now need to wait for the official release.",
+                                "Tu cuenta de la beta fue desactivada porque la app no se usó en los primeros 7 días. "
+                                "Ahora tendrás que esperar el lanzamiento oficial."),
+    "login.disabled_launch": ("Sua conta da beta foi desativada. Agora você vai precisar esperar o lançamento oficial para continuar jogando.",
+                              "Your beta account was disabled. You will now need to wait for the official release to keep playing.",
+                              "Tu cuenta de la beta fue desactivada. Ahora tendrás que esperar el lanzamiento oficial para seguir jugando."),
     "login.error": ("E-mail ou senha inválidos.", "Invalid email or password.", "Correo o contraseña no válidos."),
     "login.locked": ("Muitas tentativas. Tente de novo em alguns minutos.", "Too many attempts. Try again in a few minutes.",
                      "Demasiados intentos. Inténtalo de nuevo en unos minutos."),

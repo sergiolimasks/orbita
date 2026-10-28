@@ -166,5 +166,10 @@ def start_thread(app):
                     waitlist.expire()
                 except Exception as e:
                     app.logger.warning("expiração da lista de espera falhou: %s", e)
+                try:
+                    from . import beta_prune
+                    beta_prune.prune_inactive()
+                except Exception as e:
+                    app.logger.warning("limpeza dos inativos da beta falhou: %s", e)
             time.sleep(interval)
     threading.Thread(target=loop, name="logsync", daemon=True).start()

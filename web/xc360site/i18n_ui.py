@@ -467,6 +467,7 @@ M = {
     "hp.title": ("Ajuda", "Help", "Ayuda"),
     "hp.lead": ("Guias rápidos para as dúvidas que mais aparecem.", "Quick guides for the most common questions.",
                 "Guías rápidas para las dudas más comunes."),
+    "hp.home_title": ("Dúvidas mais comuns", "Most common questions", "Dudas más comunes"),
     "hp.read": ("Ler", "Read", "Leer"),
     "hp.back": ("Ajuda", "Help", "Ayuda"),
     "hp.others": ("Outras matérias", "Other articles", "Otros artículos"),

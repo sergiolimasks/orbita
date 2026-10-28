@@ -16,7 +16,7 @@ def home():
     return render_template("home.html", stable=releases.manifest("stable"),
                            video=current_app.config["VIDEO_EMBED_URL"],
                            video_file=current_app.config["VIDEO_FILE"], video_poster=current_app.config["VIDEO_POSTER"],
-                           soon_groups=[x for x in groups if x[1]])
+                           soon_groups=[x for x in groups if x[1]], help_articles=_help_list())
 
 
 # ------------------------------------------------------------------ status público + notas de versão
