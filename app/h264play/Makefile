@@ -22,7 +22,7 @@ SOURCES  := source
 DATA     := data
 INCLUDES :=
 
-VERSION := 0.21.35
+VERSION := 0.21.36
 APP_VERSION := $(VERSION)
 # v0.15: nome da variante no VERSION (ex.: make VARIANT=full -> 0.15.0-full).
 # Vazio = sufixos automaticos pelos knobs (-gpu/-cpu, -altivec/-c, -st, -trace).
@@ -150,7 +150,7 @@ GPU ?= 1
 VSYNC ?= 0
 ifeq ($(GPU),1)
 GPU_CFLAGS  := -DXCLOUD360_GPU=1 -DXCLOUD360_VSYNC=$(VSYNC)
-GPU_LDFLAGS := -Wl,--wrap=Xe_Fatal
+GPU_LDFLAGS := -Wl,--wrap=Xe_Fatal -Wl,--wrap=crashdump
 VSUFFIX     := -gpu
 else
 VSUFFIX     := -cpu

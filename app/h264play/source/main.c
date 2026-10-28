@@ -575,6 +575,52 @@ static void xpt_waits_text(char *o, size_t n) {
     }
     if (!o[0]) snprintf(o, n, " nenhuma");
 }
+/* v0.21.36: exceção numa hw thread. O libxenon chama crashdump(): redesenha
+ * o console e fica lendo a serial pra sempre (a thread some sem rastro e, se
+ * for do decoder, o main espera o quadro dela pra sempre). Aqui guarda vetor,
+ * pc, lr, dar e a pilha pro HANG.TXT (o próximo relatório do vigia grava).
+ * hw 2-5 (decoder/vigia) ficam paradas aqui sem tomar a tela; hw 0/1 seguem
+ * pro crashdump do libxenon. */
+static struct {
+    volatile int set, logged;
+    unsigned pir, vec;
+    uint32_t pc, lr, dar, chain[6];
+} g_crash;
+extern void __real_crashdump(uint32_t exception, uint64_t *context);
+void __wrap_crashdump(uint32_t exception, uint64_t *context) {
+    unsigned me;
+    __asm__ __volatile__("mfspr %0,1023" : "=r"(me));   /* o context[39] do libxenon vem 0 */
+    if (!__sync_lock_test_and_set(&g_crash.set, 1)) {
+        g_crash.pir = me;
+        g_crash.vec = exception;
+        g_crash.pc = (uint32_t)context[36];
+        g_crash.lr = (uint32_t)context[32];
+        g_crash.dar = (uint32_t)context[38];
+        uint32_t sp = (uint32_t)context[1];
+        for (int i = 0; i < 6; i++) {
+            if ((sp & 7) || sp < 0x80000000u || sp >= 0xA0000000u) break;
+            uint32_t nx = *(volatile uint32_t *)sp;
+            if (nx <= sp || nx - sp > 0x100000u || nx >= 0xA0000000u) break;
+            g_crash.chain[i] = *(volatile uint32_t *)(nx + 4);
+            sp = nx;
+        }
+        __asm__ __volatile__("sync" ::: "memory");
+    }
+    if (me >= 2 && me <= 5)
+        for (;;) __asm__ __volatile__("or 1,1,1; or 2,2,2" ::: "memory");
+    __real_crashdump(exception, context);
+}
+static void crash_report(int raw_ok) {
+    if (!g_crash.set || g_crash.logged) return;
+    char l6[200];
+    snprintf(l6, sizeof(l6), "[wdog] exceção na hw%u: vetor %x pc %08x lr %08x dar %08x pilha %08x %08x %08x %08x %08x %08x",
+             g_crash.pir, g_crash.vec, (unsigned)g_crash.pc, (unsigned)g_crash.lr, (unsigned)g_crash.dar,
+             (unsigned)g_crash.chain[0], (unsigned)g_crash.chain[1], (unsigned)g_crash.chain[2],
+             (unsigned)g_crash.chain[3], (unsigned)g_crash.chain[4], (unsigned)g_crash.chain[5]);
+    if (raw_ok && !xc_hang_busy() && xc_hang_write(l6) == 0) g_crash.logged = 1;
+    for (const char *p = l6; *p; p++) putch((unsigned char)*p);
+    putch('\n');
+}
 static volatile int g_trip_screen = 0;
 void xwd_trip_report(const char *line, int slot) {
     const char *lb = xwd_label(XWD_NET), *cr = xwd_crumb_of(XWD_NET);
@@ -614,6 +660,7 @@ void xwd_trip_report(const char *line, int slot) {
         for (const char *p = l2; *p; p++) putch((unsigned char)*p);
         putch('\n');
     }
+    crash_report(raw_ok);   /* v0.21.36 */
     /* v0.21.35: main parada: em que espera do decoder cada hw thread está */
     if (slot == XWD_MAIN) {
         char l5[300], w[220];
@@ -694,6 +741,18 @@ static void dec_stall_check(void) {
 }
 static void idle_hook(void) {
     xwd_tripwire();
+#ifdef ORBITA_TEST_CRASH
+    {
+        static uint64_t t_c = 0;
+        if (g_dec_in_ms) {
+            uint64_t now = xwd_now_ms();
+            if (!t_c) t_c = now;
+            unsigned me;
+            __asm__ __volatile__("mfspr %0,1023" : "=r"(me));
+            if (now - t_c > 40000 && me == 4) __asm__ __volatile__(".long 0");
+        }
+    }
+#endif
     dec_stall_check();
 }
 
