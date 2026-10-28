@@ -1563,6 +1563,15 @@ static xpc_cfg_t  g_pad, g_pad_saved;
 /* notas desta versão (NOTES.TXT lido no boot, se for desta versão) */
 static xcn_notes_t g_notes;
 static int        g_notes_ok = 0;
+/* v0.21.34: novidades desta build, pra quando não há NOTES.TXT nem manifesto da mesma versão */
+#define BUILTIN_NOTES \
+    "Novo menu de Configurações (botão Guide ou item no menu): Conta e sobre, Rede, " \
+    "Vídeo e Som (1080p e volume 100 a 250%) e Controles (calibração dos analógicos).\n" \
+    "A confirma, B volta.\n" \
+    "Fila do xCloud: mostra há quanto tempo você está esperando (e a posição, se o xCloud mandar). " \
+    "O jogo abre sozinho quando chegar a vez.\n" \
+    "Quando o xCloud encerra a sessão, o app volta ao menu e explica o motivo."
+
 /* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
 static char *volatile g_padsave = NULL;
@@ -2336,6 +2345,9 @@ static void cfg_fill_in(int pend_upd) {
         }
     } else if (g_us.latest[0] && !strcmp(g_us.latest, g_us.current) && g_us.notes[0]) {
         in->notes = g_us.notes;
+    } else {
+        /* v0.21.34: build de teste (FTP) ou sem manifesto: as notas vão no binário */
+        in->notes = BUILTIN_NOTES;
     }
     in->notice = g_cfg_notice[0] ? g_cfg_notice : NULL;
     for (int sec = 0; sec < XCF_NSEC; sec++) {

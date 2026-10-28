@@ -692,6 +692,16 @@ int xs_get_state(xs_session_t *s, xs_status_t *st, xc_err_t *e) {
     if (r.status == 404) { http_fail(e, "state", &r); https_free(&r); return XS_ENOTFOUND; }
     if (!is_2xx(r.status)) { http_fail(e, "state", &r); https_free(&r); return XS_ERR; }
     rc = xs_parse_state(r.body, st);
+    if (rc == 0 && st->st == XS_SS_WAITING) {
+        /* v0.21.34: o "<1 min" da fila estava errado; registra o que o xCloud
+         * manda de verdade (1x a cada 60 s; sem tokens nesse JSON) */
+        static uint64_t t_last = 0;
+        uint64_t now = xcn_now_ms();
+        if (!t_last || now - t_last >= 60000) {
+            t_last = now;
+            xc_log("[sess] fila (state): %.300s", r.body ? r.body : "");
+        }
+    }
     https_free(&r);
     if (rc != 0) { set_err(e, HTTPS_EPROTO, "JSON invalido em state"); return XS_ERR; }
     return XS_OK;
@@ -706,6 +716,7 @@ int xs_wait_time(xs_session_t *s, int *sec, xc_err_t *e) {
     if (rc != XS_OK) return rc;
     if (!is_2xx(r.status)) { http_fail(e, "waittime", &r); https_free(&r); return XS_ERR; }
     *sec = xs_parse_wait_time(r.body);
+    xc_log("[sess] fila (waittime): %.300s", r.body ? r.body : "");   /* v0.21.34 */
     https_free(&r);
     return *sec >= 0 ? XS_OK : XS_ERR;
 }

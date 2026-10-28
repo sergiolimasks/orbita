@@ -139,17 +139,18 @@ static void login_fail(xsm_t *m, int r, const xc_err_t *e) {
     fail(m, msg);
 }
 
-static void queue_text(char *out, size_t cap, int pos, int eta) {
-    char parts[64] = "";
+/* v0.21.34: o "<1 min" que aparecia sempre estava errado (o xCloud manda 0
+ * ou um número curto enquanto a fila anda) e o pessoal cancelava achando que
+ * tinha travado. Agora: há quanto tempo está na fila (sempre verdade),
+ * posição se vier, e estimativa só quando o servidor der >= 1 min. */
+static void queue_text(char *out, size_t cap, int pos, int eta, int waited_s) {
+    char parts[96] = "";
     int n = 0;
-    if (pos >= 0) n += snprintf(parts + n, sizeof(parts) - (size_t)n, "posicao %d", pos);
-    if (eta >= 0) {
-        if (n) n += snprintf(parts + n, sizeof(parts) - (size_t)n, ", ");
-        if (eta < 60) snprintf(parts + n, sizeof(parts) - (size_t)n, "<1 min");
-        else snprintf(parts + n, sizeof(parts) - (size_t)n, "~%d min", (eta + 59) / 60);
-    }
-    if (parts[0]) snprintf(out, cap, "Na fila: %s", parts);
-    else snprintf(out, cap, "Na fila do xCloud...");
+    if (waited_s >= 60) n += snprintf(parts + n, sizeof(parts) - (size_t)n, "há %d min", waited_s / 60);
+    else n += snprintf(parts + n, sizeof(parts) - (size_t)n, "há %d s", waited_s < 0 ? 0 : waited_s);
+    if (pos > 0) n += snprintf(parts + n, sizeof(parts) - (size_t)n, " · posição %d", pos);
+    if (eta >= 60) snprintf(parts + n, sizeof(parts) - (size_t)n, " · estimativa ~%d min", (eta + 59) / 60);
+    snprintf(out, cap, "Na fila do xCloud %s. Aguarde, o jogo abre sozinho.", parts);
 }
 
 /* ------------------------------------------------------------------ init */
@@ -450,15 +451,17 @@ static int st_poll(xsm_t *m) {
     }
     switch (st.st) {
     case XS_SS_WAITING: {
-        if (m->cfg.waittime && st.wait_s < 0 && now >= m->t_next_wt) {
+        if (m->cfg.waittime && now >= m->t_next_wt) {   /* v0.21.34: sempre (o do state vinha 0) */
             int sec = -1;
             xc_err_t e2;
             memset(&e2, 0, sizeof(e2));
             if (xs_wait_time(&m->s, &sec, &e2) == XS_OK) m->eta_s = sec;
             m->t_next_wt = xcn_now_ms() + 30000;
         }
-        char q[96];
-        queue_text(q, sizeof(q), st.queue_pos, st.wait_s >= 0 ? st.wait_s : m->eta_s);
+        char q[160];
+        int waited = (int)((now - m->t_state) / 1000);
+        int eta = m->eta_s >= 60 ? m->eta_s : st.wait_s;   /* o /v1/waittime primeiro */
+        queue_text(q, sizeof(q), st.queue_pos, eta, waited);
         ui(m, "QUEUE", "%s", q);
         break;
     }
