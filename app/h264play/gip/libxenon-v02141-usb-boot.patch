@@ -1,0 +1,138 @@
+--- a/drivers/usb/tinyehci/usbstorage.c
++++ b/drivers/usb/tinyehci/usbstorage.c
+@@ -532,7 +532,20 @@
+ 	return retval;
+ }
+ 
++/* orbita v0.21.41: o reset chamava o MountLUN, que no erro chamava o reset de
++ * novo (até 5 hard resets por nível): com um dispositivo que não responde o
++ * boot levava minutos a horas (testadores: "resetting (#1)" e nada mais).
++ * Agora: 1 hard reset e nunca reentrante. */
++static int usbstorage_reset_depth = 0;
++static s32 __usbstorage_reset_body(struct ehci_hcd * ehci, usbstorage_handle *dev, int hard_reset);
+ static s32 __usbstorage_reset(struct ehci_hcd * ehci, usbstorage_handle *dev, int hard_reset) {
++	if (usbstorage_reset_depth) return -ETIMEDOUT;
++	usbstorage_reset_depth++;
++	s32 r = __usbstorage_reset_body(ehci, dev, hard_reset);
++	usbstorage_reset_depth--;
++	return r;
++}
++static s32 __usbstorage_reset_body(struct ehci_hcd * ehci, usbstorage_handle *dev, int hard_reset) {
+ 	s32 retval;
+ 	u32 old_usb_timeout = usb_timeout;
+ 	usb_timeout = 1000 * 1000;
+@@ -616,7 +629,7 @@
+ 		goto retry;
+ 	}
+ #else
+-	if (retry < 5) {
++	if (retry < 1) {   /* orbita v0.21.41: era 5 (e cada um remontava o LUN) */
+ 		ehci_msleep(100);
+ 		debug_printf("retry with hard reset..\n");
+ 
+@@ -1212,6 +1225,11 @@
+ };
+  */
+ 
++/* orbita v0.21.41: falhas seguidas por porta; >= USB_PORT_GIVEUP = não mexe mais
++ * nela até o dispositivo sair (CONNECT cai) */
++#define USB_PORT_GIVEUP 3
++static unsigned char usb_port_fail[EHCI_HCD_COUNT][16];
++
+ s32 USBStorage_Init(void) {
+ 	int i, j, retries = 1;
+ 	//	debug_printf("usbstorage init %d\n", ums_init_done);
+@@ -1229,6 +1247,11 @@
+ 		for (i = 0; i < ehci->num_port; i++) {
+ 			struct ehci_device *dev = &ehci->devices[i];
+ 
++			if (i < 16) {   /* orbita v0.21.41 */
++				u32 st = ehci_readl(&ehci->regs->port_status[i]);
++				if (!(st & 1)) usb_port_fail[j][i] = 0;   /* saiu: tenta de novo quando voltar */
++				else if (usb_port_fail[j][i] >= USB_PORT_GIVEUP && dev->busy == 0) continue;
++			}
+ retry:
+ 			dev->port = i;
+ 			if (dev->id != 0 && dev->busy == 0) {
+@@ -1243,6 +1266,7 @@
+ 					device_data->__dev = dev;					
+ 
+ 					if (USBStorage_Try_Device(device_data) == 0) {
++						if (i < 16) usb_port_fail[j][i] = 0;   /* orbita v0.21.41 */
+ 						printf("EHCI bus %d device %d: vendor %04X product %04X : Mass-Storage Device\n", j, dev->id, device_data->__vid, device_data->__pid);
+ 						usblog("ehci bus %d device %d: %04x:%04x mass storage", j, dev->id, device_data->__vid, device_data->__pid);
+ 
+@@ -1262,7 +1286,11 @@
+ #endif
+ 
+ 						//return 0;
++					} else if (i < 16 && ++usb_port_fail[j][i] == USB_PORT_GIVEUP) {   /* orbita v0.21.41 */
++						usblog("ehci bus %d port %d: no mass storage after %d tries, leaving it alone until unplugged", j, i, USB_PORT_GIVEUP);
+ 					}
++				} else if (i < 16 && ++usb_port_fail[j][i] == USB_PORT_GIVEUP) {   /* orbita v0.21.41 */
++					usblog("ehci bus %d port %d: reset failed %d times, leaving it alone until unplugged", j, i, USB_PORT_GIVEUP);
+ 				}
+ 			} else if (dev->busy == 0) {
+ 				u32 status;
+@@ -1275,6 +1303,7 @@
+ #endif
+ 
+ 				if (status & 1) {
++					if (i < 16 && ++usb_port_fail[j][i] > USB_PORT_GIVEUP) continue;   /* orbita v0.21.41 */
+ 					static unsigned n_ehci_reset_log;
+ 					if (n_ehci_reset_log++ < 16)
+ 						usblog("ehci bus %d port %d: connect status %08x, resetting (#%u)", j, i,
+--- a/drivers/usb/usbhub.c
++++ b/drivers/usb/usbhub.c
+@@ -799,18 +799,38 @@
+ 		 * associated interface and endpoint descriptors.
+ 		 */
+ 
++		int cfg_bad = 0;   /* orbita v0.21.41 */
+ 		res = usb_get_config_descriptor(newdev,&cfgdescr,0,
+ 						sizeof(usb_config_descr_t));
+ 		if (res != sizeof(usb_config_descr_t)) {
+ 		    printf("[a] usb_get_config_descriptor returns %d\n",res);
++		    cfg_bad = 1;
+ 		    }
+ 
+-		len = GETUSBFIELD(&cfgdescr,wTotalLength);
++		/* orbita v0.21.41: sem o descritor (acessório que não responde, VID 0000)
++		 * o wTotalLength era lixo da pilha e a varredura dos descritores rodava
++		 * sem fim no boot. Agora o dispositivo fica sem driver (config vazia). */
++		len = cfg_bad ? 0 : GETUSBFIELD(&cfgdescr,wTotalLength);
++		if (len < (int) sizeof(usb_config_descr_t) || len > 4096) {
++		    if (!cfg_bad) printf("[a] wTotalLength %d invalid\n", len);
++		    cfg_bad = 1;
++		    len = sizeof(usb_config_descr_t);
++		    }
+ 		buf = usb_dma_alloc(len);
+ 
+-		res = usb_get_config_descriptor(newdev,(usb_config_descr_t *)buf,0,len);
+-		if (res != len) {
+-		    printf("[b] usb_get_config_descriptor returns %d\n",res);
++		if (!cfg_bad) {
++		    res = usb_get_config_descriptor(newdev,(usb_config_descr_t *)buf,0,len);
++		    if (res != len) {
++			printf("[b] usb_get_config_descriptor returns %d\n",res);
++			cfg_bad = 1;
++			}
++		    }
++		if (cfg_bad) {
++		    memset(buf, 0, len);
++		    ((usb_config_descr_t *)buf)->bLength = sizeof(usb_config_descr_t);
++		    ((usb_config_descr_t *)buf)->bDescriptorType = USB_CONFIGURATION_DESCRIPTOR_TYPE;
++		    PUTUSBFIELD((usb_config_descr_t *)buf, wTotalLength, sizeof(usb_config_descr_t));
++		    usblog("hub bus %d port %d: no config descriptor, device ignored", dev->ud_bus->ub_num, idx+1);
+ 		    }
+ 
+ 		newdev->ud_cfgdescr = (usb_config_descr_t *) buf;
+@@ -828,7 +848,7 @@
+ 		 * driver.
+ 		 */
+ 
+-		newdrv = usb_find_driver(newdev);
++		newdrv = cfg_bad ? NULL : usb_find_driver(newdev);   /* orbita v0.21.41 */
+ 
+ 		/*
+ 		 * Call the attach method.
