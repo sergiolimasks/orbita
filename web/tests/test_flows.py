@@ -828,3 +828,21 @@ def test_reports_gate(app, client):
     assert report(client, [(_png(), "t.png")]).status_code == 302
     assert report(client, [(_png(), "t.png")]).status_code == 403   # só um
     assert db.row("SELECT count(*) AS n FROM reports")["n"] == 1
+
+
+def test_bridge_bind_ip_xex(app, client):
+    """2026-10-29: XEX = chave presa ao IP público, à parte do console do ELF."""
+    from conftest import bcheck, CON_A, CON_B
+    from xc360site import bridgekeys
+    with app.app_context():
+        u = make_user(app)
+        k = bridgekeys.new_key(u)
+    assert bcheck(client, k, CON_A) == "ok"                                   # ELF prende no console A
+    assert bcheck(client, k, CON_B, ip_h="aaaa1111", bind="ip") == "ok"      # XEX: outro console, IP 1
+    assert bcheck(client, k, CON_B, ip_h="aaaa1111", bind="ip") == "ok"
+    assert bcheck(client, k, CON_A) == "ok"                                   # o ELF segue valendo
+    assert bcheck(client, k, CON_B, ip_h="bbbb2222", bind="ip") == "duplicate"   # 2 IPs ao mesmo tempo
+    with app.app_context():
+        db.run("UPDATE beta_keys SET dup_at=NULL, xex_last_at=now() - interval '2 hours'")
+    assert bcheck(client, k, CON_B, ip_h="bbbb2222", bind="ip") == "ok"      # IP mudou depois de 1 h parado
+    assert bcheck(client, k, CON_B, ip_h="aaaa1111", bind="ip") == "duplicate"

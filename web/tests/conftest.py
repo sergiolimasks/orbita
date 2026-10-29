@@ -51,12 +51,14 @@ BRIDGE_TOKEN = "bridge-test-token"
 CON_A, CON_B, CON_C = "a" * 32, "b" * 32, "c" * 32
 
 
-def bcheck(client, key, console=CON_A, token=BRIDGE_TOKEN, ip_h="1234abcd", headers=None):
+def bcheck(client, key, console=CON_A, token=BRIDGE_TOKEN, ip_h="1234abcd", headers=None, bind=None):
     """O que a ponte faz: POST /_bridge/check com sha256 da chave normalizada."""
     h = {"X-Bridge-Token": token} if token is not None else {}
     h.update(headers or {})
-    r = client.post("/_bridge/check", json={"key_sha256": security.key_hash(key), "console": console, "ip_h": ip_h},
-                    headers=h)
+    body = {"key_sha256": security.key_hash(key), "console": console, "ip_h": ip_h}
+    if bind:
+        body["bind"] = bind
+    r = client.post("/_bridge/check", json=body, headers=h)
     return r.get_json()["status"] if r.status_code == 200 else r.status_code
 
 

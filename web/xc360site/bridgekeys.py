@@ -116,11 +116,19 @@ def unbind(user_id, admin):
     return True
 
 
-def check(kh, console, ip_h=""):
-    """Validação + vínculo atômicos. Devolve (status, handle|None)."""
+XEX_IP_IDLE = "1 hour"   # IP novo assume se o antigo ficou parado esse tempo
+
+
+def check(kh, console, ip_h="", bind="hw"):
+    """Validação + vínculo atômicos. Devolve (status, handle|None).
+    bind="hw" (ELF): a chave fica presa ao 1º console (console_id).
+    bind="ip" (XEX, 2026-10-29): presa ao IP público (ip_h), à parte do console_id; IP novo assume
+    se o antigo ficou XEX_IP_IDLE sem uso; dois IPs ao mesmo tempo = duplicada."""
     if not HASH_RE.match(kh or "") or not CONSOLE_RE.match(console or ""):
         return "invalid", None
     ip_h = ip_h if IPH_RE.match(ip_h or "") else ""
+    if bind == "ip":
+        return _check_ip(kh, console, ip_h)
     with db.conn() as c:
         k = c.execute("SELECT k.id, k.user_id, k.revoked_at, k.console_id, k.dup_at, k.last_used_at > now() - interval '5 minutes' AS fresh, "
                       "u.active, u.handle FROM beta_keys k JOIN users u ON u.id=k.user_id "
@@ -143,6 +151,37 @@ def check(kh, console, ip_h=""):
             return "duplicate", k["handle"]
         if not k["fresh"]:
             c.execute("UPDATE beta_keys SET last_used_at=now() WHERE id=%s", (k["id"],))
+        return "ok", k["handle"]
+
+
+def _check_ip(kh, console, ip_h):
+    if not ip_h:
+        return "invalid", None
+    with db.conn() as c:
+        k = c.execute("SELECT k.id, k.user_id, k.revoked_at, k.dup_at, k.xex_ip_h, "
+                      "k.xex_last_at > now() - interval '5 minutes' AS fresh, "
+                      "(k.xex_last_at IS NULL OR k.xex_last_at < now() - interval '" + XEX_IP_IDLE + "') AS idle, "
+                      "u.active, u.handle FROM beta_keys k JOIN users u ON u.id=k.user_id "
+                      "WHERE k.key_sha256=%s FOR UPDATE OF k", (kh,)).fetchone()
+        if not k:
+            return "invalid", None
+        if k["revoked_at"] is not None or not k["active"]:
+            return "revoked", k["handle"]
+        if k["dup_at"] is not None:
+            return "duplicate", k["handle"]
+        if k["xex_ip_h"] is None or (k["xex_ip_h"] != ip_h and k["idle"]):
+            kind = "bind_xex" if k["xex_ip_h"] is None else "xex_ip_change"
+            c.execute("UPDATE beta_keys SET xex_ip_h=%s, xex_last_at=now(), last_used_at=now() WHERE id=%s", (ip_h, k["id"]))
+            c.execute("INSERT INTO key_events(key_id, user_id, kind, console_a, ip_h) VALUES (%s,%s,%s,%s,%s)",
+                      (k["id"], k["user_id"], kind, console, ip_h))
+            return "ok", k["handle"]
+        if k["xex_ip_h"] != ip_h:
+            c.execute("UPDATE beta_keys SET dup_at=now(), dup_console=%s, dup_ip_h=%s WHERE id=%s", (console, ip_h, k["id"]))
+            c.execute("INSERT INTO key_events(key_id, user_id, kind, console_a, console_b, ip_h) "
+                      "VALUES (%s,%s,'duplicate_ip',%s,%s,%s)", (k["id"], k["user_id"], k["xex_ip_h"], ip_h, ip_h))
+            return "duplicate", k["handle"]
+        if not k["fresh"]:
+            c.execute("UPDATE beta_keys SET xex_last_at=now(), last_used_at=now() WHERE id=%s", (k["id"],))
         return "ok", k["handle"]
 
 

@@ -23,5 +23,5 @@ def check():
         abort(404)
     d = request.get_json(silent=True) or {}
     status, tester = bridgekeys.check(str(d.get("key_sha256", "")), str(d.get("console", "")).lower(),
-                                      str(d.get("ip_h", ""))[:64])
+                                      str(d.get("ip_h", ""))[:64], "ip" if d.get("bind") == "ip" else "hw")
     return jsonify(status=status, tester=tester)

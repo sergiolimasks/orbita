@@ -279,3 +279,9 @@ CREATE TABLE IF NOT EXISTS known_issues (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS err text NOT NULL DEFAULT '';   -- 2026-10-29: 1º erro do jogo (texto curto, limpo)
+ALTER TABLE beta_keys ADD COLUMN IF NOT EXISTS xex_ip_h    text;          -- 2026-10-29: XEX = chave presa ao IP público
+ALTER TABLE beta_keys ADD COLUMN IF NOT EXISTS xex_last_at timestamptz;   -- último uso do XEX (troca de IP depois de 1 h parado)
+-- 2026-10-29: eventos do vínculo por IP (XEX)
+ALTER TABLE key_events DROP CONSTRAINT IF EXISTS key_events_kind_check;
+ALTER TABLE key_events ADD CONSTRAINT key_events_kind_check
+    CHECK (kind IN ('bind', 'duplicate', 'unbind', 'new_by_admin', 'bind_xex', 'xex_ip_change', 'duplicate_ip'));
