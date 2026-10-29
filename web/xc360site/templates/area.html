@@ -91,6 +91,25 @@
         {% if new_key %}
           <div class="betakey-box fresh"><code class="betakey" id="betakey">{{ new_key }}</code>
             <button type="button" class="btn primary" data-copy="#betakey" data-done="{{ _('common.copied') }}">{{ icon('copy', 16) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
+        {% elif dev_keys is not none %}
+          {# 2026-10-29: dev — até dev_max chaves ativas, cada uma com mostrar/revogar #}
+          {% for dk in dev_keys %}
+          <div class="dev-key">
+            <div class="row-between"><span><code class="betakey masked">•••••-•••{{ dk.hint }}</code>
+              <span class="small muted">{{ dk.created_at|dt }}{% if dk.elf %} · ELF{% endif %}{% if dk.xex %} · XEX{% endif %}</span></span>
+              <form method="post" action="{{ url_for('tester.key_revoke', kid=dk.id) }}" data-confirm="{{ _('dev.revoke_q') }}" data-danger>
+                {{ csrf() }}<button class="btn ghost sm">{{ _('dev.revoke') }}</button></form></div>
+            {% if dk.plain %}
+            <details class="key-reveal"><summary class="btn secondary sm">{{ icon('eye', 14) }}{{ _('key.show') }}</summary>
+              <div class="betakey-box mt-2"><code class="betakey" id="dk-{{ dk.id }}">{{ dk.plain }}</code>
+                <button type="button" class="btn primary sm" data-copy="#dk-{{ dk.id }}" data-done="{{ _('common.copied') }}">{{ icon('copy', 14) }}<span class="lbl">{{ _('common.copy') }}</span></button></div>
+            </details>
+            {% endif %}
+          </div>
+          {% else %}
+          <p class="muted">{{ _('area.key_none') }}</p>
+          {% endfor %}
+          <p class="help">{{ _('dev.keys_help', n=dev_max) }}</p>
         {% elif key %}
           <div class="betakey-box"><code class="betakey masked" aria-label="{{ _('area.key_active', h=key.key_hint, d=key.created_at|dt) }}">•••••-•••{{ key.key_hint }}</code></div>
           {% if key_plain %}
@@ -117,6 +136,12 @@
         <p class="small"><b>{{ _('key.blocked_regen') }}</b></p>
         {% elif key_limit and not new_key %}
         <div class="alert warn mt-3" role="note">{{ icon('alert', 18) }}<div><b>{{ _('key.limit_title') }}</b><p class="small">{{ _('key.limit_text') }}</p></div></div>
+        {% elif dev_keys is not none %}
+        {% if dev_keys|length < dev_max %}
+        <form method="post" action="{{ url_for('tester.key_regen') }}">
+          {{ csrf() }}<button class="btn secondary sm">{{ icon('plus', 14) }}{{ _('dev.new_key') }}</button>
+        </form>
+        {% endif %}
         {% elif not new_key %}
         <form method="post" action="{{ url_for('tester.key_regen') }}" data-confirm="{{ _('area.key_regen_help') }}" data-confirm-title="{{ _('area.key_regen') }}?" data-confirm-ok="{{ _('area.key_regen') }}" data-danger>
           {{ csrf() }}<button class="btn secondary sm">{{ icon('refresh', 14) }}{{ _('area.key_regen') }}</button>

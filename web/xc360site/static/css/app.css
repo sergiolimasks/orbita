@@ -747,3 +747,7 @@ details.disclosure p{padding:0 12px 12px;font-size:var(--t-sm);color:var(--c-mut
 .legacy-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .legacy-list li { gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
 .legacy-list li:last-child { border-bottom: 0; }
+
+/* 2026-10-29: chaves do dev */
+.dev-key { padding: 8px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+.dev-key:last-of-type { border-bottom: 0; }

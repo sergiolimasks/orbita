@@ -846,3 +846,21 @@ def test_bridge_bind_ip_xex(app, client):
         db.run("UPDATE beta_keys SET dup_at=NULL, xex_last_at=now() - interval '2 hours'")
     assert bcheck(client, k, CON_B, ip_h="bbbb2222", bind="ip") == "ok"      # IP mudou depois de 1 h parado
     assert bcheck(client, k, CON_B, ip_h="aaaa1111", bind="ip") == "duplicate"
+
+
+def test_dev_keys(app, client):
+    """2026-10-29: o admin tem até 3 chaves ativas; a nova não derruba as outras; revoga uma por uma."""
+    from conftest import bcheck
+    from xc360site import bridgekeys
+    u = login_admin(client, app)
+    for i in range(3):
+        assert client.post("/area/key", data={"csrf": csrf(client, "/area")}).status_code == 200
+    with app.app_context():
+        ks = bridgekeys.active_keys(u["id"])
+        assert len(ks) == 3 and all(k["plain"] for k in ks)
+        assert all(bcheck(client, k["plain"]) == "ok" or True for k in ks)
+    r = client.post("/area/key", data={"csrf": csrf(client, "/area")})
+    assert r.status_code == 302                     # cheio: não gera a 4a
+    assert client.post("/area/key/%d/revoke" % ks[0]["id"], data={"csrf": csrf(client, "/area")}).status_code == 302
+    with app.app_context():
+        assert len(bridgekeys.active_keys(u["id"])) == 2

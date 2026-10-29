@@ -36,15 +36,17 @@ def _gen():
             return k
 
 
-def new_key(user, conn=None, by_admin=None):
+def new_key(user, conn=None, by_admin=None, keep_others=False):
     """Revoga a(s) chave(s) ativa(s) do usuário e cria outra (sem console).
     Devolve a chave em claro — mostrada UMA vez. by_admin=<admin>: guarda a
     chave cifrada pro testador ver uma vez na área dele."""
     k = _gen()
 
     def work(c):
-        old = c.execute("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
-                        "RETURNING id, dup_at", (user["id"],)).fetchall()
+        # keep_others (2026-10-29, só o dev): a chave nova não derruba as outras ativas
+        old = [] if keep_others else c.execute(
+            "UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL WHERE user_id=%s AND revoked_at IS NULL "
+            "RETURNING id, dup_at", (user["id"],)).fetchall()
         new = c.execute("INSERT INTO beta_keys(user_id, key_sha256, key_hint, pending_enc, key_enc) "
                         "VALUES (%s,%s,%s,%s,%s) RETURNING id",
                         (user["id"], key_hash(k), k[-2:], enc(k) if by_admin else None, enc(k))).fetchone()
@@ -59,6 +61,25 @@ def new_key(user, conn=None, by_admin=None):
         with db.conn() as c:
             work(c)
     return k
+
+
+def active_keys(user_id):
+    """2026-10-29 (dev): todas as chaves ativas, mais nova primeiro, com a chave em claro (se guardada)."""
+    out = []
+    for r in db.rows("SELECT id, key_hint, created_at, console_id, xex_ip_h, key_enc FROM beta_keys "
+                     "WHERE user_id=%s AND revoked_at IS NULL ORDER BY id DESC", user_id):
+        try:
+            plain = dec(r["key_enc"]) if r["key_enc"] else None
+        except Exception:
+            plain = None
+        out.append({"id": r["id"], "hint": r["key_hint"], "created_at": r["created_at"], "plain": plain,
+                    "elf": bool(r["console_id"]), "xex": bool(r["xex_ip_h"])})
+    return out
+
+
+def revoke_key(user_id, key_id):
+    return len(db.rows("UPDATE beta_keys SET revoked_at=now(), pending_enc=NULL, key_enc=NULL "
+                       "WHERE id=%s AND user_id=%s AND revoked_at IS NULL RETURNING id", key_id, user_id))
 
 
 def revoke_user_keys(user_id):

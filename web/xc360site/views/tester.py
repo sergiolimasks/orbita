@@ -68,10 +68,28 @@ def _area_ctx():
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
                 key_plain=bridgekeys.reveal(u["id"]) if key and not key["dup_at"] else None,
                 reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline,
-                key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY, legacy=_legacy(), reports_closed=_gate()[0])
+                key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY and not _is_dev(), legacy=_legacy(),
+                reports_closed=_gate()[0], dev_keys=bridgekeys.active_keys(u["id"]) if _is_dev() else None,
+                dev_max=DEV_KEYS)
 
 
 KEYS_PER_DAY = 2   # v0.21.43: gerar várias era o que mais quebrava a ativação
+DEV_KEYS = 3       # 2026-10-29: chaves ativas ao mesmo tempo pro dev (ELF + XEX + teste)
+
+
+def _is_dev():
+    return g.user.get("role") == "admin"
+
+
+@bp.post("/area/key/<int:kid>/revoke")
+@sec.login_required
+def key_revoke(kid):
+    """2026-10-29 (só o dev): revoga uma chave específica."""
+    if not _is_dev():
+        abort(403)
+    bridgekeys.revoke_key(g.user["id"], kid)
+    sec.audit("key.dev_revoke", g.user["handle"])
+    return redirect(url_for("tester.area") + "#key")
 
 
 def _keys_today(uid):
@@ -101,7 +119,15 @@ def area():
 @sec.login_required
 def key_regen():
     """Gera outra chave (a antiga para de valer). A chave aparece só nesta resposta.
-    Chave derrubada (usada em 2 consoles): só o admin libera."""
+    Chave derrubada (usada em 2 consoles): só o admin libera.
+    2026-10-29: o dev (admin) tem até DEV_KEYS chaves ativas, sem limite diário, e a nova não derruba as outras."""
+    if _is_dev():
+        if len(bridgekeys.active_keys(g.user["id"])) >= DEV_KEYS:
+            flash(_("dev.keys_full", n=DEV_KEYS), "error")
+            return redirect(url_for("tester.area") + "#key")
+        k = bridgekeys.new_key(g.user, keep_others=True)
+        sec.audit("key.dev_new", g.user["handle"])
+        return render_template("area.html", new_key=k, **_area_ctx())
     if bridgekeys.is_blocked(g.user["id"]):
         sec.audit("key.self_regen_blocked", g.user["handle"])
         return render_template("area.html", **_area_ctx()), 403
