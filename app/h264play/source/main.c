@@ -734,12 +734,14 @@ static unsigned g_dec_unstuck = 0;
 /* v0.21.37: guarda do código achou bloco alterado (xc_textguard.h) */
 static int xtg_line(char *o, size_t n) {
     static unsigned seen = 0;
-    unsigned b = xtg_bad;
-    if (b == seen) return 0;
-    seen = b;
-    snprintf(o, n, "[guarda] código alterado na RAM (%u vez(es), %u restaurada(s)): %08x tinha %08x, devia ser %08x, %u words no bloco",
-             b, xtg_fixed, (unsigned)xtg_last_addr, (unsigned)xtg_last_now, (unsigned)xtg_last_want,
-             (unsigned)xtg_last_words);
+    unsigned tot = xtg_nev;
+    if (tot == seen) return 0;
+    if (tot - seen > XTG_NEV) seen = tot - XTG_NEV;   /* o anel perdeu as mais velhas */
+    xtg_ev_t e = xtg_ev[seen % XTG_NEV];
+    seen++;
+    snprintf(o, n, "[guarda] %s %08x: %08x -> %08x (%u mudança(s) até agora, %u restaurada(s))",
+             xtg_observe ? "mudou (só anotado)" : "alterado e restaurado", (unsigned)e.addr, (unsigned)e.before,
+             (unsigned)e.after, tot, xtg_fixed);
     return 1;
 }
 
@@ -1411,7 +1413,7 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         xtg_step();   /* v0.21.37: no jogo a guarda roda aqui, no main */
         {   /* v0.21.37 */
             char gl[200];
-            if (xtg_line(gl, sizeof(gl))) np_log_line(gl);
+            for (int q = 0; q < 4 && xtg_line(gl, sizeof(gl)); q++) np_log_line(gl);
         }
         if (xpt_dec_abort) {
             /* v0.21.35: as esperas foram soltas: o quadro não vale e o decoder
@@ -3964,10 +3966,13 @@ static void menu_main(int gpu_on) {
     }
 
     {   /* v0.21.37: guarda do código (xc_textguard.h): no fim do boot, com rede e USB já montados */
-#ifndef ORBITA_GUARD   /* v0.21.37: desligada até resolver a sopa no jogo (Forza) */
+#ifdef ORBITA_NOGUARD   /* v0.21.39: ligada (custa ~0,15 ms a cada 40 ms; nada muda no .text num jogo normal) */
         int tg = -1;
 #else
         int tg = xtg_init();
+#ifdef ORBITA_GUARD_OBSERVE
+        xtg_observe = 1;   /* teste: só anota o que muda, não restaura */
+#endif
 #endif
         printf("[guarda] cópia do código: %s\n", tg == 0 ? "ok" : "sem memória (desligada)");
     }
@@ -3993,6 +3998,22 @@ static void menu_main(int gpu_on) {
             char ns[110];
             xn_summary(ns, sizeof(ns));
             xc_log("[native] fim do jogo (%d): %s", r, ns);
+            if (xtg_steps) {   /* v0.21.39: quanto a guarda custou (us por bloco de 64 KB); também no HANG.TXT (FTP) */
+                char gl[200];
+                snprintf(gl, sizeof(gl), "[guarda] fim do jogo: %u passos, média %u us, máx %u us, voltas %u, mudanças %u",
+                         (unsigned)xtg_steps, (unsigned)(xtg_us_sum / xtg_steps), (unsigned)xtg_us_max, xtg_sweeps, xtg_nev);
+                xc_log("%s", gl);
+                if (xwd_usb_holder() < 0 && !xc_hang_busy()) {
+                    xc_hang_write(gl);
+                    unsigned n = xtg_nev < XTG_NEV ? xtg_nev : XTG_NEV;
+                    for (unsigned q = 0; q < n && q < 6; q++) {
+                        xtg_ev_t e = xtg_ev[(xtg_nev - 1 - q) % XTG_NEV];
+                        snprintf(gl, sizeof(gl), "[guarda] mudança %08x: %08x -> %08x", (unsigned)e.addr,
+                                 (unsigned)e.before, (unsigned)e.after);
+                        xc_hang_write(gl);
+                    }
+                }
+            }
         }
         if (was_native && r == EXIT_NATIVE_KICK) {
             const char *k = g_exit_kick;

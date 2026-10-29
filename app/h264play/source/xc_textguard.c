@@ -6,7 +6,7 @@
 #include <ppc/timebase.h>
 
 #define XTG_BLK     65536u
-#define XTG_STEP_MS 20u   /* 1 bloco a cada 20 ms: a volta toda (~57 blocos) em ~1,2 s */
+#define XTG_STEP_MS 40u   /* 1 bloco a cada 40 ms: a volta toda (~57 blocos) em ~2,3 s */
 #define XTG_LINE    128u  /* linha de cache do Xenon */
 
 extern char pagetable_end[], orbita_text_end[];
@@ -20,6 +20,11 @@ static int skip(uint32_t a) {
 }
 
 volatile unsigned xtg_bad = 0, xtg_fixed = 0, xtg_sweeps = 0;
+volatile int xtg_observe = 0;
+volatile uint32_t xtg_us_max = 0, xtg_steps = 0;
+volatile uint64_t xtg_us_sum = 0;
+xtg_ev_t xtg_ev[XTG_NEV];
+volatile unsigned xtg_nev = 0;
 volatile uint32_t xtg_last_addr = 0, xtg_last_now = 0, xtg_last_want = 0, xtg_last_words = 0;
 
 static uint32_t g_base = 0, g_len = 0, g_n = 0;
@@ -32,13 +37,20 @@ static volatile uint64_t g_last_tb = 0;
 static uint32_t blk_len(unsigned i) { return i + 1 < g_n ? XTG_BLK : g_len - i * XTG_BLK; }
 
 static uint32_t sum_words(const volatile uint32_t *p, uint32_t bytes) {
-    uint32_t a = 0x811c9dc5u, b = 0;
-    for (uint32_t i = 0; i < bytes / 4; i++) {
-        uint32_t w = p[i];
-        a = (a ^ w) * 16777619u;
-        b += w ^ i;
+    /* v0.21.39: sem multiplicação (custava ~0,25 ms por bloco na hw 0): 64 bits por vez,
+     * duas somas independentes (rotação + xor e soma), 4 palavras por volta */
+    const volatile uint64_t *q = (const volatile uint64_t *)p;
+    uint64_t a = 0x9e3779b97f4a7c15ULL, b = 0;
+    uint32_t n = bytes / 8;
+    uint32_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        uint64_t w0 = q[i], w1 = q[i + 1], w2 = q[i + 2], w3 = q[i + 3];
+        a = ((a << 7) | (a >> 57)) ^ w0 ^ (w1 << 1);
+        b += w2 ^ (w3 >> 1) ^ i;
     }
-    return a ^ (b * 0x9e3779b1u);
+    for (; i < n; i++) a = ((a << 7) | (a >> 57)) ^ q[i];
+    if (bytes & 4) b += p[bytes / 4 - 1];
+    return (uint32_t)(a ^ (a >> 32)) ^ (uint32_t)(b ^ (b >> 32));
 }
 
 static void sync_icache(uint32_t a, uint32_t n) {
@@ -84,6 +96,7 @@ void xtg_step(void) {
     if (!g_next) xtg_sweeps++;
     uint32_t n = blk_len(i), a = g_base + i * XTG_BLK;
     const volatile uint32_t *live = (const volatile uint32_t *)a;
+    uint64_t t0 = mftb();
     if (sum_words(live, n) != g_sum[i]) {
         const uint32_t *ref = (const uint32_t *)(g_copy + i * XTG_BLK);
         /* a cópia também pode ter estragado: só restaura se ela bate com a soma do boot */
@@ -99,18 +112,34 @@ void xtg_step(void) {
             }
             last = k;
             words++;
-            if (copy_ok) w[k] = ref[k];   /* só o que mudou */
+            {
+                unsigned e = xtg_nev % XTG_NEV;
+                xtg_ev[e].addr = a + k * 4;
+                xtg_ev[e].before = ref[k];
+                xtg_ev[e].after = live[k];
+                __asm__ __volatile__("sync" ::: "memory");
+                xtg_nev++;
+            }
+            if (xtg_observe) ((uint32_t *)ref)[k] = live[k];   /* só anota: aceita o valor novo */
+            else if (copy_ok) w[k] = ref[k];                   /* só o que mudou */
         }
+        if (xtg_observe) g_sum[i] = sum_words(ref, n);
         if (words) {
             xtg_last_addr = a + first * 4;
             xtg_last_words = words;
-            if (copy_ok) {
+            if (copy_ok && !xtg_observe) {
                 sync_icache(a + first * 4, (last - first + 1) * 4);
                 xtg_fixed++;
             }
             __asm__ __volatile__("sync" ::: "memory");
             xtg_bad++;
         }
+    }
+    {
+        uint32_t us = (uint32_t)((mftb() - t0) / (PPC_TIMEBASE_FREQ / 1000000ULL));
+        if (us > xtg_us_max) xtg_us_max = us;
+        xtg_us_sum += us;
+        xtg_steps++;
     }
     __sync_lock_release(&g_busy);
 }
