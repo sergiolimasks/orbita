@@ -21,6 +21,7 @@
  *   USBStorage_Init pula).
  * Só a thread de rede (hw 1). Ver WIFI.md.
  */
+#include "mwx_proto.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -377,7 +378,7 @@ int xhs_find(int *bus, int *port, int *addr) {
         for (int p = 0; p < np; p++) {
             struct ehci_device *d = &h->devices[p];
             if (!d->id) continue;
-            if (bswap_16(d->desc.idVendor) != 0x045e || bswap_16(d->desc.idProduct) != 0x0765) continue;
+            if (!mwx_is_id(bswap_16(d->desc.idVendor), bswap_16(d->desc.idProduct))) continue;
             *bus = b;
             *port = p + 1;
             *addr = d->id;
@@ -394,6 +395,9 @@ int xhs_open(xhs_eps_t *eps) {
     g_h = &ehci_hcds[b];
     g_bus = b; g_port = p; g_addr = a;
     struct ehci_device *dev = &g_h->devices[p - 1];
+    xc_log("[wifi] HS: adaptador %04x:%04x (bcdDevice %04x, classe %02x/%02x)", (unsigned)bswap_16(dev->desc.idVendor),
+           (unsigned)bswap_16(dev->desc.idProduct), (unsigned)bswap_16(dev->desc.bcdDevice),
+           (unsigned)dev->desc.bDeviceClass, (unsigned)dev->desc.bDeviceSubClass);
     dev->busy = 1;                                  /* o USBStorage_Init não reseta nem testa a porta */
     /* v0.21.20: nenhuma porta deste controlador pro tinyehci (hotplug é nosso) */
     for (int k = 0; k < g_h->num_port && k < EHCI_MAX_ROOT_PORTS; k++) g_h->devices[k].busy = 1;

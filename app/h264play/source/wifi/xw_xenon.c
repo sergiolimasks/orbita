@@ -293,8 +293,7 @@ static usbdev_t *find_dev(void) {
         for (int a = 1; a < USB_MAX_DEVICES; a++) {
             usbdev_t *d = bus->ub_devices[a];
             if (!d || (d->ud_flags & UD_FLAG_HUB)) continue;
-            if (GETUSBFIELD(&d->ud_devdescr, idVendor) == MWX_VID &&
-                GETUSBFIELD(&d->ud_devdescr, idProduct) == MWX_PID)
+            if (mwx_is_id(GETUSBFIELD(&d->ud_devdescr, idVendor), GETUSBFIELD(&d->ud_devdescr, idProduct)))
                 return d;
         }
     }

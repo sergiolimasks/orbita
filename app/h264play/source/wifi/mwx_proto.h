@@ -27,6 +27,11 @@ extern "C" {
 
 #define MWX_VID 0x045e
 #define MWX_PID 0x0765
+/* v0.21.45: outros Slims vêm com 045e:02ab ou 045e:02b8 no lugar do 0765 (fotos dos
+ * testadores). Tentamos o mesmo driver; o log mostra os endpoints e onde parou. */
+static inline int mwx_is_id(unsigned v, unsigned p) {
+    return v == MWX_VID && (p == MWX_PID || p == 0x02ab || p == 0x02b8);
+}
 
 #define MWX_USB_TYPE_CMD   0xF00DFACEu
 #define MWX_USB_TYPE_EVENT 0xBEEFFACEu

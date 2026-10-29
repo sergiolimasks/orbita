@@ -1863,13 +1863,9 @@ static xcn_notes_t g_notes;
 static int        g_notes_ok = 0;
 /* v0.21.34: novidades desta build, pra quando não há NOTES.TXT nem manifesto da mesma versão */
 #define BUILTIN_NOTES \
-    "Configurações > Desempenho mostra a latência do jogo (ida e volta do vídeo com o xCloud); com \"Mostrar no jogo\" " \
-    "ela aparece também no canto da tela.\n" \
-    "Chave beta: se a chave digitada estiver errada, ela continua no campo para você corrigir; se ela foi trocada no " \
-    "site, a tela explica como pegar a atual (Mostrar a chave).\n" \
-    "Wi-Fi: quando o Wi-Fi interno não liga, a tela de erro mostra o que está em cada porta USB. Mande uma foto dela no relato.\n" \
-    "Testado em Xbox 360 Slim, placa Corona, RGH, pendrive de 32 GB e Wi-Fi interno. Consoles diferentes podem se " \
-    "comportar diferente: no relato, diga o modelo do console e mande foto da tela."
+    "Versão de teste do Wi-Fi: alguns Xbox 360 Slim têm um módulo de Wi-Fi interno de outro modelo (045e:02ab ou " \
+    "045e:02b8) que o orbita não reconhecia. Esta versão tenta ligar esses módulos.\n" \
+    "Se o Wi-Fi ligar, conte no relato. Se não ligar, mande uma foto da tela de erro: ela mostra onde parou."
 
 /* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */

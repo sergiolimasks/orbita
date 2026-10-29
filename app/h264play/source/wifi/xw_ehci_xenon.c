@@ -10,6 +10,7 @@
  * a pilha CFE do libxenon (assíncrona, a mesma dos controles) o enxerga sem
  * driver. Só a thread de rede (hw 1), dentro do mesmo passo do usb_do_poll.
  */
+#include "mwx_proto.h"
 #include <stdio.h>   /* v0.21.44: snprintf */
 #include <stddef.h>
 #include <stdint.h>
@@ -35,7 +36,7 @@ int xw_ehci_release_wifi(int *bus, int *port, int release) {
         for (int p = 0; p < np; p++) {
             struct ehci_device *d = &h->devices[p];
             if (!d->id) continue;
-            if (bswap_16(d->desc.idVendor) != 0x045e || bswap_16(d->desc.idProduct) != 0x0765) continue;
+            if (!mwx_is_id(bswap_16(d->desc.idVendor), bswap_16(d->desc.idProduct))) continue;
             *bus = b;
             *port = p + 1;
             if (!release) return 1;
