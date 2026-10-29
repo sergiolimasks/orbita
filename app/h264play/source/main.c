@@ -92,7 +92,8 @@
 /* v0.21.38: idioma dos jogos (session/xc_session.c) */
 void        xs_set_play_locale(const char *loc);
 const char *xs_play_locale(void);
-#include "settings/xc_notes.h"   /* v0.21.33: XC360/NOTES.TXT */
+#include "settings/xc_notes.h"
+#include "xc_perf.h"   /* v0.21.43: Desempenho + overlay */   /* v0.21.33: XC360/NOTES.TXT */
 extern volatile int xpt_park_new, xpt_parked;   /* deps/xenon-pthread (v0.21.26) */
 static int g_avpack = -1;   /* v0.20.6: cabo de vídeo (ver orbita_video_mode) */
 #ifdef XCLOUD360_AUDIO
@@ -791,6 +792,33 @@ static void idle_hook(void) {
     dec_stall_check();
 }
 
+/* v0.21.43: overlay de desempenho (texto branco numa máscara, a cada STAT) */
+#define OVL_W 236
+#define OVL_H 104
+static uint32_t g_ovl_px[OVL_W * OVL_H];
+static uint8_t  g_ovl_a[OVL_W * OVL_H];
+static void perf_overlay_update(int on) {
+#ifdef XCLOUD360_GPU
+    if (!on) { gpu_present_set_overlay(NULL, 0, 0); return; }
+    xui_canvas_t c;
+    xui_canvas_init(&c, g_ovl_px, OVL_W, OVL_H, OVL_W);
+    xui_fill(&c, 0, 0, OVL_W, OVL_H, 0);
+    char t[96];
+    xpf_overlay_text(t, sizeof(t));
+    int y = 30;
+    for (char *p = t; p && *p; y += 30) {
+        char *e = strchr(p, '\n');
+        if (e) *e = 0;
+        xui_text(&c, XUI_F_ROW, 12, y, 0xFFFFFF, p, 0, OVL_W - 20);
+        p = e ? e + 1 : NULL;
+    }
+    for (int i = 0; i < OVL_W * OVL_H; i++) g_ovl_a[i] = (uint8_t)(g_ovl_px[i] >> 8);
+    gpu_present_set_overlay(g_ovl_a, OVL_W, OVL_H);
+#else
+    (void)on;
+#endif
+}
+
 static void wdt_stop(void) {
     g_wdt_stop = 1;
     __asm__ __volatile__("sync" ::: "memory");
@@ -1103,6 +1131,7 @@ int xc_game_session(xc_game_session_t *o) {
 
 /* Zera IDR/AU entre sessões: decoder novo precisa de IDR e os contadores
  * do STAT são por jogo. */
+static void logsend_begin(void);   /* v0.21.43 (abaixo) */
 static void video_session_reset(void) {
     g_pending_au_size = 0;
     g_wait_idr = 1;
@@ -1206,7 +1235,57 @@ static void video_teardown(AVCodecContext *ctx, AVCodecParserContext *parser,
     }
     video_session_reset();
     xlu_flush_soon();   /* v0.20.1: fim de sessão = lote do log beta */
+    logsend_begin();    /* v0.21.43 */
+    xpf_game_end();
+    perf_overlay_update(0);
     printf("[menu] jogo encerrado, decoder fechado\n");
+}
+
+/* v0.21.43: ao voltar do jogo, tela "Enviando o log da partida" até o lote da
+ * sessão chegar no servidor (no jogo nada é enviado: a hw 3 é do decoder). Sai
+ * quando o envio andou e o buffer esvaziou, quando a chave é recusada ou após
+ * LOGSEND_MAX_US (sem internet ninguém fica preso). */
+#define LOGSEND_MAX_US   90000000ULL
+#define LOGSEND_DONE_B   (16 * 1024)
+extern volatile int xcc_logs_only;   /* catalog/xc_catalog.c */
+static int      g_logsend = 0;
+static char     g_logsend_detail[96];
+static uint64_t g_logsend_t0 = 0;
+static unsigned g_logsend_b0 = 0;
+static size_t   g_logsend_len0 = 0;
+static void logsend_begin(void) {
+    xlu_stats_t s;
+    xlu_stats(&s);
+    if (s.beta != XC_BETA_ACTIVE || s.buffered == 0) return;
+    g_logsend = 1;
+    g_logsend_t0 = now_us();
+    g_logsend_b0 = s.batches;
+    g_logsend_len0 = s.buffered;
+}
+/* 1 = ainda enviando (o menu mostra a tela e ignora os botões) */
+static int logsend_step(char *detail, size_t cap) {
+    if (!g_logsend) return 0;
+    xlu_stats_t s;
+    xlu_stats(&s);
+    uint64_t el = now_us() - g_logsend_t0;
+    const char *why = NULL;
+    if (s.beta != XC_BETA_ACTIVE) why = "chave recusada";
+    else if (s.batches > g_logsend_b0 && s.buffered < LOGSEND_DONE_B) why = "ok";
+    else if (el > LOGSEND_MAX_US) why = "sem resposta em 90 s";
+    if (why) {
+        xc_log("[logs] log da partida: %s (%u KB, %u lote(s), %u s)", why, (unsigned)(g_logsend_len0 / 1024),
+               s.batches - g_logsend_b0, (unsigned)(el / 1000000));
+        g_logsend = 0;
+        /* a sessão segue aberta (Back+Start): o worker subiu só pro log; sai da hw 3 */
+        if (xcc_logs_only && xcc_bg_running()) xcc_bg_stop();
+        xcc_logs_only = 0;
+        return 0;
+    }
+    unsigned left = (unsigned)((s.buffered + 1023) / 1024);
+    if (!xcc_bg_running()) snprintf(detail, cap, "%u KB · esperando o console liberar a conexão (%u s)", left, (unsigned)(el / 1000000));
+    else if (s.errors && s.last_status) snprintf(detail, cap, "%u KB · tentando de novo (resposta %d)", left, s.last_status);
+    else snprintf(detail, cap, "Enviando %u KB…", left);
+    return 1;
 }
 
 /* v0.16: o pipeline de vídeo (decoder, loop de AUs, GPU/worker, STAT).
@@ -1537,6 +1616,7 @@ report:
             uint64_t bot_total = g_bot_us_total;
             double bot_ms = wf > 0 ? (double)(bot_total - prev_bot_total) / 1000.0 / wf : 0;
             prev_bot_total = bot_total;
+            unsigned gbusy_us = 0;   /* v0.21.43 */
 #ifdef XCLOUD360_GPU
             double gwait_ms = 0, flip_lag_ms = 0;
             unsigned gflips = 0, gsuper = 0, gtimeouts = 0;
@@ -1549,6 +1629,7 @@ report:
                 wcvt_ms  = gf ? (double)(gs.upload_us - prev_gs.upload_us) / 1000.0 / gf : 0;
                 gwait_ms = gf ? (double)(gs.wait_us - prev_gs.wait_us) / 1000.0 / gf : 0;
                 flip_lag_ms = fl ? (double)(gs.flip_lag_us - prev_gs.flip_lag_us) / 1000.0 / fl : 0;
+                gbusy_us = (unsigned)(gs.busy_us - prev_gs.busy_us);
                 bot_ms = 0;
                 worker_fps_snapshot = (int)gs.flips;
                 gflips = (unsigned)fl;
@@ -1557,6 +1638,9 @@ report:
                 prev_gs = gs;
             }
 #endif
+            xpf_temps_poll(t_d);   /* v0.21.43: Desempenho / overlay */
+            xpf_game_sample(fps, dec_ms, gbusy_us, (uint64_t)(sec * 1e6));
+            if (gpu_on) perf_overlay_update(xpf_overlay);
             size_t ring_bytes = stream_available();
             printf("[play] t+%3ds dec=%.1f prod=%.1f w_cvt=%.1f fps=%.1f wF=%d ring=%zu\n",
                 (int)((t_d - t_wall_start)/1000000),
@@ -1686,7 +1770,8 @@ report:
 enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET, SCR_LOADING, SCR_FAIL, SCR_UPDATE,
        SCR_BCHECK, SCR_BKEY, SCR_BMSG,               /* v0.20.3: chave beta */
        SCR_WIFI, SCR_WKEY, SCR_NETWAIT,               /* v0.21.0: Wi-Fi */
-       SCR_CFG };                                     /* v0.21.33: Configurações (o SCR_BSET saiu) */
+       SCR_CFG,                                       /* v0.21.33: Configurações (o SCR_BSET saiu) */
+       SCR_LOGSEND };                                 /* v0.21.43: enviando o log da partida */
 
 /* v0.20.0: estado do XUI (MENU-UI.md). */
 static xui_view_t     *g_xv;
@@ -1759,17 +1844,19 @@ static xcn_notes_t g_notes;
 static int        g_notes_ok = 0;
 /* v0.21.34: novidades desta build, pra quando não há NOTES.TXT nem manifesto da mesma versão */
 #define BUILTIN_NOTES \
-    "Novo menu de Configurações (botão Guide ou item no menu): Conta e sobre, Rede, " \
-    "Vídeo e Som (1080p e volume 100 a 250%) e Controles (calibração dos analógicos).\n" \
-    "A confirma, B volta.\n" \
-    "Fila do xCloud: mostra há quanto tempo você está esperando (e a posição, se o xCloud mandar). " \
-    "O jogo abre sozinho quando chegar a vez.\n" \
-    "Quando o xCloud encerra a sessão, o app volta ao menu e explica o motivo."
+    "Ao sair de um jogo, o app mostra \"Enviando o log da partida\" e manda o registro da partida para a equipe " \
+    "(no jogo nada é enviado). Assim os problemas que você relata chegam com o log.\n" \
+    "Wi-Fi: abrir o Wi-Fi nas Configurações agora liga o adaptador mesmo se o Xbox iniciou com cabo, e tenta de " \
+    "novo depois de uma falha (antes ficava em \"Ligando o Wi-Fi\" para sempre).\n" \
+    "Controle com fio já conectado ao ligar o Xbox: o boot não trava mais e o controle funciona direto.\n" \
+    "Chave beta: use sempre a MESMA chave (Mostrar a chave, no site). Se o app pede a chave toda vez, o pendrive " \
+    "não está gravando: use uma porta USB de trás."
 
 /* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
 static char *volatile g_padsave = NULL;
 static char *volatile g_volsave = NULL;
+static char *volatile g_perfsave = NULL;   /* v0.21.43: PERF.TXT (overlay) */
 static char *volatile g_langsave = NULL;   /* v0.21.38: LANG.TXT */
 static char *volatile g_uilangsave = NULL;   /* v0.21.38: UILANG.TXT */
 
@@ -1793,6 +1880,7 @@ static void store_flush(char *volatile *slot, const char *name, const char *tag)
 static void cfg_save_pending(void) {
     store_flush(&g_padsave, XPC_FILE, "[pad]");
     store_flush(&g_volsave, "VOLUME.TXT", "[audio]");
+    store_flush(&g_perfsave, "PERF.TXT", "[perf]");
     store_flush(&g_langsave, "LANG.TXT", "[idioma]");
     store_flush(&g_uilangsave, "UILANG.TXT", "[idioma]");
 }
@@ -2043,7 +2131,7 @@ static void wifi_open(void) {
     g_wmsg[0] = 0;
     xw_sys_status(&g_ws);
     g_wscan_seen = g_ws.scan_seq;
-    if (g_ws.present != XW_PRESENT_NO) xw_sys_scan();
+    xw_sys_scan();   /* v0.21.43: sempre (o Wi-Fi desligado pelo cabo ou que falhou volta a procurar) */
     printf("[wifi] tela aberta\n");
 }
 
@@ -2533,6 +2621,23 @@ static void cfg_fill_in(int pend_upd) {
     in->ui_lang = xi_lang;
 #endif
     in->pad = g_pad;
+    /* v0.21.43: Desempenho */
+    in->perf_cpu_c10 = xpf.cpu_c10;
+    in->perf_gpu_c10 = xpf.gpu_c10;
+    in->perf_cpu_pct = xpf.cpu_pct;
+    in->perf_gpu_pct = xpf.gpu_pct;
+    in->perf_fps10 = xpf.fps10;
+    in->perf_audio_ms10 = xpf.audio_ms10;
+    in->perf_pad_ms100 = xpf.pad_ms100;
+    in->perf_net_pct = xpf.net_pct;
+    in->perf_dec_ms10 = xpf.dec_ms10;
+    in->perf_live = xpf.in_game;
+    in->perf_overlay = xpf_overlay;
+    {
+        static char sm[96];
+        in->speed_state = xlu_speed_result(&in->speed_mbps10, &in->speed_lat_ms, sm, sizeof(sm));
+        in->speed_msg = sm;
+    }
     /* Novidades: NOTES.TXT desta versão; senão o manifesto, se a publicada = a instalada */
     if (g_notes_ok) {
         in->notes = g_notes.notes;
@@ -2680,6 +2785,15 @@ static void cfg_option(int id, int dir, int *pend_upd) {
 #endif
         break;
     }
+    case XCS_OPT_SPEED:   /* v0.21.43 */
+        xlu_speed_request();
+        xc_log("[rede] teste de velocidade pedido");
+        break;
+    case XCS_OPT_OVERLAY:   /* v0.21.43 */
+        xpf_overlay = !xpf_overlay;
+        store_pending(&g_perfsave, xpf_overlay ? "overlay=1\n" : "overlay=0\n");
+        xc_log("[perf] números no jogo: %s", xpf_overlay ? "ligados" : "desligados");
+        break;
     case XCS_OPT_PAD_L:
     case XCS_OPT_PAD_R:
         /* a calibração começa sempre pelo esquerdo ("1 de 2") */
@@ -2780,6 +2894,7 @@ static int menu_loop(int net_ok, const char *msg) {
         /* v0.21.7: vigia. A hw 3 só conta com uma tarefa nossa nela. */
         xwd_beat("menu");
         xtg_step();   /* v0.21.37 */
+        xpf_temps_poll(now);   /* v0.21.43: Configurações > Desempenho */
 #ifdef ORBITA_TEST_THRDIAG
         {   /* teste: estado das hw threads no HANG.TXT a cada 15 s (lido por FTP) */
             static uint64_t t_d = 0;
@@ -2990,10 +3105,12 @@ static int menu_loop(int net_ok, const char *msg) {
         }
         /* worker do catálogo (+ upload do log) só com a hw 3 livre */
         if (!waiting && !g_next_on && !pend_relogin && !pend_test && !pend_upd && !xcu_running() && !lt_running() &&
-            (!g_native_ok || xn_can_play()) && !xcc_bg_running() && now - last_bg_try >= 1000000 &&
+            (!g_native_ok || xn_can_play() || (g_logsend && !xn_session_thread_busy())) &&   /* v0.21.43: log da partida com a sessão aberta */
+            !xcc_bg_running() && now - last_bg_try >= 1000000 &&
             !xcb_running() && !g_beta_pend && !g_beta_boot && beta_ok() && !g_boot_upd && !g_login_deferred &&
             !g_netwait) {
             last_bg_try = now;
+            xcc_logs_only = g_logsend && g_native_ok && !xn_can_play();   /* v0.21.43 */
             if (net_ok && g_input_on_net) xcc_bg_start();
         }
 
@@ -3003,6 +3120,7 @@ static int menu_loop(int net_ok, const char *msg) {
                    : g_wui ? SCR_WIFI
                    : g_netwait ? SCR_NETWAIT
                    : bscr >= 0 ? bscr
+                   : (logsend_step(g_logsend_detail, sizeof(g_logsend_detail)) && !waiting) ? SCR_LOGSEND   /* v0.21.43 */
                    : (g_upd_screen && !waiting) ? SCR_UPDATE   /* v0.20.3: popup antes do login também */
                    : (g_cfg.open && !waiting) ? SCR_CFG        /* v0.21.33 */
                    : (!waiting && g_xbox_login) ? SCR_LOGIN
@@ -3014,6 +3132,7 @@ static int menu_loop(int net_ok, const char *msg) {
 
         b = prev;
         menu_read_buttons(&b, screen == SCR_CFG && g_cfg.page == XCF_PG_CALIB);
+        if (screen == SCR_LOGSEND) b = prev;   /* v0.21.43: nada sai da tela até o log ir */
 #define PRESSED(f) (b.f && !prev.f)
         /* v0.21.33: Guia (MENU-SETTINGS-PLAN.md "Regra proposta da Guia"). No
          * jogo ela continua indo pro xCloud como Nexus (D1, send_pad). Aqui:
@@ -3480,6 +3599,13 @@ static int menu_loop(int net_ok, const char *msg) {
             st.detail = notice[0] ? notice : NULL;
             st.hint = "Y:Tentar de novo|X:Teste offline";
             break;
+        case SCR_LOGSEND:
+            st.kind = XUI_ST_BUSY;
+            st.title = "Enviando o log da partida…";
+            st.text = "Isso ajuda a gente a corrigir os problemas. Leva poucos segundos.";
+            st.detail = g_logsend_detail;
+            st.progress = -1;
+            break;
         case SCR_WAIT:
             st.game_id = play_id[0] ? play_id : NULL;
             st.hint = "B:Cancelar";
@@ -3763,6 +3889,7 @@ static int worker_extra_step(void) {
     xcv_save_pending();   /* v0.21.21: XC360/VIDEO.TXT */
     cfg_save_pending();   /* v0.21.33: XC360/PAD.TXT e VOLUME.TXT */
     xw_sys_main_poll();
+    if (xlu_speed_step()) return 1;   /* v0.21.43 */
     return xlu_step();
 }
 
@@ -3848,6 +3975,11 @@ static void menu_main(int gpu_on) {
                 }
                 xc_log("[idioma] jogos em %s (%s)", xs_play_locale(), ln > 0 ? "LANG.TXT" : "padrão");
             }
+            {   /* v0.21.43: XC360/PERF.TXT "overlay=1" = FPS/CPU/GPU no canto do jogo */
+                char pb[32];
+                int pn = xc_store_load("PERF.TXT", pb, sizeof(pb) - 1);
+                if (pn > 0) { pb[pn] = 0; xpf_overlay = strstr(pb, "overlay=1") != NULL; }
+            }
             {   /* v0.21.31: XC360/VOLUME.TXT = volume da saída do console em % (50..400) */
                 char vb[16];
                 int vn = xc_store_load("VOLUME.TXT", vb, sizeof(vb) - 1);
@@ -3899,12 +4031,19 @@ static void menu_main(int gpu_on) {
                    dn > 0 ? "lido" : "ausente (padrões)", xw_diag_netlog, xhs_diag_overlay, stream_diag_prio, xhs_dma128,
                    xhs_dma_pool, xhs_buf_cached, xhs_diag_ep3);
             xdd_boot_apply();
+            /* v0.21.43: build de teste (versão com "-", só roda no console do dono):
+             * o NETLOG da sessão volta mesmo no modo lite (o lite o desliga desde a
+             * v0.21.27 pelo custo na hw1); DIAG.TXT netlog= continua mandando */
+            if (strchr(XCLOUD360_BUILD_VERSION, (int)'-') && !xdd.netlog_set) xw_diag_netlog = 1;
         }
         /* v0.21.0: Wi-Fi interno (lê XC360/WIFI.TXT; anda na thread de rede) */
         xw_sys_init(stream_net_cable());
         /* v0.21.7: vigia (HANG.TXT pré-alocado) e a lista do catálogo da sessão anterior */
         xc_hang_prepare(XCLOUD360_BUILD_VERSION);
         xc_netlog_prepare(XCLOUD360_BUILD_VERSION);   /* v0.21.10: log da sessão direto no disco */
+#ifdef ORBITA_LOUDBOOT
+        BOOT_STEP("10a CATLIST...");
+#endif
         g_catboot = (char *)malloc(CATLIST_CAP + 1);
         if (g_catboot) {
             g_catboot_len = xc_store_load(CATLIST_FILE, g_catboot, CATLIST_CAP);
@@ -3916,7 +4055,11 @@ static void menu_main(int gpu_on) {
         xpt_idle_hook = idle_hook;          /* v0.21.12: tripwire nas esperas ociosas do decoder (v0.21.35: + decode parado) */
         /* Daqui em diante a thread de rede também dá printf: o console do
          * libxenon não aguenta duas threads; stdout só pra UART. */
+#ifdef ORBITA_LOUDBOOT
+        BOOT_STEP("10b CATLIST ok");   /* teste: a tela segue com o log até o menu */
+#else
         quiet_stdout_install();
+#endif
         BOOT_STEP("11 thread de rede...");
         int nr = stream_start_thread(1);
         printf("[net] thread de rede hw=1 r=%d\n", nr);

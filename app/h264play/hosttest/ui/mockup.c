@@ -442,6 +442,18 @@ static void cfg_scenes(void) {
     cfg_scene("69_cfg_desligar", &in, &nav, NULL, 0);
     cfg_nav(&nav, &in, XCF_IT_REBOOT, 0, 0);
     cfg_scene("69b_cfg_energia_coluna", &in, &nav, NULL, 0);
+    /* v0.21.43: Desempenho + coluna rolando */
+    in.perf_cpu_c10 = 523; in.perf_gpu_c10 = 588; in.perf_cpu_pct = -1; in.perf_gpu_pct = -1; in.perf_fps10 = -1;
+    cfg_nav(&nav, &in, XCF_SEC_PERF, 0, 0);
+    cfg_scene("70_cfg_desempenho_menu", &in, &nav, NULL, 0);
+    in.perf_cpu_pct = 41; in.perf_gpu_pct = 37; in.perf_fps10 = 594; in.perf_dec_ms10 = 132; in.perf_net_pct = 12;
+    in.perf_audio_ms10 = 712; in.perf_pad_ms100 = 805; in.perf_live = 0; in.perf_overlay = 1;
+    cfg_nav(&nav, &in, XCF_SEC_PERF, 1, 0);
+    cfg_scene("70b_cfg_desempenho_partida", &in, &nav, NULL, 0);
+    cfg_nav(&nav, &in, XCF_SEC_ACCOUNT, 0, 0);
+    cfg_scene("70c_cfg_coluna_topo", &in, &nav, NULL, 0);
+    cfg_nav(&nav, &in, XCF_SEC_NET, 1, 0);
+    cfg_scene("70d_cfg_rede_cabo_wifi", &in, &nav, NULL, 0);
 }
 
 /* v0.21.0: Wi-Fi e teclado de texto */

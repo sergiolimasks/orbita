@@ -962,6 +962,9 @@ void xcc_mru_touch(const char *title_id) {
 
 static int cancel_hook(void) { return g_stop; }
 
+/* v0.21.43: só o log da partida (sem capas): o worker sobe com a sessão
+ * ainda aberta na rede, só pra mandar o lote, e o main o para depois */
+volatile int xcc_logs_only = 0;
 static int (*g_xstep)(void);
 static void (*g_xfin)(void);
 void xcc_set_worker_extra(int (*step)(void), void (*finish)(void)) { g_xstep = step; g_xfin = finish; }
@@ -975,7 +978,7 @@ static void task_main(void) {
     while (!g_stop) {
         xwd_beat("capas: passo do worker");
         xwd_observe();   /* v0.21.8: main + rede paradas juntas */
-        int w = xcc_worker_step();
+        int w = xcc_logs_only ? 0 : xcc_worker_step();
         if (!g_stop && g_xstep) w |= g_xstep();   /* v0.20.1: log beta */
         if (!w) xcn_sleep_ms(30);
     }

@@ -23,6 +23,7 @@ typedef struct {
     uint64_t flip_lag_us;   /* sum of (flip time - submit time) over flips */
     uint32_t superseded;    /* finished frames never shown (a newer one finished first) */
     uint32_t timeouts;      /* GPU fence waits that timed out (GPU hang?) */
+    uint64_t busy_us;       /* v0.21.43: sum of (fence seen done - submit), capped per frame */
 } gpu_present_stats_t;
 
 /* Init Xenos device, EDRAM, shaders, 2 YUV texture sets (tex_w x tex_h luma)
@@ -59,5 +60,10 @@ void gpu_present_set_flip_cb(void (*cb)(uint64_t tag, uint64_t t_flip_us));
 void gpu_present_finish(void);
 
 void gpu_present_get_stats(gpu_present_stats_t *out);
+
+/* v0.21.43: overlay de desempenho no canto superior esquerdo do vídeo.
+ * alpha = máscara w x h (0..255, texto branco); NULL desliga. O ponteiro
+ * tem que continuar válido enquanto ligado (main thread). */
+void gpu_present_set_overlay(const uint8_t *alpha, int w, int h);
 
 #endif

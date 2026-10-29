@@ -31,7 +31,11 @@ void xi_init(void) {
         g_idx[i].i = (uint16_t)i;
     }
     qsort(g_idx, XI_N, sizeof(g_idx[0]), cmp);
+#if defined(__PPC__) || defined(__powerpc__)
     __asm__ __volatile__("sync" ::: "memory");
+#else
+    __sync_synchronize();   /* testes do host (mockup) */
+#endif
     g_ready = 1;
 }
 

@@ -12,7 +12,7 @@ mkdir -p "$OUT"
 gcc -O1 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/settings_test" "$HERE/settings_test.c" \
     "$APP/source/settings/xc_cfgnav.c" "$APP/source/settings/xc_cfgview.c" "$APP/source/settings/xc_notes.c" \
-    "$APP/source/input/xc_padcfg.c" -lm
+    "$APP/source/input/xc_padcfg.c" "$APP/source/ui/xc_i18n.c" -lm
 rc=0
 "$OUT/settings_test" || rc=1
 rm -rf "$OUT"

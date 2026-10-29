@@ -294,6 +294,43 @@ static void cp_reset(uint64_t now_tb, unsigned gwait_us) {
     g_cp_tb = now_tb;
 }
 
+/* v0.21.43: carga desde a amostra anterior (Desempenho / overlay). Mesmas
+ * fontes do [cpu], janela própria. */
+void xdd_load_sample(xdd_load_t *o) {
+    static uint64_t p_tb, p_idle[8], p_net, p_mi, p_audio, p_pad;
+    static xc_prof_t p_prof;
+    uint64_t now = mftb();
+    xc_prof_t c = xc_prof;
+    memset(o, 0, sizeof(*o));
+    o->cpu_pct = -1;
+    double w = p_tb ? (double)(now - p_tb) : 0;
+    if (w > 0) {
+        double sec = w / PPC_TIMEBASE_FREQ, busy = 0;
+        double hw0 = 1.0 - ((double)(xpt_idle_tb[0] - p_idle[0]) + (double)(xdd_tb_main_idle - p_mi)) / w;
+        double hw1 = (double)(stream_net_busy_tb() - p_net) / w;
+        busy += hw0 < 0 ? 0 : hw0 > 1 ? 1 : hw0;
+        busy += hw1 < 0 ? 0 : hw1 > 1 ? 1 : hw1;
+        static const int hw[] = { 2, 3, 4, 5 };
+        for (int j = 0; j < 4; j++) {
+            int i = hw[j];
+            double b = (double)((c.t[i].tb[XCP_DECODE] - p_prof.t[i].tb[XCP_DECODE]) -
+                                (c.t[i].tb[XCP_AWAIT] - p_prof.t[i].tb[XCP_AWAIT])) / w;
+            busy += b < 0 ? 0 : b > 1 ? 1 : b;
+        }
+        o->cpu_pct = (int)(busy * 100.0 / 6.0 + 0.5);
+        o->net_pct = (int)(100.0 * (hw1 < 0 ? 0 : hw1) + 0.5);
+        o->audio_ms_s = (xdd_tb_audio - p_audio) / TB_PER_MS / sec;
+        o->pad_ms_s = (xdd_tb_pad - p_pad) / TB_PER_MS / sec;
+    }
+    p_tb = now;
+    for (int i = 0; i < 8; i++) p_idle[i] = xpt_idle_tb[i];
+    p_net = stream_net_busy_tb();
+    p_mi = xdd_tb_main_idle;
+    p_audio = xdd_tb_audio;
+    p_pad = xdd_tb_pad;
+    p_prof = c;
+}
+
 void xdd_tick(uint64_t now_us, int dec_threads, unsigned gwait_us) {
     static uint64_t next_cpu, last_us;
     uint64_t now_tb = mftb();

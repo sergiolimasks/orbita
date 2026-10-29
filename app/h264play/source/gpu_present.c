@@ -200,6 +200,10 @@ void gpu_present_poll(void) {
         uint64_t t = gp_now_us();
         g_st.flips++;
         g_st.flip_lag_us += t - g_scan_submit_us[best];
+        {   /* v0.21.43: Desempenho (GPU %, estimada) */
+            uint64_t b = t - g_scan_submit_us[best];
+            g_st.busy_us += b > 16667 ? 16667 : b;
+        }
         if (g_flip_cb) g_flip_cb(g_scan_tag[best], t);
     }
     for (int i = 0; i < GP_SETS; i++)
@@ -235,7 +239,40 @@ static void gp_copy_row_vmx(uint8_t *dst, const uint8_t *src, int w) {
     for (; x < w; x += 16) vec_st(vec_ld(x, src), x, dst);
 }
 
-static void gp_copy_plane(struct XenosSurface *s, const uint8_t *src, int stride, int w, int h) {
+/* v0.21.43: overlay (Configurações > Desempenho > Mostrar no jogo) */
+#define GP_OVL_X 16
+#define GP_OVL_Y 16
+static const uint8_t *g_ovl_a;
+static int g_ovl_w, g_ovl_h;
+void gpu_present_set_overlay(const uint8_t *alpha, int w, int h) {
+    g_ovl_a = alpha;
+    g_ovl_w = w;
+    g_ovl_h = h;
+}
+/* plane 0 = Y (caixa escura + texto), 1/2 = U/V (meia resolução, sem cor na caixa) */
+static void gp_ovl_apply(uint8_t *dst, int pitch, int plane, int pw, int ph) {
+    const uint8_t *a = g_ovl_a;
+    if (!a) return;
+    int sh = plane ? 1 : 0;
+    int x0 = GP_OVL_X >> sh, y0 = GP_OVL_Y >> sh, w = g_ovl_w >> sh, h = g_ovl_h >> sh;
+    if (x0 + w > pw) w = pw - x0;
+    if (y0 + h > ph) h = ph - y0;
+    for (int y = 0; y < h; y++) {
+        uint8_t *d = dst + (y0 + y) * pitch + x0;
+        if (plane) {
+            for (int x = 0; x < w; x++) d[x] = (uint8_t)(128 + (((int)d[x] - 128) * 64 >> 8));
+        } else {
+            const uint8_t *m = a + y * g_ovl_w;
+            for (int x = 0; x < w; x++) {
+                int v = 16 + (((int)d[x] - 16) * 90 >> 8);
+                v += (235 - v) * m[x] >> 8;
+                d[x] = (uint8_t)v;
+            }
+        }
+    }
+}
+
+static void gp_copy_plane(struct XenosSurface *s, const uint8_t *src, int stride, int w, int h, int plane) {
     uint8_t *dst = Xe_Surface_LockRect(g_xe, s, 0, 0, 0, 0, XE_LOCK_WRITE);
     const int pitch = s->wpitch;              /* bytes per row (XE_FMT_8: 1 B/texel) */
     if (gpu_present_copy_vmx && (((uintptr_t)dst | (uintptr_t)src | (unsigned)pitch | (unsigned)stride | (unsigned)w) & 15) == 0) {
@@ -246,6 +283,7 @@ static void gp_copy_plane(struct XenosSurface *s, const uint8_t *src, int stride
         for (int y = 0; y < h; y++)
             memcpy(dst + y * pitch, src + y * stride, w);
     }
+    if (g_ovl_a) gp_ovl_apply(dst, pitch, plane, w, h);   /* v0.21.43 */
     Xe_Surface_Unlock(g_xe, s);               /* dcbst range + GPU cache invalidate packet */
 }
 
@@ -286,9 +324,9 @@ void gpu_present_frame(uint8_t *const data[3], const int linesize[3], int w, int
     g_st.wait_us += tu0 - tw0;
 
     struct XenosSurface **t = g_tex[s];
-    gp_copy_plane(t[0], data[0], linesize[0], w,     h);
-    gp_copy_plane(t[1], data[1], linesize[1], w / 2, h / 2);
-    gp_copy_plane(t[2], data[2], linesize[2], w / 2, h / 2);
+    gp_copy_plane(t[0], data[0], linesize[0], w,     h,     0);
+    gp_copy_plane(t[1], data[1], linesize[1], w / 2, h / 2, 1);
+    gp_copy_plane(t[2], data[2], linesize[2], w / 2, h / 2, 2);
     uint64_t tu1 = gp_now_us();
     g_st.upload_us += tu1 - tu0;
 

@@ -18,7 +18,7 @@ mkdir -p "$OUT" "$HERE/out"
 CFLAGS="-O2 -g -Wall -Wextra -Wno-unused-parameter"
 SRC="$UI/xui_gfx.c $UI/xui_text.c $UI/xui_home.c $UI/xui_tile.c $UI/xui_mm.c $APP/source/menu_model.c"
 # v0.21.33: Configurações (navegação, textos e zona morta: o mesmo código do app)
-SRC="$SRC $APP/source/settings/xc_cfgnav.c $APP/source/settings/xc_cfgview.c $APP/source/input/xc_padcfg.c"
+SRC="$SRC $APP/source/settings/xc_cfgnav.c $APP/source/settings/xc_cfgview.c $APP/source/input/xc_padcfg.c $APP/source/ui/xc_i18n.c"
 rc=0
 gcc $CFLAGS -o "$OUT/xui_test" "$HERE/xui_test.c" $SRC -lm
 "$OUT/xui_test" || rc=1

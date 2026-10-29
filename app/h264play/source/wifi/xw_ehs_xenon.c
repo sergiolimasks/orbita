@@ -980,6 +980,21 @@ int xhs_watch_claim(void) {
     return 0;
 }
 
+/* v0.21.43: o usuário ligou o Wi-Fi pelo menu: o vigia devolve o EHCI (o
+ * tinyehci e a procura do adaptador voltam a mexer nas portas) */
+void xhs_watch_release(void) {
+    if (!g_watch_only || !g_h) return;
+    int np = g_h->num_port;
+    if (np > EHCI_MAX_ROOT_PORTS) np = EHCI_MAX_ROOT_PORTS;
+    if (np > 8) np = 8;
+    for (int k = 0; k < np; k++) {
+        if (k == g_port - 1 || !(ps_rd(g_h, k) & PS_PE)) g_h->devices[k].busy = 0;   /* pendrive em uso fica como está */
+        g_pw[g_bus][k].st = 0;
+    }
+    g_watch_only = 0;
+    xc_log("[usb] Wi-Fi ligado pelo menu: o vigia devolveu o EHCI %d", g_bus);
+}
+
 unsigned xhs_port_handoffs(void) { return g_pw_handoffs; }
 unsigned xhs_port_hs_blocked(void) { return g_pw_hs_blocked; }
 unsigned xhs_port_changes(void) { return g_pw_changes; }

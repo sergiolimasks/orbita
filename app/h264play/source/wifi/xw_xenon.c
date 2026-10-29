@@ -38,6 +38,7 @@ extern usbbus_t *usb_buses[];
 extern int usb_buscnt;
 int xw_ehci_release_wifi(int *bus, int *port, int release);
 int xw_ehci_enum_unknown(void);   /* v0.21.41 */
+void xw_ehci_ports_text(char *o, size_t n);   /* v0.21.43 */
 uint32_t xw_ehci_port_status(int bus, int port);
 int ohci_debug_hc(usbbus_t *bus, char *out, int cap);   /* libxenon (patch GIP): estado do HC e das portas raiz */
 
@@ -91,6 +92,8 @@ static volatile int g_activate = 0;
  * interface do lwIP e o passo vira um return: nada de CPU/memória gasto) */
 static volatile int g_off_req = 0;
 static int g_off = 0;
+void xhs_watch_release(void);   /* v0.21.43 */
+static volatile int g_wake_req = 0;   /* v0.21.43: o menu pediu Wi-Fi (desfaz cabo/falha) */
 static int g_watch_claimed = 0;   /* v0.21.29: vigia do hotplug sem o Wi-Fi aberto */
 static uint32_t g_off_t = 0;
 static uint32_t     g_last_arp = 0;
@@ -102,8 +105,8 @@ static int          g_hs_tried = 0;
 static int g_enum_tried = 0;   /* v0.21.41: já identificou as portas sem endereço */
 static uint32_t     g_t_act = 0, g_t_rel = 0, g_last_diag = 0;
 static int          g_rel_bus = -1, g_rel_port = -1;
-static char         g_why[160];         /* sob g_lk na leitura (publish) */
-static char         g_hs_why[120];
+static char         g_why[240];         /* sob g_lk na leitura (publish) */
+static char         g_hs_why[200];   /* v0.21.43: + portas */
 static const char  *g_stage = "";
 static int          g_hex_in = 0, g_hex_out = 0;
 static unsigned     g_tx_seen = 0;          /* v0.21.4: conclusões do EP2 OUT já avisadas ao core */
@@ -626,7 +629,7 @@ static void start_core(uint32_t now) {
 
 /* falha visível (a tela mostra o motivo; nunca "Ligando" pra sempre) */
 static void glue_fail(uint32_t now, const char *why) {
-    char w[160];
+    char w[240];
     if (g_hs_why[0] && g_tr != TR_EHCI) snprintf(w, sizeof(w), "%s (high speed: %s)", why, g_hs_why);
     else snprintf(w, sizeof(w), "%s", why);
     xlk_lock(&g_lk, "wifi status " XLK_HERE);
@@ -934,8 +937,10 @@ static unsigned g_step_reenter = 0, g_step_stale = 0;
 static void step_body(int held);
 /* v0.21.13: o passo do Wi-Fi nunca entra em si mesmo (a bomba do xcw_idle
  * chamada de dentro de um caminho que já está no passo) */
+static void wake_body(void);
 static void step(int held) {
     if (!g_inited) return;
+    if (g_wake_req && !held && !g_in_step) wake_body();   /* v0.21.43 */
     if (g_off) {
         /* v0.21.29: Wi-Fi desligado, mas se ele chegou a abrir o EHCI as portas
          * desse controlador são nossas: o vigia de hotplug (controle com fio
@@ -984,6 +989,33 @@ static void canary_check(const char *what, uint32_t *a, uint32_t *b, size_t inne
     }
 }
 unsigned xw_canary_hits(void) { return g_canary_hits; }
+
+/* v0.21.43: o usuário pediu Wi-Fi pelo menu (Procurar / Conectar). Antes, o
+ * Wi-Fi desligado pelo cabo (ou que falhou) nunca mais voltava: a tela ficava
+ * em "Ligando o Wi-Fi" pra sempre. Aqui (hw1, fora do hold) desfaz o
+ * desligamento, devolve o EHCI do vigia e zera a procura do adaptador. O
+ * cabo deixa de ser a rota se o Wi-Fi pegar DHCP (escolha do usuário). */
+static void wake_body(void) {
+    g_wake_req = 0;
+    if (!g_off && !g_off_req && !g_dead) return;
+    int was_off = g_off || g_off_req, was_dead = g_dead;
+    if (g_watch_claimed) { xhs_watch_release(); g_watch_claimed = 0; }
+    g_off = 0;
+    g_off_req = 0;
+    g_off_t = 0;
+    g_cable = 0;
+    g_dead = 0;
+    g_hs_tried = 0;
+    g_enum_tried = 0;
+    g_released = 0;
+    g_last_find = 0;
+    g_t_act = 0;   /* o passo marca de novo ("ligando o adaptador") */
+    if (g_present == XW_PRESENT_NO) g_present = XW_PRESENT_UNKNOWN;
+    if (g_attached) g_core.dev = XW_DEV_READY;   /* o adaptador seguiu com o firmware (só saiu da rede) */
+    g_activate = 1;
+    xc_log("[wifi] ligado pelo menu (%s%s%s)", was_off ? "estava desligado pelo cabo" : "",
+           was_off && was_dead ? ", " : "", was_dead ? "tinha falhado" : "");
+}
 
 /* v0.21.29: 1 = segue o passo normal (mandando o deauth), 0 = desligou */
 static int wifi_off_step(uint32_t now) {
@@ -1076,8 +1108,10 @@ static void step_body(int held) {
                 goto pub;
             } else if (now - g_t_act > HS_FIND_MS) {
                 g_hs_tried = 1;
-                snprintf(g_hs_why, sizeof(g_hs_why), "não está no EHCI");
-                xc_log("[wifi] 045e:0765 não está no EHCI");
+                char pt[80];
+                xw_ehci_ports_text(pt, sizeof(pt));   /* v0.21.43: aparece na foto da tela */
+                snprintf(g_hs_why, sizeof(g_hs_why), "não está no EHCI; portas %s", pt);
+                xc_log("[wifi] 045e:0765 não está no EHCI (portas %s)", pt);
             } else {
                 goto pub;
             }
@@ -1295,6 +1329,7 @@ void xw_sys_status(xw_status_t *o) {
 
 int xw_sys_scan(void) {
     g_activate = 1;
+    g_wake_req = 1;   /* v0.21.43 */
     xlk_lock(&g_lk, "wifi status " XLK_HERE);
     r_scan = 1;
     xlk_unlock(&g_lk);
@@ -1308,6 +1343,7 @@ int xw_sys_connect(const char *ssid, int ssid_len, const uint8_t *pmk) {
     memset(&r_target, 0, sizeof(r_target));
     memcpy(r_target.ssid, ssid, (size_t)ssid_len);
     r_target.ssid_len = ssid_len;
+    g_wake_req = 1;   /* v0.21.43 */
     r_target.secure = pmk != NULL;
     if (pmk) memcpy(r_target.pmk, pmk, 32);
     r_connect = 1;
@@ -1318,7 +1354,7 @@ int xw_sys_connect(const char *ssid, int ssid_len, const uint8_t *pmk) {
 int xw_sys_connect_saved(void) {
     xlk_lock(&g_lk, "wifi status " XLK_HERE);
     int ok = g_have_saved;
-    if (ok) { r_connect_saved = 1; g_activate = 1; }
+    if (ok) { r_connect_saved = 1; g_activate = 1; g_wake_req = 1; }   /* v0.21.43: + acorda */
     xlk_unlock(&g_lk);
     return ok ? 0 : -1;
 }

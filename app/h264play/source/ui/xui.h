@@ -319,7 +319,7 @@ typedef struct {
 } xui_calib_t;
 
 enum { XUI_CFG_ROWS = 0, XUI_CFG_NOTES, XUI_CFG_CALIB };
-#define XUI_CFG_NSEC 5   /* v0.21.38: + Idioma */
+#define XUI_CFG_NSEC 6   /* v0.21.38: + Idioma; v0.21.43: + Desempenho (a coluna rola) */
 typedef struct {
     const char *sections[XUI_CFG_NSEC];
     int         item;          /* item da coluna destacado: 0..3 seções, 4 Reiniciar, 5 Desligar */

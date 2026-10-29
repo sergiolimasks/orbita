@@ -71,7 +71,7 @@ def _area_ctx():
                 key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY)
 
 
-KEYS_PER_DAY = 5
+KEYS_PER_DAY = 2   # v0.21.43: gerar várias era o que mais quebrava a ativação
 
 
 def _keys_today(uid):

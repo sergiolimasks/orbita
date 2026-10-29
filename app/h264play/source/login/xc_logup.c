@@ -473,3 +473,67 @@ int xlu_step(void) {
 void xlu_finish(void) {
     if (g_conn) { https_conn_free(g_conn); g_conn = NULL; }
 }
+
+/* v0.21.43: Configurações > Rede > Teste de velocidade. Pedido pelo main
+ * (xlu_speed_request), feito no worker (hw 3) com a chave beta e o ID do
+ * console: latência = um /v1/beta/check; download = /v1/speedtest?mb=N. */
+static volatile int g_spd_req = 0;
+static volatile int g_spd_state = 0;   /* XLU_SPD_* */
+static volatile int g_spd_mbps10 = 0, g_spd_lat_ms = 0;
+static char g_spd_msg[96];
+void xlu_speed_request(void) { if (g_spd_state != XLU_SPD_RUNNING) { g_spd_state = XLU_SPD_WAIT; g_spd_req = 1; } }
+int  xlu_speed_result(int *mbps10, int *lat_ms, char *msg, size_t cap) {
+    *mbps10 = g_spd_mbps10;
+    *lat_ms = g_spd_lat_ms;
+    if (cap) snprintf(msg, cap, "%s", g_spd_msg);
+    return g_spd_state;
+}
+int xlu_speed_step(void) {
+    if (!g_spd_req) return 0;
+    g_spd_req = 0;
+    g_spd_state = XLU_SPD_RUNNING;
+    char hdr[200];
+    lk();
+    int ok = g_key[0] && g_id[0];
+    if (ok) snprintf(hdr, sizeof(hdr), "X-Api-Key: %s\r\nX-Console: %s\r\n", g_key, g_id);
+    ulk();
+    if (!ok) {
+        snprintf(g_spd_msg, sizeof(g_spd_msg), "precisa da chave beta validada");
+        g_spd_state = XLU_SPD_FAIL;
+        return 1;
+    }
+    xc_err_t e;
+    memset(&e, 0, sizeof(e));
+    https_resp_t r;
+    memset(&r, 0, sizeof(r));
+    unsigned long long t0 = xcn_now_ms();
+    int rc = https_request("speed", "GET", XLU_HOST, "/v1/beta/check", hdr, NULL, 0, 4096, &r, &e);
+    unsigned long long t1 = xcn_now_ms();
+    https_free(&r);
+    if (rc != 0) {
+        snprintf(g_spd_msg, sizeof(g_spd_msg), "sem conexão (%s)", e.msg);
+        g_spd_state = XLU_SPD_FAIL;
+        memset(hdr, 0, sizeof(hdr));
+        return 1;
+    }
+    g_spd_lat_ms = (int)(t1 - t0);
+    memset(&r, 0, sizeof(r));
+    t0 = xcn_now_ms();
+    rc = https_request("speed", "GET", XLU_HOST, "/v1/speedtest?mb=4", hdr, NULL, 0, (5u << 20), &r, &e);
+    t1 = xcn_now_ms();
+    memset(hdr, 0, sizeof(hdr));
+    if (rc != 0 || r.status != 200 || r.len < (1u << 20)) {
+        if (rc != 0) snprintf(g_spd_msg, sizeof(g_spd_msg), "falhou (%s)", e.msg);
+        else snprintf(g_spd_msg, sizeof(g_spd_msg), "falhou (resposta %d)", r.status);
+        https_free(&r);
+        g_spd_state = XLU_SPD_FAIL;
+        return 1;
+    }
+    unsigned long long ms = t1 > t0 ? t1 - t0 : 1;
+    g_spd_mbps10 = (int)((unsigned long long)r.len * 80ULL / 1000ULL / ms);   /* bits/ms = kb/s; /100 -> Mb/s x10 */
+    https_free(&r);
+    g_spd_msg[0] = 0;
+    xc_log("[rede] teste de velocidade: %d.%d Mb/s, latência %d ms", g_spd_mbps10 / 10, g_spd_mbps10 % 10, g_spd_lat_ms);
+    g_spd_state = XLU_SPD_DONE;
+    return 1;
+}

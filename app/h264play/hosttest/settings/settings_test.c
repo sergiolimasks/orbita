@@ -221,12 +221,13 @@ static void t_nav(void) {
     /* LB/RB de qualquer lugar, foco vai pra coluna, sem dar a volta */
     key(&n, XCF_K_A);
     CHECK(key(&n, XCF_K_RB).act == XCF_A_MOVED && n.sec == XCF_SEC_PADS && !n.right);
-    CHECK(key(&n, XCF_K_RB).act == XCF_A_MOVED && n.sec == XCF_SEC_PADS);
-    key(&n, XCF_K_LB); key(&n, XCF_K_LB); key(&n, XCF_K_LB); key(&n, XCF_K_LB);
+    for (int i = 0; i < XCF_NSEC; i++) key(&n, XCF_K_RB);
+    CHECK(n.sec == XCF_NSEC - 1);                                     /* sem dar a volta */
+    for (int i = 0; i < XCF_NSEC; i++) key(&n, XCF_K_LB);
     CHECK(n.sec == XCF_SEC_ACCOUNT && n.item == 0);
     /* energia: A abre a confirmação; Cancelar é o padrão; Guia não faz nada nela */
-    for (int i = 0; i < 9; i++) key(&n, XCF_K_DOWN);
-    CHECK(n.item == XCF_IT_SHUTDOWN && n.sec == XCF_SEC_PADS);       /* o painel fica na última seção */
+    for (int i = 0; i < XCF_NITEMS + 2; i++) key(&n, XCF_K_DOWN);
+    CHECK(n.item == XCF_IT_SHUTDOWN && n.sec == XCF_NSEC - 1);       /* o painel fica na última seção */
     CHECK(key(&n, XCF_K_RIGHT).act == XCF_A_NONE);
     key(&n, XCF_K_A);
     CHECK(n.confirm == XCF_CF_SHUTDOWN && n.confirm_yes == 0);
@@ -241,14 +242,14 @@ static void t_nav(void) {
     key(&n, XCF_K_RIGHT);
     CHECK(key(&n, XCF_K_B).act == XCF_A_MOVED && !n.confirm);        /* B fecha o diálogo */
     /* LB a partir da energia: seção anterior à mostrada */
-    CHECK(key(&n, XCF_K_LB).act == XCF_A_MOVED && n.sec == XCF_SEC_AV && n.item == XCF_SEC_AV);
+    CHECK(key(&n, XCF_K_LB).act == XCF_A_MOVED && n.sec == XCF_NSEC - 2 && n.item == XCF_NSEC - 2);
     /* B na coluna fecha; reabre na última seção */
     e = key(&n, XCF_K_B);
     CHECK(e.act == XCF_A_CLOSE && !n.open);
     xcf_open(&n);
-    CHECK(n.open && n.sec == XCF_SEC_AV && n.item == XCF_SEC_AV && !n.right && n.page == XCF_PG_MAIN);
+    CHECK(n.open && n.sec == XCF_NSEC - 2 && n.item == XCF_NSEC - 2 && !n.right && n.page == XCF_PG_MAIN);
     /* subpágina das notas: ↑/↓ vão pra ela; B/← voltam pra seção; LB/RB trocam de seção */
-    key(&n, XCF_K_LB); key(&n, XCF_K_LB);
+    for (int i = 0; i < XCF_NSEC; i++) key(&n, XCF_K_LB);
     key(&n, XCF_K_A); key(&n, XCF_K_DOWN);
     xcf_set_page(&n, XCF_PG_NOTES);
     e = key(&n, XCF_K_DOWN);
@@ -280,7 +281,8 @@ static void t_nav(void) {
     /* a seção aberta perdeu as opções (o cabo pegou DHCP): foco volta pra coluna */
     xcf_open(&n);
     xcf_set_options(&n, XCF_SEC_NET, 1, 0);
-    key(&n, XCF_K_LB); key(&n, XCF_K_LB); key(&n, XCF_K_LB); key(&n, XCF_K_RB);
+    for (int i = 0; i < XCF_NSEC; i++) key(&n, XCF_K_LB);
+    key(&n, XCF_K_RB);
     key(&n, XCF_K_A);
     CHECK(n.sec == XCF_SEC_NET && n.right);
     xcf_set_options(&n, XCF_SEC_NET, 0, 0);
@@ -352,15 +354,15 @@ static void t_view(void) {
     CHECK(!strcmp(v.rows[2].value, "procurando…"));
     /* Rede */
     base_in(&in);
-    CHECK(xcs_options(&in, XCF_SEC_NET, ids, &adj) == 0);   /* cabo: sem item de Wi-Fi */
+    CHECK(xcs_options(&in, XCF_SEC_NET, ids, &adj) == 2 && ids[0] == XCS_OPT_WIFI && ids[1] == XCS_OPT_SPEED);   /* v0.21.43 */
     n.sec = n.item = XCF_SEC_NET;
     xcs_build(&v, &in, &n, NULL, 0, 0);
-    CHECK(v.cfg.card == 1 && v.cfg.card_ok && !strcmp(v.cfg.card_text, "IP na rede local: 10.0.0.7") && v.cfg.nrows == 0);
-    CHECK(strstr(v.cfg.text, "tire o cabo e reinicie") != NULL);
-    CHECK(!strcmp(v.cfg.hint, "LB/RB:Seção|B:Fechar"));   /* nada pra focar: a dica mostra só B */
+    CHECK(v.cfg.card == 1 && v.cfg.card_ok && !strcmp(v.cfg.card_text, "IP na rede local: 10.0.0.7") && v.cfg.nrows == 2);
+    CHECK(strstr(v.cfg.text, "abra o Wi-Fi") != NULL);
+    CHECK(find_row(&v, "Teste de velocidade") == 1);
     in.cable = 0; in.wifi = XCS_W_UP; in.wifi_ssid = "Casa"; in.wifi_rssi = -58; in.wifi_dhcp = 1;
     in.wifi_ip = (192u << 24) | (168u << 16) | 77;
-    CHECK(xcs_options(&in, XCF_SEC_NET, ids, &adj) == 1 && ids[0] == XCS_OPT_WIFI);
+    CHECK(xcs_options(&in, XCF_SEC_NET, ids, &adj) == 2 && ids[0] == XCS_OPT_WIFI && ids[1] == XCS_OPT_SPEED);
     xcs_build(&v, &in, &n, NULL, 0, 0);
     CHECK(v.cfg.card == 2 && v.cfg.card_bars == 3 && !strcmp(v.cfg.card_title, "Wi-Fi: Casa"));
     CHECK(strstr(v.cfg.card_text, "sinal bom (-58 dBm)") && strstr(v.cfg.card_text, "192.168.0.77"));

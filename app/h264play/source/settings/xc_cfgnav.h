@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-enum { XCF_SEC_ACCOUNT = 0, XCF_SEC_NET, XCF_SEC_AV, XCF_SEC_PADS, XCF_SEC_LANG, XCF_NSEC };   /* v0.21.38: + Idioma */
+enum { XCF_SEC_ACCOUNT = 0, XCF_SEC_NET, XCF_SEC_AV, XCF_SEC_PADS, XCF_SEC_LANG, XCF_SEC_PERF, XCF_NSEC };   /* v0.21.38: + Idioma; v0.21.43: + Desempenho */
 /* itens da coluna: as 4 seções + energia */
 enum { XCF_IT_REBOOT = XCF_NSEC, XCF_IT_SHUTDOWN, XCF_NITEMS };
 enum { XCF_PG_MAIN = 0, XCF_PG_NOTES, XCF_PG_CALIB };

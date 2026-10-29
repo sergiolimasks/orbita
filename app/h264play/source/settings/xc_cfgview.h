@@ -36,6 +36,8 @@ enum {
     XCS_OPT_PAD_L,      /* calibração (começa sempre pelo esquerdo) */
     XCS_OPT_PAD_R,
     XCS_OPT_PAD_RESET,
+    XCS_OPT_OVERLAY,    /* v0.21.43: Desempenho > Mostrar no jogo (liga/desliga) */
+    XCS_OPT_SPEED,      /* v0.21.43: Rede > Teste de velocidade */
     XCS_OPT_LANG,       /* v0.21.38: idioma dos jogos: LANG + índice (lista, A escolhe) */
     XCS_OPT_ULANG = XCS_OPT_LANG + 8   /* v0.21.38: idioma do app: ULANG + XI_* */
 };
@@ -87,6 +89,11 @@ typedef struct {
     const char *notes;                      /* texto das notas desta versão (ou NULL) */
     const char *notes_when;                 /* "26/10/2026" (NULL = não sabe) */
     int         notes_from_file;            /* 1 = NOTES.TXT, 0 = manifesto */
+    /* v0.21.43: Desempenho (-1 = sem dado) */
+    int         perf_cpu_c10, perf_gpu_c10, perf_cpu_pct, perf_gpu_pct, perf_fps10;
+    int         perf_audio_ms10, perf_pad_ms100, perf_net_pct, perf_dec_ms10, perf_live, perf_overlay;
+    int         speed_state, speed_mbps10, speed_lat_ms;   /* XLU_SPD_* */
+    const char *speed_msg;
     /* aviso curto (ex. "Chave trocada") */
     const char *notice;
 } xcs_in_t;
@@ -124,6 +131,8 @@ typedef struct {
     char          b_title[96], b_info1[64], b_info2[64], b_key[96], b_notes[96], b_upd[64], b_upd_v[64];
     char          b_card_t[96], b_card_x[128], b_after[200], b_vol[64], b_lpad[48], b_rpad[48], b_cal_pad[24];
     char          b_cal_status[120], b_sub[120], b_conf[200];
+    char          b_p[5][96];   /* v0.21.43: Desempenho */
+    char          b_spd[96];
 } xcs_view_t;
 
 /* Opções focáveis da seção agora: ids em ids[] (XCS_OPT_*), bits de

@@ -19,7 +19,7 @@ int xcs_lang_index(const char *code) {
     return 0;
 }
 static const char *const k_vol_txt[XCS_NVOL] = { "100%", "150%", "200%", "250%" };
-static const char *const k_sections[XCF_NSEC] = { "Conta e sobre", "Rede", "Vídeo e Som", "Controles", "Idioma" };
+static const char *const k_sections[XCF_NSEC] = { "Conta e sobre", "Rede", "Vídeo e Som", "Controles", "Idioma", "Desempenho" };
 
 int xcs_vol_index(int pct) {
     for (int i = 0; i < XCS_NVOL; i++)
@@ -72,7 +72,12 @@ int xcs_options(const xcs_in_t *in, int sec, int *ids, unsigned *adj) {
         for (int i = 0; i < XI_NLANG; i++) ids[n++] = XCS_OPT_ULANG + i;   /* app + jogos juntos */
         break;
     case XCF_SEC_NET:
-        if (!in->cable && in->wifi != XCS_W_NONE) ids[n++] = XCS_OPT_WIFI;
+        /* v0.21.43: com cabo também (abrir o Wi-Fi o liga e o cabo deixa de ser a rota) */
+        if (in->cable || in->wifi != XCS_W_NONE) ids[n++] = XCS_OPT_WIFI;
+        if (in->cable || in->wifi == XCS_W_UP) ids[n++] = XCS_OPT_SPEED;   /* v0.21.43 */
+        break;
+    case XCF_SEC_PERF:
+        ids[n++] = XCS_OPT_OVERLAY;
         break;
     case XCF_SEC_AV:
         ids[n++] = XCS_OPT_720;
@@ -176,6 +181,27 @@ static void sec_lang(xcs_view_t *o, const xcs_in_t *in, int *nr) {   /* v0.21.38
     s->text = L("Os menus mudam na hora. O jogo abre no idioma escolhido a partir do próximo jogo aberto.");
 }
 
+/* v0.21.43: linha do teste de velocidade */
+static void speed_row(xcs_view_t *o, const xcs_in_t *in, int *nr) {
+    xui_cfg_row_t *r = &o->rows[(*nr)++];
+    r->label = L("Teste de velocidade");
+    switch (in->speed_state) {
+    case 1: r->value = L("esperando a conexão…"); break;
+    case 2: r->value = L("testando…"); break;
+    case 3:
+        snprintf(o->b_spd, sizeof(o->b_spd), "%d,%d Mb/s  ·  latência %d ms", in->speed_mbps10 / 10,
+                 in->speed_mbps10 % 10, in->speed_lat_ms);
+        r->value = o->b_spd;
+        break;
+    case 4:
+        snprintf(o->b_spd, sizeof(o->b_spd), "%s", in->speed_msg && in->speed_msg[0] ? in->speed_msg : "falhou");
+        r->value = o->b_spd;
+        break;
+    default: r->value = L("A: testar"); break;
+    }
+    r->flags = XUI_CR_ARROW;
+}
+
 static void sec_net(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_t *s = &o->cfg;
     s->title = L("Rede");
@@ -188,8 +214,13 @@ static void sec_net(xcs_view_t *o, const xcs_in_t *in, int *nr) {
         ipstr(ip, sizeof(ip), in->cable_ip);
         snprintf(o->b_card_x, sizeof(o->b_card_x), "IP na rede local: %s", in->cable_ip ? ip : "—");
         s->card_text = o->b_card_x;
-        s->text = L("Com o cabo ligado, o orbita usa só o cabo e o Wi-Fi fica desligado. "
-                  "Para usar o Wi-Fi, tire o cabo e reinicie o Xbox.");
+        s->text = L("Com o cabo ligado, o orbita usa o cabo. Para usar o Wi-Fi interno (360 S/E), abra o Wi-Fi "
+                  "aqui: ele liga e o cabo deixa de ser usado.");
+        xui_cfg_row_t *r = &o->rows[(*nr)++];   /* v0.21.43 */
+        r->label = "Wi-Fi";
+        r->value = L("ligar e conectar");
+        r->flags = XUI_CR_ARROW;
+        speed_row(o, in, nr);
         return;
     }
     s->card_text2 = L("Cabo de rede: não conectado");
@@ -228,6 +259,54 @@ static void sec_net(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     xui_cfg_row_t *r = &o->rows[(*nr)++];
     r->label = "Wi-Fi";
     r->value = L("procurar, conectar ou esquecer");
+    r->flags = XUI_CR_ARROW;
+    if (in->wifi == XCS_W_UP) speed_row(o, in, nr);
+}
+
+/* v0.21.43: Desempenho */
+static void temp_txt(char *o, size_t n, int c10) {
+    if (c10 < 0) snprintf(o, n, "—");
+    else snprintf(o, n, "%d °C", (c10 + 5) / 10);
+}
+static void sec_perf(xcs_view_t *o, const xcs_in_t *in, int *nr) {
+    xui_cfg_t *s = &o->cfg;
+    s->title = L("Desempenho");
+    s->subtitle = in->perf_live ? L("Uso do console agora (no jogo)") : L("Temperatura agora; uso e FPS da última partida");
+    char t[24];
+    xui_cfg_row_t *r = &o->rows[(*nr)++];
+    r->head = L("PROCESSADOR (CPU)");
+    r->label = L("Uso");
+    temp_txt(t, sizeof(t), in->perf_cpu_c10);
+    if (in->perf_cpu_pct >= 0) snprintf(o->b_p[0], sizeof(o->b_p[0]), "%d%%  ·  %s", in->perf_cpu_pct, t);
+    else snprintf(o->b_p[0], sizeof(o->b_p[0]), "—  ·  %s", t);
+    r->value = o->b_p[0];
+    r->flags = XUI_CR_DIM;
+    r = &o->rows[(*nr)++];
+    r->head = L("PLACA DE VÍDEO (GPU)");
+    r->label = L("Uso");
+    temp_txt(t, sizeof(t), in->perf_gpu_c10);
+    if (in->perf_gpu_pct >= 0) snprintf(o->b_p[1], sizeof(o->b_p[1]), "~%d%%  ·  %s", in->perf_gpu_pct, t);
+    else snprintf(o->b_p[1], sizeof(o->b_p[1]), "—  ·  %s", t);
+    r->value = o->b_p[1];
+    r->flags = XUI_CR_DIM;
+    r = &o->rows[(*nr)++];
+    r->head = L("JOGO");
+    r->label = "FPS";
+    if (in->perf_fps10 >= 0)
+        snprintf(o->b_p[2], sizeof(o->b_p[2]), "%d  ·  decodificação %d,%d ms/quadro", (in->perf_fps10 + 5) / 10,
+                 in->perf_dec_ms10 / 10, in->perf_dec_ms10 % 10);
+    else snprintf(o->b_p[2], sizeof(o->b_p[2]), "—");
+    r->value = o->b_p[2];
+    if (in->perf_fps10 >= 0) {
+        snprintf(o->b_p[3], sizeof(o->b_p[3]), "Rede %d%%  ·  áudio %d,%d ms/s  ·  controle %d,%02d ms/s", in->perf_net_pct,
+                 in->perf_audio_ms10 / 10, in->perf_audio_ms10 % 10, in->perf_pad_ms100 / 100, in->perf_pad_ms100 % 100);
+        r->after = o->b_p[3];
+    }
+    r->flags = XUI_CR_DIM;
+    r = &o->rows[(*nr)++];
+    r->label = L("Mostrar no jogo");
+    r->detail = L("FPS, CPU e GPU no canto");
+    r->value = in->perf_overlay ? L("Ligado") : L("Desligado");
     r->flags = XUI_CR_ARROW;
 }
 
@@ -492,6 +571,7 @@ void xcs_build(xcs_view_t *o, const xcs_in_t *in, const xcf_nav_t *nav, const xc
         case XCF_SEC_NET: sec_net(o, in, &nr); break;
         case XCF_SEC_AV: sec_av(o, in, &nr); break;
         case XCF_SEC_LANG: sec_lang(o, in, &nr); break;
+        case XCF_SEC_PERF: sec_perf(o, in, &nr); break;
         default: sec_pads(o, in, &nr); break;
         }
         s->nrows = nr;

@@ -111,6 +111,12 @@ typedef struct {
 } xlu_stats_t;
 void xlu_stats(xlu_stats_t *s);
 
+/* v0.21.43: teste de velocidade (Configurações > Rede) */
+enum { XLU_SPD_IDLE = 0, XLU_SPD_WAIT, XLU_SPD_RUNNING, XLU_SPD_DONE, XLU_SPD_FAIL };
+void xlu_speed_request(void);                 /* main */
+int  xlu_speed_step(void);                    /* worker (hw 3): 1 = trabalhou */
+int  xlu_speed_result(int *mbps10, int *lat_ms, char *msg, size_t cap);   /* XLU_SPD_* */
+
 /* Parte pura (testada no host): filtra uma linha no lugar. */
 void xlu_redact(char *line, size_t cap);
 /* Testes: volta ao estado do boot (buffer, beta, ID, backoff). */

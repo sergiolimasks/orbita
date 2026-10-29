@@ -52,7 +52,7 @@ static int p_get(const char *host, const char *path, const char *headers, int *s
     memset(&r, 0, sizeof(r));
     int rc = https_request("beta", "GET", host, path, headers, NULL, 0, 4096, &r, &e);
     if (rc != 0) {
-        printf("[beta] %s: %s\n", host, e.msg);
+        xc_log("[beta] %s: %s", host, e.msg);   /* v0.21.43: no log enviado (era só UART) */
         https_free(&r);
         return -1;
     }

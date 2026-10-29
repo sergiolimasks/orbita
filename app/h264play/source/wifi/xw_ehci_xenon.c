@@ -88,3 +88,22 @@ int xw_ehci_enum_unknown(void) {
     }
     return n;
 }
+
+/* v0.21.43: estado bruto das portas dos dois EHCI pra tela/log de falha do
+ * Wi-Fi ("E0 3002 1000 ... | E1 ..."). Só leitura de registradores. */
+void xw_ehci_ports_text(char *o, size_t n);
+void xw_ehci_ports_text(char *o, size_t n) {
+    size_t k = 0;
+    o[0] = 0;
+    for (int b = 0; b < EHCI_HCD_COUNT && k + 8 < n; b++) {
+        struct ehci_hcd *h = &ehci_hcds[b];
+        if (!h->regs) continue;
+        int np = h->num_port;
+        if (np > EHCI_MAX_ROOT_PORTS) np = EHCI_MAX_ROOT_PORTS;
+        k += (size_t)snprintf(o + k, n - k, "%sE%d", b ? " | " : "", b);
+        for (int p = 0; p < np && k + 6 < n; p++) {
+            u32 reg = (u32)h->regs + (u32)offsetof(struct ehci_regs, port_status) + 4u * (u32)p;
+            k += (size_t)snprintf(o + k, n - k, " %x", (unsigned)(read32(reg) & 0xffff));
+        }
+    }
+}

@@ -1057,6 +1057,11 @@ static void cf_icon(xui_canvas_t *c, int kind, int cx, int cy, uint32_t col) {
         break;
     case 3: xui_mask(c, &xui_icon_pad, cx - 9, cy - 6, col, 255); break;
     case 4: xui_mask(c, &xui_icon_restart, cx - 10, cy - 10, col, 255); break;
+    case 7:   /* v0.21.43: Desempenho (velocímetro) */
+        xui_round_frame(c, cx - 10, cy - 9, 20, 20, 10, 2, col);
+        xui_fill(c, cx - 1, cy - 1, 3, 3, col);
+        for (int i = 0; i < 6; i++) xui_fill(c, cx + 1 + i, cy - 2 - i, 2, 2, col);
+        break;
     case 6:   /* v0.21.38: Idioma (globo) */
         xui_round_frame(c, cx - 9, cy - 9, 18, 18, 9, 2, col);
         xui_round_frame(c, cx - 4, cy - 9, 8, 18, 4, 2, col);
@@ -1071,9 +1076,28 @@ static void cf_column(xui_canvas_t *c, const xui_cfg_t *s) {
     xui_mask(c, &xui_icon_gear, CF_LX + 24, CF_LY + 30, XUI_C_TEXT, 255);
     xui_text(c, XUI_F_H2, CF_LX + 54, CF_LY + 48, XUI_C_TEXT, L("Configurações"), 0, CF_LW - 70);
     int x = CF_LX + 14, w = CF_LW - 28;
+    /* v0.21.43: as seções rolam numa janela que acaba antes da linha do
+     * ENERGIA (Reiniciar/Desligar ficam fixos); barrinha à direita */
+    int sy = CF_LY + CF_LH - 14 - 2 * CF_IT_P - 18;
+    int vt = CF_LY + 74, vb = sy - 34, vh = vb - vt;
+    int total = XUI_CFG_NSEC * CF_IT_P;
+    int off = 0;
+    if (total > vh) {
+        int sel = s->item < XUI_CFG_NSEC ? s->item : XUI_CFG_NSEC - 1;
+        off = (sel + 1) * CF_IT_P + 8 - vh;
+        if (off < 0) off = 0;
+        if (off > total - vh + 8) off = total - vh + 8;
+        int th = vh * vh / (total + 8), ty = vt + (vh - th) * off / (total - vh + 8);
+        xui_round_rect(c, CF_LX + CF_LW - 8, vt, 3, vh, 1, XUI_C_BUTTON, 255);
+        xui_round_rect(c, CF_LX + CF_LW - 8, ty, 3, th, 1, XUI_C_DIM, 255);
+    }
+    xui_rect_t old = c->clip, vp = { CF_LX, vt - 4, CF_LW - 10, vh + 8 };
     for (int i = 0; i < XUI_CFG_NSEC + 2; i++) {
-        int y = i < XUI_CFG_NSEC ? CF_LY + 82 + i * CF_IT_P
+        if (i == XUI_CFG_NSEC) c->clip = old;
+        else if (i == 0) xui_set_clip(c, xui_rect_inter(old, vp));
+        int y = i < XUI_CFG_NSEC ? CF_LY + 82 + i * CF_IT_P - off
                                  : CF_LY + CF_LH - 14 - (XUI_CFG_NSEC + 2 - i) * CF_IT_P + (CF_IT_P - CF_IT_H);
+        if (i < XUI_CFG_NSEC && (y + CF_IT_H < vt - 4 || y > vb + 4)) continue;
         const char *lab = i < XUI_CFG_NSEC ? (s->sections[i] ? s->sections[i] : "") : i == XUI_CFG_NSEC ? L("Reiniciar") : L("Desligar");
         int focus = i == s->item && !s->right;
         int open = i == s->item && s->right;
@@ -1087,10 +1111,10 @@ static void cf_column(xui_canvas_t *c, const xui_cfg_t *s) {
         } else if (i >= XUI_CFG_NSEC) {
             fg = XUI_C_DIM;
         }
-        cf_icon(c, i < XUI_CFG_NSEC ? (i == 4 ? 6 : i) : i == XUI_CFG_NSEC ? 4 : 5, x + 30, y + CF_IT_H / 2, fg);
+        cf_icon(c, i < XUI_CFG_NSEC ? (i == 4 ? 6 : i == 5 ? 7 : i) : i == XUI_CFG_NSEC ? 4 : 5, x + 30, y + CF_IT_H / 2, fg);
         xui_text(c, XUI_F_ROW, x + 58, y + CF_IT_H / 2 + 8, fg, lab, 0, w - 70);
     }
-    int sy = CF_LY + CF_LH - 14 - 2 * CF_IT_P - 18;
+    c->clip = old;
     xui_text(c, XUI_F_LABEL, x + 4, sy, XUI_C_FAINT, L("ENERGIA"), 1, 200);
     xui_fill(c, x + 4, sy - 26, w - 8, 1, XUI_C_BUTTON);
 }
@@ -1364,7 +1388,7 @@ static void render_cfg(xui_view_t *v, xui_canvas_t *c, const xui_cfg_t *s, const
             }
         }
         if (s->text && s->text[0]) {
-            int ty = yend + (s->nrows ? 30 : 4);
+            int ty = yend + 30;   /* v0.21.43: era +4 sem linhas (o texto subia por cima do cartão) */
             int n = xui_text_wrap(c, XUI_F_BODY, x, ty, w, 0, 4, 0, XUI_C_DIM, s->text);
             yend = ty + (n - 1) * xui_line_h(XUI_F_BODY) + 8;
         }

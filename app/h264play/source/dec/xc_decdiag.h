@@ -69,6 +69,8 @@ int  xdd_max_threads(int build_default);
 /* every STAT period (2 s) in game: [dec] prof; every 5 s: [cpu] */
 void xdd_tick(uint64_t now_us, int dec_threads, unsigned gpu_wait_us_total);
 /* accumulators the app feeds (mftb ticks) */
+typedef struct { int cpu_pct, net_pct; double audio_ms_s, pad_ms_s; } xdd_load_t;   /* v0.21.43 */
+void xdd_load_sample(xdd_load_t *o);
 extern volatile uint64_t xdd_tb_main_idle, xdd_tb_audio, xdd_tb_pad, xdd_tb_usbwifi;
 extern volatile uint32_t xdd_n_audio, xdd_n_pad;
 /* "lite" in game: drop this library log line? (keeps errors) */

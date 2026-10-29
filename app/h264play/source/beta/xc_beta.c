@@ -57,6 +57,8 @@ void xcb_id_short(const char *id, char out[16]) {
 
 int xcb_key_norm(const char *in, char *out, size_t cap) {
     if (!in) return -1;
+    /* v0.21.43: BETAKEY.TXT salvo no Bloco de Notas com BOM (EF BB BF) era recusado sem ir à rede */
+    if ((unsigned char)in[0] == 0xEF && (unsigned char)in[1] == 0xBB && (unsigned char)in[2] == 0xBF) in += 3;
     while (*in == ' ' || *in == '\t' || *in == '\r' || *in == '\n') in++;
     size_t n = 0;
     while (in[n] && in[n] != '\r' && in[n] != '\n') n++;   /* só a 1a linha */
