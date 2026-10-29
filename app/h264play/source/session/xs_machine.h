@@ -71,6 +71,7 @@ typedef struct {
     char title_id[48];
     char name[64];            /* ASCII, pra tela */
     int  f2p;                 /* 1 = xgpuwebf2p (jogos com anúncio, XA_F_ADPLAY) */
+    int  home;                /* 1 = xhome; title_id is the console serverId */
     int  active_policy;       /* XSM_ACTIVE_* */
     int  max_attempts;        /* 2 (capture-rtp MAX_SESSION_ATTEMPTS) */
     int  poll_ms;             /* 1000 (/state) */

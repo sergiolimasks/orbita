@@ -158,8 +158,9 @@ static void queue_text(char *out, size_t cap, int pos, int eta, int waited_s) {
 void xsm_init(xsm_t *m, const xsm_cfg_t *cfg, const char *refresh) {
     memset(m, 0, sizeof(*m));
     m->cfg = *cfg;
+    if (cfg->home) m->cfg.waittime = 0;
     if (m->cfg.max_attempts < 1) m->cfg.max_attempts = 1;
-    xs_creds_init(&m->creds, cfg->f2p ? "xgpuwebf2p" : "xgpuweb");
+    xs_creds_init(&m->creds, cfg->home ? "xhome" : cfg->f2p ? "xgpuwebf2p" : "xgpuweb");
     if (refresh && refresh[0]) m->has_token = xs_creds_set_refresh(&m->creds, refresh) == XS_OK;
     xs_init(&m->s, &m->creds);
     m->phase = XSM_P_IDLE;
@@ -336,7 +337,8 @@ static void st_auth(xsm_t *m) {
     int r = xs_creds_login(&m->creds, &e);
     if (r != XS_OK) { login_fail(m, r, &e); return; }
     m->attempt = 1;
-    go(m, XSM_P_ACTIVE);
+    /* Never enumerate/delete cloud sessions when connecting to a home Xbox. */
+    go(m, m->cfg.home ? XSM_P_START : XSM_P_ACTIVE);
 }
 
 static void delete_active(xsm_t *m, const char *keep) {
@@ -420,9 +422,10 @@ static void st_start(xsm_t *m) {
     m->eta_s = -1;
     ui(m, "STARTING", "Iniciando %s...", m->cfg.name);
     xc_log("[sess] ===== tentativa %d/%d: play %s =====", m->attempt, m->cfg.max_attempts, m->cfg.title_id);
-    int r = xs_start(&m->s, m->cfg.title_id, &e);
+    int r = m->cfg.home ? xs_home_start(&m->s, m->cfg.title_id, &e)
+                        : xs_start(&m->s, m->cfg.title_id, &e);
     if (r == XS_ELOGIN || r == XS_EAUTH) { login_fail(m, r, &e); return; }
-    if (r != XS_OK) { attempt_fail(m, "Falha ao iniciar jogo no xCloud: %s", e.msg); return; }
+    if (r != XS_OK) { attempt_fail(m, "Falha ao iniciar %s: %s", m->cfg.home ? "Remote Play" : "jogo no xCloud", e.msg); return; }
     m->t_state = xcn_now_ms();
     m->t_next_wt = 0;
     m->net_errs = 0;
@@ -436,9 +439,9 @@ static int st_poll(xsm_t *m) {
     uint64_t now;
     int r = xs_get_state(&m->s, &st, &e);
     if (r == XS_ELOGIN || r == XS_EAUTH) { login_fail(m, r, &e); return 0; }
-    if (r == XS_ENOTFOUND) { attempt_fail(m, "Sessao xCloud sumiu"); return 0; }
+    if (r == XS_ENOTFOUND) { attempt_fail(m, "Sessao %s sumiu", m->cfg.home ? "Remote Play" : "xCloud"); return 0; }
     if (r != XS_OK) {
-        if (++m->net_errs >= 5) { attempt_fail(m, "Sem resposta do xCloud: %s", e.msg); return 0; }
+        if (++m->net_errs >= 5) { attempt_fail(m, "Sem resposta do %s: %s", m->cfg.home ? "Remote Play" : "xCloud", e.msg); return 0; }
         xc_log("[sess] state falhou (%d/5): %s", m->net_errs, e.msg);
         return m->cfg.poll_ms;
     }
@@ -451,6 +454,7 @@ static int st_poll(xsm_t *m) {
     }
     switch (st.st) {
     case XS_SS_WAITING: {
+        if (m->cfg.home) { ui_phase(m, "Aguardando seu Xbox ficar disponivel..."); break; }
         if (m->cfg.waittime && now >= m->t_next_wt) {   /* v0.21.34: sempre (o do state vinha 0) */
             int sec = -1;
             xc_err_t e2;
@@ -466,6 +470,9 @@ static int st_poll(xsm_t *m) {
         break;
     }
     case XS_SS_READY:
+        /* Home sessions need no cloud transfer/passport token. Wait for
+         * Provisioned before exchanging SDP (same transport afterwards). */
+        if (m->cfg.home) { ui_phase(m, "Preparando seu Xbox..."); break; }
         ui_phase(m, "Preparando servidor...");
         if (!m->connected) {
             xc_log("[sess] ReadyToConnect: /connect (passport)");
@@ -486,18 +493,18 @@ static int st_poll(xsm_t *m) {
         return 0;
     case XS_SS_FAILED:
         if (st.err_code[0] || st.err_msg[0])
-            attempt_fail(m, "Sessao xCloud falhou %s", st.err_code[0] ? st.err_code : st.err_msg);
+            attempt_fail(m, "Sessao %s falhou %s", m->cfg.home ? "Remote Play" : "xCloud", st.err_code[0] ? st.err_code : st.err_msg);
         else
-            attempt_fail(m, "Sessao xCloud falhou");
+            attempt_fail(m, "Sessao %s falhou", m->cfg.home ? "Remote Play" : "xCloud");
         return 0;
     default:
         ui_phase(m, "Preparando servidor...");
         break;
     }
     int cap = m->resumed ? m->cfg.resume_timeout_s
-            : st.st == XS_SS_WAITING ? m->cfg.queue_timeout_s : m->cfg.state_timeout_s;
+            : st.st == XS_SS_WAITING && !m->cfg.home ? m->cfg.queue_timeout_s : m->cfg.state_timeout_s;
     if (xcn_now_ms() - m->t_state >= (uint64_t)cap * 1000) {
-        attempt_fail(m, "Tempo esgotado esperando o xCloud (%s)", st.raw[0] ? st.raw : "?");
+        attempt_fail(m, "Tempo esgotado esperando o %s (%s)", m->cfg.home ? "Remote Play" : "xCloud", st.raw[0] ? st.raw : "?");
         return 0;
     }
     return m->cfg.poll_ms;

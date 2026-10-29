@@ -1,0 +1,21 @@
+--- a/libxenon/drivers/usb/tinyehci/tinyehci.c
++++ b/libxenon/drivers/usb/tinyehci/tinyehci.c
+@@ -112,10 +112,12 @@
+ {
+-	s32 ret;
++	s32 first, second;
+ 	
+-	ret=EHCI_do_one(0,0xea003000);
+-	if (ret)
+-		return ret; 
++	/* A failed controller must not hide the other controller's devices.
++	 * In particular, the internal Wi-Fi can be on controller 1. */
++	first=EHCI_do_one(0,0xea003000);
++	if (first) ehci_hcds[0].num_port = 0;
+ 	
+-	ret=EHCI_do_one(1,0xea005000);
+-	return ret;
++	second=EHCI_do_one(1,0xea005000);
++	if (second) ehci_hcds[1].num_port = 0;
++	return first && second ? first : 0;
+ }

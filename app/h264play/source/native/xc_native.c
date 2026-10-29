@@ -313,7 +313,10 @@ int xn_dec_threads_wanted(int cur, int max) {
     return cur;
 }
 
-int xn_play(const char *title_id, const char *name, int f2p) {
+static int g_home = 0;
+int xn_session_is_home(void) { return g_home; }
+
+static int play_mode(const char *title_id, const char *name, int f2p, int home) {
     kick_clear();
     if (!g_inited) return XN_EINIT;
     if (!xn_can_play()) return XN_EBUSY;
@@ -321,6 +324,8 @@ int xn_play(const char *title_id, const char *name, int f2p) {
     xsm_cfg_t c;
     xsm_cfg_defaults(&c, title_id, name);
     c.f2p = f2p;
+    c.home = home;
+    if (home) c.waittime = 0;
     c.active_policy = XSM_ACTIVE_CANCEL;   /* = capture-rtp cleanup_stale_sessions */
     c.keepalive_ms = g_cfg.keepalive_ms;
     c.max_attempts = g_cfg.max_attempts;
@@ -343,12 +348,21 @@ int xn_play(const char *title_id, const char *name, int f2p) {
     g_kf_req = g_kf_force = 0;
     g_play_seq++;
     g_paused = 0;   /* v0.19.3 */
+    g_home = home;
     snprintf(g_title, sizeof(g_title), "%s", title_id);
     snprintf(g_name, sizeof(g_name), "%s", name ? name : "");
     fence();
     g_want = 1;   /* hw1 attaches on its next step */
     logf_("[xn] PLAY %s (%s)%s: sessao no Xbox", title_id, name, f2p ? " f2p" : "");
     return XN_OK;
+}
+
+int xn_play(const char *title_id, const char *name, int f2p) {
+    return play_mode(title_id, name, f2p, 0);
+}
+
+int xn_play_home(const char *server_id, const char *name) {
+    return play_mode(server_id, name, 0, 1);
 }
 
 void xn_stop(void) {

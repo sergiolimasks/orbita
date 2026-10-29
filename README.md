@@ -16,7 +16,7 @@ Site, downloads and feature status: <https://x360.pistatrack.com>
 
 - Xbox 360 with RGH/JTAG
 - XeLL Reloaded v0.993 or newer, launched from Aurora via the *XeLL Launcher* app
-- Wired network (Wi-Fi is not supported)
+- Network via Ethernet or experimental internal Wi-Fi (see [WIFI.md](app/h264play/WIFI.md); detection on an Xbox 360 E is under investigation)
 - Up to 4 Xbox 360 controllers (Xbox Series controllers are in testing)
 
 ## What works
@@ -28,6 +28,20 @@ Site, downloads and feature status: <https://x360.pistatrack.com>
 - In-app updates (signed manifest, beta/stable channels)
 
 See the live [status page](https://x360.pistatrack.com/status) for details.
+
+## Remote Play (experimental)
+
+The native menu now includes a **Remote Play** tab to discover Xbox One and
+Xbox Series X|S consoles on your Microsoft account and request a stream from
+one of them. Enable remote features on the source console first. The Xbox 360
+acts as the receiver. Console streaming uses the separate `xhome` service and
+does not depend on loading the cloud game catalog.
+
+The protocol and UI are covered by host tests. A Xenon build is available locally
+as `xenon.elf`, with the beta-key screen disabled (`BETA=0`, now the default).
+The real console streaming session still needs hardware validation.
+Setup, architecture, controls and limitations:
+[REMOTE-PLAY.md](app/h264play/REMOTE-PLAY.md).
 
 ## Repository layout
 

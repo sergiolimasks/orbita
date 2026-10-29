@@ -1,5 +1,27 @@
 # Wi-Fi interno do Xbox 360 S/E (v0.21.0)
 
+## Correções de compartilhamento USB
+
+O monitor de hotplug preserva portas habilitadas e já enumeradas, evitando
+reiniciar o pendrive em uso ao abrir o Wi-Fi.
+
+Antes de conceder o pendrive a outra thread, a hw1 pausa a agenda assíncrona
+do EHCI compartilhado e espera ASS=0 por até 20 ms. Só então retira os QHs do
+Wi-Fi, limpa USBINT/USBERRINT e publica o ACK. Durante o acesso ao disco,
+o polling e o hotplug não retomam esse controlador. Ao liberar, o anel do
+Wi-Fi é religado. Se DMA não parar, o acesso ao disco é recusado.
+
+As escritas diretas de NETLOG pela hw1 usam a mesma exclusão. Escritas diretas
+do vigia por outra thread são recusadas quando compartilhariam o controlador;
+o diagnóstico na tela/UART continua disponível, mas HANG.TXT pode ficar sem
+novo registro nessa situação. Essa restrição evita DMA concorrente.
+
+O modelo de teste implementa ASS e USBSTS com semântica write-one-to-clear.
+Passaram 340 verificações determinísticas (ASan/UBSan) e 352 concorrentes,
+incluindo 32 ciclos de posse/retomada e timeout de DMA preso; ambos os modos
+receberam mais de 120.000 transferências. Um Xbox 360 E teve correção dos
+congelamentos relatada em teste físico. Veja `REMOTE-PLAY.md`.
+
 Status (2026-10-26): v0.21.0 rodou num Slim (Corona) e não ligou (ver "v0.21.1" no fim); v0.21.1 = high speed no EHCI (funcionou: firmware, scan); v0.21.4 = log do WPA2, erros com prova, corrida EP1/EP2; v0.21.5 = app só com Wi-Fi (boot sem cabo, WIFILOG.TXT); v0.21.6 = RxPD tipo 2 (WPA2 conecta); v0.21.7 = pendrive e Wi-Fi juntos, vigia (HANG.TXT), catálogo do pendrive.
 O primeiro teste no console é o do usuário; o log enviado (`[wifi] ...`) foi
 pensado pra diagnosticar cada etapa (tabela no fim).

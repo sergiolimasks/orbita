@@ -75,6 +75,48 @@ int main(void) {
         }
     CHECK(!memcmp(fb, ref, sizeof(fb)), "tile copy == fórmula do console (e só o retângulo)");
 
+    /* Remote page: redraw on changed content, no idle full-screen copying,
+     * scrolling and dialogs, and safe transition back to cloud home. */
+    xui_view_t *view = xui_view_new(1280, 720);
+    uint32_t *remote_px = calloc(1280 * 720, sizeof(uint32_t));
+    CHECK(view && remote_px, "remote canvas allocated");
+    if (view && remote_px) {
+        xui_canvas_t rc;
+        xui_canvas_init(&rc, remote_px, 1280, 720, 1280);
+        xui_home_data_t hd = {0};
+        hd.row = -1; hd.col = XUI_HB_REMOTE; hd.remote_tab = 1;
+        xui_remote_t rp = {0};
+        rp.focus = -1; rp.busy = 1;
+        int anim = 0;
+        xui_rect_t dirty = xui_remote_frame(view, &rc, &rp, &hd, NULL, 0, &anim);
+        CHECK(dirty.w == 1280 && dirty.h == 720, "remote loading draws full canvas");
+        dirty = xui_remote_frame(view, &rc, &rp, &hd, NULL, 20, &anim);
+        CHECK(xui_rect_empty(dirty), "remote unchanged state avoids redraw");
+        rp.busy = 0; rp.n = 6;
+        for (int i = 0; i < rp.n; i++) {
+            rp.consoles[i].name = "Xbox da sala";
+            rp.consoles[i].type = "XboxSeriesX";
+            rp.consoles[i].power = "ConnectedStandby";
+        }
+        rp.focus = 5;
+        dirty = xui_remote_frame(view, &rc, &rp, &hd, NULL, 40, &anim);
+        CHECK(dirty.w == 1280, "remote list and scroll redraw");
+        rp.consoles[5].name = "Xbox do quarto";
+        dirty = xui_remote_frame(view, &rc, &rp, &hd, NULL, 60, &anim);
+        CHECK(dirty.w == 1280, "renamed console invalidates canvas");
+        rp.err = "Falha de conexão";
+        dirty = xui_remote_frame(view, &rc, &rp, &hd, NULL, 80, &anim);
+        CHECK(dirty.w == 1280, "remote errors redraw");
+        xui_confirm_t confirm = {"Desligar o Xbox?", "Encerrar a sessão?", "Desligar", "Cancelar", 0};
+        dirty = xui_remote_frame(view, &rc, &rp, &hd, &confirm, 100, &anim);
+        CHECK(dirty.w == 1280, "remote power confirmation draws");
+        hd.remote_tab = 0;
+        dirty = xui_home_frame(view, &rc, &hd, NULL, 120, &anim);
+        CHECK(dirty.w == 1280, "returning to cloud repaints canvas");
+    }
+    xui_view_free(view);
+    free(remote_px);
+
     printf("%s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }

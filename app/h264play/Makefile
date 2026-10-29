@@ -63,10 +63,10 @@ SOURCES  += source/ui source/catalog source/login source/login/fatfs source/logi
 # v0.20.1: atualização pelo próprio Xbox (UPDATE.md)
 SOURCES  += source/update
 # v0.20.3: chave beta presa ao console (source/beta, BETA-GATE.md).
-# BETA=1 (padrão): chave OBRIGATÓRIA no boot (teclado na tela, /v1/beta/check
-# com X-Console). BETA=0 = versão estável pública: sem chave, sem tela.
+# BETA=1: chave OBRIGATÓRIA no boot (teclado na tela, /v1/beta/check
+# com X-Console). BETA=0 (padrão): sem chave, sem tela.
 # Trocar BETA exige `make clean`.
-BETA ?= 1
+BETA ?= 0
 SOURCES  += source/beta
 # v0.21.0: Wi-Fi interno do Xbox 360 S/E (Marvell 88W8786U, USB 045e:0765), WIFI.md.
 SOURCES  += source/wifi

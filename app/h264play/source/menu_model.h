@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 #define MM_MAX_GAMES 1024
-#define MM_ID_LEN    32
+#define MM_ID_LEN    48
 #define MM_NAME_LEN  64
 #define MM_TEXT_LEN  160
 
@@ -55,11 +55,11 @@ typedef struct {
  * confirmação). O foco ao subir pro topo começa no Reiniciar. */
 /* v0.20.3: + Configurações (engrenagem, mais à esquerda), só com chave beta
  * válida (settings_on); sem ela o foco nunca chega nela. */
-enum { MM_HB_SETTINGS = 0, MM_HB_UPDATE, MM_HB_REBOOT, MM_HB_SHUTDOWN, MM_HB_COUNT };   /* = XUI_HB_* */
+enum { MM_HB_CLOUD = 0, MM_HB_REMOTE, MM_HB_SETTINGS, MM_HB_UPDATE, MM_HB_REBOOT, MM_HB_SHUTDOWN, MM_HB_COUNT };   /* = XUI_HB_* */
 #define MM_ROW_HEADER (-1)
 
 /* Retorno de mm_press_a. */
-enum { MM_A_NONE = 0, MM_A_PLAY, MM_A_CONFIRM, MM_A_REBOOT, MM_A_SHUTDOWN, MM_A_UPDATE, MM_A_SETTINGS };
+enum { MM_A_NONE = 0, MM_A_PLAY, MM_A_CONFIRM, MM_A_REBOOT, MM_A_SHUTDOWN, MM_A_UPDATE, MM_A_SETTINGS, MM_A_CLOUD, MM_A_REMOTE };
 
 typedef struct {
     mm_game_t games[MM_MAX_GAMES];   /* catálogo mostrado */

@@ -317,6 +317,85 @@ char *xs_build_connect_body(const char *passport) {
     return s;
 }
 
+char *xs_build_home_body(const char *server_id, const char *locale) {
+    char *base = xs_build_play_body("", locale);
+    cJSON *j = base ? cJSON_Parse(base) : NULL;
+    free(base);
+    if (!j) return NULL;
+    cJSON_ReplaceItemInObjectCaseSensitive(j, "serverId", cJSON_CreateString(server_id));
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    return body;
+}
+
+/* Reject truncated/unsafe identifiers; these become session identifiers too. */
+static int home_id_ok(const char *id) {
+    if (!id || !id[0] || strlen(id) >= sizeof(((xs_console_t *)0)->id)) return 0;
+    for (const unsigned char *p = (const unsigned char *)id; *p; p++)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+              (*p >= '0' && *p <= '9') || *p == '-')) return 0;
+    return 1;
+}
+
+int xs_parse_consoles(const char *json, xs_console_t *out, int max) {
+    cJSON *j = cJSON_Parse(json ? json : "");
+    const cJSON *list = j ? cJSON_GetObjectItemCaseSensitive(j, "results") : NULL;
+    if (!cJSON_IsArray(list)) { cJSON_Delete(j); return -1; }
+    int n = 0;
+    const cJSON *it;
+    cJSON_ArrayForEach(it, list) {
+        const char *id = jstr(it, "serverId"), *name = jstr(it, "deviceName");
+        if (!home_id_ok(id)) continue;
+        int dup = 0;
+        for (int k = 0; k < n; k++) if (!strcmp(out[k].id, id)) dup = 1;
+        if (dup || n >= max) continue;
+        xs_console_t *c = &out[n++];
+        memset(c, 0, sizeof(*c));
+        snprintf(c->id, sizeof(c->id), "%s", id);
+        xa_name_clean(c->name, sizeof(c->name), name && name[0] ? name : "Meu Xbox");
+        xa_ascii_fold(c->type, sizeof(c->type), jstr(it, "consoleType") ? jstr(it, "consoleType") : "Xbox");
+        xa_ascii_fold(c->power, sizeof(c->power), jstr(it, "powerState") ? jstr(it, "powerState") : "Unknown");
+    }
+    cJSON_Delete(j);
+    return n;
+}
+
+int xs_home_list(xs_creds_t *c, xs_console_t *out, int max, int *n, xc_err_t *e) {
+    *n = 0;
+    if (strcmp(c->offering, "xhome")) { set_err(e, HTTPS_EPROTO, "Remote Play requer login xhome"); return XS_ERR; }
+    https_resp_t r;
+    int rc = gssv_req(c, "consoles", "GET", "/v6/servers/home?mr=50", NULL, &r, e);
+    if (rc != XS_OK) return rc;
+    if (!is_2xx(r.status)) { http_fail(e, "consoles", &r); https_free(&r); return XS_ERR; }
+    rc = xs_parse_consoles(r.body, out, max);
+    https_free(&r);
+    if (rc < 0) { set_err(e, HTTPS_EPROTO, "lista de consoles invalida"); return XS_ERR; }
+    *n = rc;
+    return XS_OK;
+}
+
+int xs_home_start(xs_session_t *s, const char *server_id, xc_err_t *e) {
+    if (!home_id_ok(server_id) || strcmp(s->creds->offering, "xhome")) {
+        set_err(e, HTTPS_EPROTO, "console ou login Remote Play invalido"); return XS_ERR;
+    }
+    s->path[0] = 0;
+    snprintf(s->title, sizeof(s->title), "%s", server_id);
+    char *body = xs_build_home_body(server_id, s->locale);
+    if (!body) { set_err(e, HTTPS_ETOOBIG, "sem memoria"); return XS_ERR; }
+    https_resp_t r;
+    int rc = gssv_req(s->creds, "remote play", "POST", "/v5/sessions/home/play", body, &r, e);
+    free(body);
+    if (rc != XS_OK) return rc;
+    if (!is_2xx(r.status)) { http_fail(e, "remote play", &r); https_free(&r); return XS_ERR; }
+    rc = xs_parse_play(r.body, s->path, sizeof(s->path));
+    https_free(&r);
+    if (rc || strncmp(s->path, "/v5/sessions/home/", 18)) {
+        s->path[0] = 0;
+        set_err(e, HTTPS_EPROTO, "Remote Play sem sessionPath valido"); return XS_ERR;
+    }
+    return XS_OK;
+}
+
 static void add_ver(cJSON *cfg, const char *k, int maxv, int minv) {
     cJSON *v = cJSON_AddObjectToObject(cfg, k);
     cJSON_AddNumberToObject(v, "maxVersion", maxv);

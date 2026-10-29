@@ -11,6 +11,8 @@
 
 #include <string.h>
 #include <diskio/disc_io.h>
+#include "../wifi/xw_ehs_xenon.h"
+#include "../xc_wdog.h"
 
 extern DISC_INTERFACE usb2mass_ops_0, usb2mass_ops_1, usb2mass_ops_2;
 
@@ -84,6 +86,13 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
 int fat_diskio_raw_write(uint32_t sector, const void *buf512) {
     static uint8_t b[512] __attribute__((aligned(128)));
     if (!g_disc) return -1;
+    /* A watchdog on another hardware thread must not race the controller.
+     * Before Wi-Fi opens, shared() is false and boot diagnostics still work. */
+    int shared = xhs_shared();
+    if (shared && xwd_slot_of_pir() != XWD_NET) return -1;
+    if (shared && xhs_storage_begin() != 0) return -1;
     memcpy(b, buf512, 512);
-    return g_disc->writeSectors((sec_t)sector, 1, b) ? 0 : -1;
+    int rc = g_disc->writeSectors((sec_t)sector, 1, b) ? 0 : -1;
+    if (shared) xhs_storage_end();
+    return rc;
 }

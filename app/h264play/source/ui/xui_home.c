@@ -84,6 +84,7 @@ struct xui_view {
     int       upd;                       /* v0.20.1: selo do Atualizar desenhado */
     int       set;                       /* v0.20.3: botão Configurações desenhado */
     int       netk;                      /* v0.21.29: ícone da conexão desenhado (0/1/2) */
+    int       remote_tab;
     int       conf_open, conf_focus;
     const char *conf_title;
     char      focus_id[40];     /* último jogo em foco (hero/título) */
@@ -307,6 +308,16 @@ static void draw_header(xui_canvas_t *c, const xui_home_data_t *d, int focus_btn
         draw_net(c, vx, d->net_kind);
     }
     int cy = LOGO_Y + 15;
+    for (int i = XUI_HB_CLOUD; i <= XUI_HB_REMOTE; i++) {
+        int x = i == XUI_HB_CLOUD ? 410 : 516;
+        int w = i == XUI_HB_CLOUD ? 94 : 150;
+        int selected = d && (d->remote_tab ? i == XUI_HB_REMOTE : i == XUI_HB_CLOUD);
+        int focused = focus_btn == i;
+        if (focused) xui_round_rect(c, x, 17, w, 40, 8, XUI_C_TEXT, 255);
+        xui_text(c, XUI_F_LABEL, x + 14, 43, focused ? XUI_C_BG : XUI_C_TEXT,
+                 i == XUI_HB_CLOUD ? "xCloud" : "Remote Play", 0, 0);
+        if (selected) xui_fill(c, x + 14, 61, w - 28, 3, XUI_C_ACCENT);
+    }
     int first = (d && d->settings_avail) ? XUI_HB_SETTINGS : XUI_HB_UPDATE;   /* v0.20.3 */
     for (int i = first; i < XUI_HB_COUNT; i++) {
         int cx = hb_cx(c->w, i);
@@ -605,7 +616,7 @@ xui_rect_t xui_home_frame(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t 
         if (strcmp(sess, v->sess)) dirty = xui_rect_union(dirty, rows);
     }
     if (strcmp(d->hint ? d->hint : "", v->hint) || (d->update_avail != 0) != v->upd ||
-        (d->settings_avail != 0) != v->set || d->net_kind != v->netk ||
+        (d->settings_avail != 0) != v->set || d->net_kind != v->netk || d->remote_tab != v->remote_tab ||
         strcmp(d->update_label ? d->update_label : "", v->updlab)) {
         xui_rect_t hdr = { 0, 0, v->w, HDR_H };
         dirty = xui_rect_union(dirty, hdr);
@@ -671,6 +682,7 @@ xui_rect_t xui_home_frame(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t 
     v->upd = d->update_avail != 0;
     v->set = d->settings_avail != 0;
     v->netk = d->net_kind;
+    v->remote_tab = d->remote_tab;
     v->conf_open = conf_open;
     v->conf_focus = cf ? cf->focus : 0;
     v->conf_title = cf ? cf->title : NULL;
@@ -838,6 +850,7 @@ xui_rect_t xui_status_frame(xui_view_t *v, xui_canvas_t *c, const xui_status_t *
  * um tipo próprio em st_kind pra a troca de tela redesenhar tudo) */
 #define ST_KIND_KEY      100
 #define ST_KIND_SETTINGS 101
+#define ST_KIND_REMOTE   104
 
 static void sig_cat(char *sig, int *n, int cap, const char *p) {
     if (!p) p = "";
@@ -1415,6 +1428,72 @@ static void cf_hs(uint64_t *h, const char *p) {
 }
 static void cf_hi(uint64_t *h, int x) {
     for (int i = 0; i < 4; i++) { *h ^= (unsigned)(x >> (8 * i)) & 0xff; *h *= 1099511628211ULL; }
+}
+
+/* Remote Play reuses the native canvas and dirty-frame policy. */
+xui_rect_t xui_remote_frame(xui_view_t *v, xui_canvas_t *c, const xui_remote_t *r,
+                            const xui_home_data_t *d, const xui_confirm_t *cf,
+                            unsigned now_ms, int *animating) {
+    (void)now_ms;
+    xui_rect_t full = {0, 0, v->w, v->h}, none = {0, 0, 0, 0};
+    uint64_t h = 1469598103934665603ULL;
+    cf_hi(&h, r->n); cf_hi(&h, r->focus); cf_hi(&h, r->busy);
+    cf_hs(&h, r->err); cf_hs(&h, r->notice);
+    cf_hi(&h, d->col); cf_hi(&h, d->net_kind); cf_hi(&h, d->update_avail);
+    cf_hi(&h, d->settings_avail); cf_hs(&h, d->version);
+    cf_hi(&h, cf != NULL); cf_hi(&h, cf ? cf->focus : 0);
+    cf_hs(&h, cf ? cf->title : NULL);
+    for (int i = 0; i < r->n && i < 16; i++) {
+        cf_hs(&h, r->consoles[i].name); cf_hs(&h, r->consoles[i].type); cf_hs(&h, r->consoles[i].power);
+    }
+    char sig[32];
+    snprintf(sig, sizeof(sig), "%016llx", (unsigned long long)h);
+    if (animating) *animating = 0;
+    if (v->st_valid && v->st_kind == ST_KIND_REMOTE && !v->force && !strcmp(sig, v->st_sig)) return none;
+    xui_clip_all(c);
+    xui_fill(c, 0, 0, v->w, v->h, XUI_C_BG);
+    xui_home_data_t hdr = *d;
+    hdr.hint = NULL;
+    hdr.remote_tab = 1;
+    draw_header(c, &hdr, r->focus < 0 && !cf ? d->col : -1);
+    xui_text(c, XUI_F_H2, MX, 146, XUI_C_TEXT, "Jogue pelo seu Xbox", 0, 1100);
+    xui_text(c, XUI_F_BODY, MX, 183, XUI_C_DIM,
+             "Acesse os jogos instalados no seu Xbox One ou Series X|S.", 0, 1100);
+    const char *info = r->busy ? "Buscando consoles da sua conta…"
+                     : r->err && r->err[0] ? r->err
+                     : !r->n ? "Nenhum console encontrado. Confira a conta e ative os recursos remotos no seu Xbox."
+                     : "Selecione um console para conectar.";
+    xui_text_wrap(c, XUI_F_BODY, MX, 232, 1100, 0, 2, 0, XUI_C_TEXT, info);
+    int first = r->focus >= 4 ? r->focus - 3 : 0;
+    for (int i = first; i < r->n && i < first + 4 && i < 16; i++) {
+        const xui_console_t *con = &r->consoles[i];
+        int y = 273 + (i - first) * 72, f = i == r->focus && !cf;
+        xui_round_rect(c, MX, y, 1152, 62, 8, f ? XUI_C_TEXT : XUI_C_PANEL, 255);
+        uint32_t fg = f ? XUI_C_BG : XUI_C_TEXT;
+        xui_text(c, XUI_F_ROW, MX + 20, y + 27, fg, con->name, 0, 620);
+        const char *power = !strcmp(con->power, "On") ? "Ligado"
+                          : !strcmp(con->power, "ConnectedStandby") ? "Em espera"
+                          : !strcmp(con->power, "Off") ? "Desligado" : "Estado desconhecido";
+        char meta[96];
+        snprintf(meta, sizeof(meta), "%s · %s", con->type, power);
+        xui_text(c, XUI_F_LABEL, MX + 20, y + 49, fg, meta, 0, 760);
+        xui_text(c, XUI_F_LABEL, 1040, y + 37, fg, "Conectar", 0, 130);
+    }
+    if (r->n > 4) {
+        char count[48];
+        snprintf(count, sizeof(count), "%d de %d consoles", r->focus >= 0 ? r->focus + 1 : 1, r->n);
+        xui_text(c, XUI_F_LABEL, 980, 583, XUI_C_DIM, count, 0, 240);
+    }
+    xui_text(c, XUI_F_LABEL, MX, 610, XUI_C_DIM,
+             "No Xbox de origem: Configurações > Dispositivos e conexões > Recursos remotos.", 0, 1152);
+    if (r->notice && r->notice[0])
+        xui_text(c, XUI_F_LABEL, MX, 642, XUI_C_ACCENT, r->notice, 0, 1152);
+    draw_hints(c, MX, 687, "A:Conectar|Y:Buscar consoles|X:Encerrar sessão|B:xCloud", 0);
+    if (cf) draw_confirm(v, c, cf);
+    v->valid = 0;
+    v->st_valid = 1; v->st_kind = ST_KIND_REMOTE; v->force = 0;
+    scopy(v->st_sig, sizeof(v->st_sig), sig);
+    return full;
 }
 
 static uint64_t cf_hash(const xui_cfg_t *s, int dynamic) {

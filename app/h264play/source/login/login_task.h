@@ -15,6 +15,7 @@
 #ifndef XC360_LOGIN_TASK_H
 #define XC360_LOGIN_TASK_H
 #include "xbox_auth.h"
+#include "../session/xc_session.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,16 @@ void lt_clear_cancel(void);   /* stage 5: before the session thread starts */
 void lt_snapshot(lt_snap_t *s);
 /* Main: pega a lista do último DONE (malloc; o chamador dá free). */
 int  lt_take_games(xa_title_t **games, int *n);
+
+/* Discovery shares the login worker/stack and hardware slot. It publishes
+ * separately, so it never replaces the cloud catalog or its login status. */
+typedef struct {
+    int busy, ready, n;
+    char err[160];
+    xs_console_t consoles[XS_MAX_CONSOLES];
+} lt_home_t;
+int  lt_home_start(void);
+void lt_home_snapshot(lt_home_t *s);
 
 /* main.c: segura o USB pra thread do login (a de rede para de chamar
  * usb_do_poll). on=1 bloqueia até a rede confirmar. */

@@ -73,6 +73,8 @@ enum { XN_OK = 0, XN_EBUSY = -1, XN_ESTART = -2, XN_EINIT = -3 };
 int  xn_init(const xn_platform_t *p, const xn_cfg_t *cfg);
 /* main: start a native session (session thread + hw1 attach). */
 int  xn_play(const char *title_id, const char *name, int f2p);
+int  xn_play_home(const char *server_id, const char *name);
+int  xn_session_is_home(void);   /* main: distinguish paused cloud/home IDs */
 /* main: B / Back+Start / error: DELETE the session and detach WebRTC. */
 void xn_stop(void);
 /* main: 1 when a new xn_play would be accepted. */

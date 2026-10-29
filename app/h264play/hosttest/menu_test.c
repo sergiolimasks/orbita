@@ -154,14 +154,19 @@ static void rows_tests(void) {
     mm_nav(&m, 1, 0);  CHECK(m.hcol == MM_HB_SHUTDOWN, "header clamps");
     /* v0.20.1: Atualizar à esquerda, sem confirmação */
     mm_nav(&m, -2, 0); CHECK(m.hcol == MM_HB_UPDATE, "header left -> Atualizar");
-    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_UPDATE, "header clamps left");
     CHECK(mm_press_a(&m) == MM_A_UPDATE && !m.confirm, "A on Atualizar = MM_A_UPDATE, no dialog");
+    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_REMOTE, "skip disabled settings to Remote Play");
+    CHECK(mm_press_a(&m) == MM_A_REMOTE && !m.confirm, "Remote Play opens without power confirmation");
+    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_CLOUD && mm_press_a(&m) == MM_A_CLOUD, "xCloud tab");
+    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_CLOUD, "clamp at first tab");
+    mm_nav(&m, 1, 0); mm_nav(&m, 1, 0);
     /* v0.20.3: Configurações (engrenagem) só com chave beta válida */
-    CHECK(mm_press_a(&m) == MM_A_UPDATE, "sem chave: nada à esquerda do Atualizar");
+    CHECK(m.hcol == MM_HB_UPDATE && mm_press_a(&m) == MM_A_UPDATE, "disabled settings skipped in both directions");
     m.settings_on = 1;
     mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_SETTINGS, "com chave: esquerda -> Configurações");
-    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_SETTINGS, "Configurações é a ponta");
     CHECK(mm_press_a(&m) == MM_A_SETTINGS && !m.confirm, "A em Configurações = MM_A_SETTINGS");
+    mm_nav(&m, -1, 0); CHECK(m.hcol == MM_HB_REMOTE, "tabs also reachable with settings enabled");
+    mm_nav(&m, 1, 0);
     m.settings_on = 0; mm_rows_fix(&m);
     CHECK(m.hcol == MM_HB_UPDATE, "chave sumiu: foco sai da engrenagem");
     m.hcol = MM_HB_SETTINGS;
