@@ -89,7 +89,7 @@ def test_badges_and_aggregation():
     assert by["Broke"]["fps_med"] is None and by["Broke"]["errors"] == 1
     assert by["Hidden"]["hidden"]
     assert gs[0]["name"] == "Fortnite"                         # ordenado por sessões
-    assert summary["games"] == 4 and summary["sessions"] == 6 and summary["testers"] == 2
+    assert summary["games"] == 4 and summary["sessions"] == 5 and summary["testers"] == 2   # sessões que rodaram (o Broke não)
     assert summary["top_version"] == "0.21.0"
     assert by["Slow"]["target"] == 60 and f["target"] == 60
     # jogo que o xCloud manda a 30 fps: medido contra 30
@@ -105,6 +105,17 @@ def test_badges_and_aggregation():
     # quedas demais tiram o "roda bem"
     many = [_row(key="d%d" % i, drops=1 if i < 2 else 0, outcome="drop" if i < 2 else "ok") for i in range(4)]
     assert plays.games(many)[0][0]["status"] == "unstable"
+    # 2026-10-29: sessão de até ~10 s (<= 3 STATs, somando as continuações) = abriu e fechou
+    short = [_row(key="s%d" % i, n=2, ge=2, who=str(i), rx=t0 + timedelta(minutes=i)) for i in range(4)]
+    g = plays.games(short)[0][0]
+    assert g["attempts"] == 4 and g["ran"] == 0 and g["short"] == 4 and g["status"] == "bad"
+    joined = [_row(key="j1", n=2, ge=2, rx=t0, who="a"), _row(key="j2", n=50, ge=50, rx=t0 + timedelta(minutes=2), cont=True, tid="", who="a")]
+    g = plays.games(joined)[0][0]
+    assert g["attempts"] == 1 and g["ran"] == 1 and g["short"] == 0 and g["dur_med"] == 52 * 2 + 4
+    mixed = [_row(key="m%d" % i, n=2 if i < 2 else 100, ge=2 if i < 2 else 100, who=str(i)) for i in range(5)]
+    g = plays.games(mixed)[0][0]
+    assert g["short"] == 2 and g["ran"] == 3 and g["status"] == "unstable" and g["short_pct"] == 40
+    assert plays.game_detail(g)["buckets"][0]["n"] == 2
 
 
 def test_current_version_rules():
@@ -230,12 +241,12 @@ def test_games_page_public_and_private_data_hidden(app, client):
     html = r.get_data(as_text=True)
     assert r.status_code == 200
     assert "Progresso dos testes" in html and "Fortnite" in html and html.count("data-game-row") == 1
-    assert "Bugs encontrados" in html and html.count("data-bug-row") == 0   # relatos crus não saem mais
+    assert "Bugs encontrados" in html and html.count("data-bug-row") == 0   # os bugs moraram pra /bugs
     db.run("INSERT INTO known_issues(slug, status, title_pt, body_pt, builds, versions) VALUES "
            "('wifi', 'fixing', 'Wi-Fi interno', 'RESUMO-PUBLICO', 2, '0.21.42, 0.21.43'), "
            "('oculto', 'fixed', 'X', 'NAO-PUBLICAR-ISSUE', 0, '')")
     db.run("UPDATE known_issues SET public=false WHERE slug='oculto'")
-    html = client.get("/jogos").get_data(as_text=True)
+    html = client.get("/bugs").get_data(as_text=True)
     assert html.count("data-bug-row") == 1 and "RESUMO-PUBLICO" in html and "Corrigindo" in html
     assert "NAO-PUBLICAR-ISSUE" not in html and "0.21.42, 0.21.43" in html
     for secret in (CONSOLE, "h-t", "Fulano", "fulano@example.com", "dev@example.com", "91234", "tela preta",
@@ -249,7 +260,8 @@ def test_games_page_public_and_private_data_hidden(app, client):
 
 def test_games_page_empty(client):
     html = client.get("/jogos?lang=en").get_data(as_text=True)
-    assert "No game sessions recorded yet." in html and "No public reports yet." in html
+    assert "No game sessions recorded yet." in html
+    assert "No public reports yet." in client.get("/bugs?lang=en").get_data(as_text=True)
 
 
 def test_admin_hide_game_and_report(app, client):

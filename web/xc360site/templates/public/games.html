@@ -32,7 +32,8 @@
     <div class="gm-row gm-th" role="row">
       <span role="columnheader">{{ _('gm.game') }}</span>
       <span role="columnheader">{{ _('gm.status') }}</span>
-      <span role="columnheader" class="r">{{ _('gm.sessions') }}</span>
+      <span role="columnheader" class="r">{{ _('gd.ran') }}</span>
+      <span role="columnheader" class="r">{{ _('gd.short') }}</span>
       <span role="columnheader" class="r">{{ _('gm.testers') }}</span>
       <span role="columnheader" class="r">{{ _('gm.fps') }}</span>
       <span role="columnheader">{{ _('gm.pct55') }}</span>
@@ -41,9 +42,10 @@
     </div>
     {% for g_ in games %}
     <div class="gm-row" role="row" data-game-row>
-      <span role="cell" class="gm-name"><b>{{ g_.name }}</b>{% if g_.few %}<small class="muted">{{ _('gm.few') }}</small>{% endif %}</span>
+      <span role="cell" class="gm-name"><b><a href="{{ url_for('public.game', key=g_.key) }}">{{ g_.name }}</a></b>{% if g_.few %}<small class="muted">{{ _('gm.few') }}</small>{% endif %}</span>
       <span role="cell" data-label="{{ _('gm.status') }}"><span class="fpill gs-{{ g_.status }}">{{ _('gm.s_' ~ g_.status) }}</span></span>
-      <span role="cell" class="r num" data-label="{{ _('gm.sessions') }}">{{ g_.sessions }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.ran') }}">{{ g_.ran }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.short') }}">{% if g_.short %}{{ g_.short }} <small class="muted">({{ g_.short_pct }}%)</small>{% else %}0{% endif %}</span>
       <span role="cell" class="r num" data-label="{{ _('gm.testers') }}">{{ g_.testers }}</span>
       <span role="cell" class="r num" data-label="{{ _('gm.fps') }}">{% if g_.fps_med is not none %}<b>{{ g_.fps_med }}</b>{% if g_.target == 30 %}<small class="muted gm-30">{{ _('gm.fps30') }}</small>{% endif %}{% else %}<span class="muted small">{{ _('gm.no_fps') }}</span>{% endif %}</span>
       <span role="cell" data-label="{{ _('gm.pct55') }}">{% set pc = g_.pct_ok if g_.target == 30 else g_.pct55 %}{% if pc is not none %}
@@ -69,32 +71,7 @@
   <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gm.how_text') }}</p><p>{{ _('gm.rules') }}</p><p>{{ _('gm.rules2') }}</p></details>
 </section>
 
-<section class="wrap" aria-labelledby="gm-bugs">
-  <h2 id="gm-bugs">{{ _('gm.bugs') }}</h2>
-  <p class="muted gm-bugs-lead">{{ _('gm.bugs_lead') }}</p>
-  <div class="gm-bc">
-    <span><b>{{ bc.total }}</b> {{ _('gm.issues_total') }}</span>
-    <span><b>{{ bc.open }}</b> {{ _('gm.bugs_open') }}</span>
-    <span><b>{{ bc.fixed }}</b> {{ _('gm.bugs_fixed') }}</span>
-    <span><b>{{ bc.reports }}</b> {{ _('gm.bugs_total') }}</span>
-  </div>
-  {% if issues %}
-  <div class="rn-list">
-    {% set pill = {'investigating': 'new', 'fixing': 'in_progress', 'testing': 'confirmed', 'fixed': 'fixed', 'wontfix': 'wontfix'} %}
-    {% for b in issues %}
-    <article class="rn-card gm-bug" data-bug-row>
-      <header>
-        <span class="fpill rs-{{ pill.get(b.status, 'new') }}">{{ _('issue.' ~ b.status) }}</span>
-        <h3>{{ b.title }}</h3>
-        <span class="date">{{ _('gm.issue_updated', d=b.updated_at|date) }}</span>
-      </header>
-      <p>{{ b.body }}</p>
-      {% if b.builds %}<p class="muted small">{{ _('gm.issue_builds', n=b.builds, v=b.versions) }}</p>{% endif %}
-    </article>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="card"><p class="muted">{{ _('gm.no_bugs') }}</p></div>
-  {% endif %}
+<section class="wrap">
+  <p class="muted">{{ icon('alert', 14) }} {{ _('bg.from_games') }} <a href="{{ url_for('public.bugs') }}">{{ _('gm.bugs') }}</a></p>
 </section>
 {% endblock %}

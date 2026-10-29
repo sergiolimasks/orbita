@@ -291,6 +291,32 @@ def _session_rows(rs):
     return out
 
 
+SHORT_SAMPLES = 3   # <= 3 STATs (~10 s com o aquecimento) = abriu e fechou: não rodou
+
+
+def _sessions(rs):
+    """2026-10-29: sessões com a duração somada. Cada trecho com PLAY abre uma; as continuações do mesmo
+    testador em até SAME_SESSION entram na última aberta (o log da partida sobe em lotes)."""
+    out, last = [], {}
+    for r in sorted(rs, key=lambda r: (r["rx"] is None, r["rx"] or 0, r["r2_key"])):
+        s = last.get(r["tester_h"])
+        attach = (r["continued"] and s is not None and
+                  (r["rx"] is None or s["rx"] is None or timedelta(0) <= r["rx"] - s["rx"] <= SAME_SESSION))
+        if attach:
+            s["samples"] += r["samples"] or 0
+            s["rows"].append(r)
+            if r["rx"] is not None:
+                s["rx"] = r["rx"]
+            continue
+        s = {"start": r, "rows": [r], "samples": r["samples"] or 0, "rx": r["rx"], "app": r["app"]}
+        out.append(s)
+        last[r["tester_h"]] = s
+    for s in out:
+        s["seconds"] = s["samples"] * 2 + (4 if s["samples"] else 0)
+        s["short"] = s["samples"] <= SHORT_SAMPLES
+    return out
+
+
 def games(rows, hidden=(), current=None):
     """Linhas de play_sessions -> (lista por jogo, resumo). `hidden`: chaves de jogo escondidas pelo admin.
     `current`: versão beta atual. Erros/travamentos de versões anteriores a ela contam como corrigidos (não
@@ -324,6 +350,9 @@ def games(rows, hidden=(), current=None):
             except (ValueError, TypeError, AttributeError):
                 pass
         sess = _session_rows(rs)
+        full = _sessions(rs)
+        ran = [s for s in full if not s["short"]]
+        durs = sorted(s["seconds"] for s in ran)
         last = max(rs, key=lambda r: (r["rx"] is not None, r["rx"] or 0, r["r2_key"]))
         med = _hist_median(hist)
         g = {
@@ -341,16 +370,29 @@ def games(rows, hidden=(), current=None):
             "ok_sessions": sum(1 for r in sess if r["outcome"] == "ok" and r.get("kick") != CLOSED_KICK),
             "closed": sum(1 for r in rs if r.get("kick") == CLOSED_KICK),
             "last_version": _ver(last["app"]), "last_at": last["rx"] or last["day"],
+            # 2026-10-29: quantas rodaram de verdade (> ~10 s) e quantas fecharam logo ao abrir
+            "attempts": len(full), "ran": len(ran), "short": len(full) - len(ran),
+            "dur_med": durs[len(durs) // 2] if durs else None,
         }
         if g["ok_sessions"] > g["drops"]:   # mais sessões boas do que quedas: a queda sai da página
             g["drops"] = 0
         g["pct_ok"] = pct_at_target(hist, g["target"])
         g["old"] = bool(cur_k and g["last_version"] and _vkey(g["last_version"]) < cur_k)
         g["status"] = badge(g)
+        # 2026-10-29: sessão de até ~10 s = abriu e fechou (não rodou). Muitas assim = o jogo não está bem
+        short_rate = g["short"] / max(1, g["attempts"])
+        if g["attempts"] and not g["ran"]:
+            g["status"] = "bad"
+        elif short_rate >= 0.6 and g["status"] != "bad":
+            g["status"] = "bad"
+        elif short_rate >= 0.3 and g["status"] == "good":
+            g["status"] = "unstable"
+        g["short_pct"] = round(100.0 * short_rate)
         # fechou no servidor em toda tentativa e nunca rodou de verdade: "não abre"
         if g["closed"] and not g["ok_sessions"] and (g["samples"] or 0) < 30:
             g["status"] = "noopen"
-        g["few"] = g["sessions"] < 3
+        g["few"] = g["ran"] < 3
+        g["_full"] = full
         g["hidden"] = gk in hidden
         out.append(g)
         if not g["hidden"]:
@@ -359,10 +401,10 @@ def games(rows, hidden=(), current=None):
                 v = _ver(r["app"])
                 if v:
                     ver_count[v] = ver_count.get(v, 0) + 1
-    out.sort(key=lambda g: (-g["sessions"], -g["samples"], g["name"].lower()))
+    out.sort(key=lambda g: (-g["ran"], -g["samples"], g["name"].lower()))
     vis = [g for g in out if not g["hidden"]]
     top_ver = max(ver_count, key=lambda v: (ver_count[v], _vkey(v))) if ver_count else None
-    summary = {"games": len(vis), "sessions": sum(g["sessions"] for g in vis), "testers": len(all_who),
+    summary = {"games": len(vis), "sessions": sum(g["ran"] for g in vis), "testers": len(all_who),
                "top_version": top_ver, "top_version_n": ver_count.get(top_ver, 0) if top_ver else 0,
                "minutes": sum(g["minutes"] for g in vis)}
     return out, summary
@@ -387,3 +429,23 @@ def public_report(r, known_games):
     return {"id": r["id"], "game": g, "version": _ver(r["version"]) if VER_OK.match(r["version"] or "") else "",
             "status": r["status"], "note": scrub(r["admin_note"]), "created_at": r["created_at"],
             "updated_at": r["updated_at"]}
+
+
+def game_detail(g):
+    """2026-10-29: números fáceis de ler pra página do jogo (sem testador/console): faixas de duração e versões."""
+    full = g.get("_full") or []
+    buckets = [("b10", 0), ("b2m", 0), ("b10m", 0), ("bmore", 0)]
+    cnt = {"b10": 0, "b2m": 0, "b10m": 0, "bmore": 0}
+    vers = {}
+    for s in full:
+        sec = s["seconds"]
+        k = "b10" if s["short"] else "b2m" if sec <= 120 else "b10m" if sec <= 600 else "bmore"
+        cnt[k] += 1
+        v = _ver(s["app"])
+        if v:
+            d = vers.setdefault(v, {"version": v, "attempts": 0, "ran": 0})
+            d["attempts"] += 1
+            d["ran"] += 0 if s["short"] else 1
+    n = max(1, len(full))
+    return {"buckets": [{"key": k, "n": cnt[k], "pct": round(100.0 * cnt[k] / n)} for k, _ in buckets],
+            "versions": sorted(vers.values(), key=lambda d: _vkey(d["version"]), reverse=True)[:8]}

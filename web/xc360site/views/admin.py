@@ -462,8 +462,15 @@ def logs_sync():
     return redirect(url_for("admin.logs"))
 
 
+# 2026-10-29: não são erros: estatísticas com contadores ("erros=0/0/0/0", "0 falhas", "ack_falha 3",
+# "errorDetails":null, srtp_err=0) e o xCloud encerrando a sessão (KickFor...: quem diz se deu problema é a
+# duração da sessão, na página de jogos). Esses ficam como aviso, nunca como erro.
+NOT_ERR_RE = re.compile(r"erros=\d|\d+ falhas|falhas \d|ack_falha|errorDetails\W+null|_err=0|dec_err=|"
+                        r"encerrou a sess|KickFor|serverInitiatedDisconnect|\(0 falhas", re.I)
+
+
 def _level(line):
-    if ERR_RE.search(line):
+    if ERR_RE.search(line) and not NOT_ERR_RE.search(line):
         return "err"
     if WARN_RE.search(line):
         return "warn"

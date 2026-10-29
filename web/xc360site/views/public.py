@@ -77,7 +77,24 @@ def game_stats():
 def games():
     gs, summary = game_stats()
     gs = [x for x in gs if not x["hidden"]]
-    known = {plays.norm_name(x["name"]): x["name"] for x in gs}
+    return render_template("public/games.html", games=gs, summary=summary, badges=plays.BADGES)
+
+
+@bp.get("/jogos/<path:key>")
+def game(key):
+    gs, _summary = game_stats()
+    g_ = next((x for x in gs if x["key"] == key and not x["hidden"]), None)
+    if not g_:
+        abort(404)
+    det = plays.game_detail(g_)
+    nrep = db.row("SELECT count(*) AS n FROM reports WHERE status<>'duplicate' AND NOT public_hidden AND "
+                  "lower(regexp_replace(game, '[^A-Za-z0-9]', '', 'g')) = %s",
+                  re.sub(r"[^a-z0-9]", "", g_["name"].lower()))["n"] if g_["name"] else 0
+    return render_template("public/game.html", g_=g_, det=det, nrep=nrep, badges=plays.BADGES)
+
+
+@bp.get("/bugs")
+def bugs():
     # 2026-10-29: "Bugs encontrados" = resumo curado (known_issues), não os relatos um a um
     idx = LANGS.index(g.lang) if getattr(g, "lang", None) in LANGS else 0
     sfx = ("pt", "en", "es")[idx]
@@ -90,8 +107,7 @@ def games():
           "open": sum(1 for i in issues if i["status"] in ("investigating", "fixing", "testing")),
           "fixed": sum(1 for i in issues if i["status"] == "fixed"),
           "reports": db.row("SELECT count(*) AS n FROM reports WHERE status<>'duplicate'")["n"]}
-    return render_template("public/games.html", games=gs, summary=summary, issues=issues, bc=bc,
-                           badges=plays.BADGES)   # versão atual: beta_now() (context processor)
+    return render_template("public/bugs.html", issues=issues, bc=bc)
 
 
 @bp.get("/games")
