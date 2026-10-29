@@ -189,7 +189,7 @@ static void speed_row(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     case 1: r->value = L("esperando a conexão…"); break;
     case 2: r->value = L("testando…"); break;
     case 3:
-        snprintf(o->b_spd, sizeof(o->b_spd), "%d,%d Mb/s  ·  latência %d ms", in->speed_mbps10 / 10,
+        snprintf(o->b_spd, sizeof(o->b_spd), "%d,%d Mb/s  ·  servidor %d ms", in->speed_mbps10 / 10,
                  in->speed_mbps10 % 10, in->speed_lat_ms);
         r->value = o->b_spd;
         break;
@@ -292,9 +292,11 @@ static void sec_perf(xcs_view_t *o, const xcs_in_t *in, int *nr) {
     r = &o->rows[(*nr)++];
     r->head = L("JOGO");
     r->label = "FPS";
-    if (in->perf_fps10 >= 0)
-        snprintf(o->b_p[2], sizeof(o->b_p[2]), "%d  ·  decodificação %d,%d ms/quadro", (in->perf_fps10 + 5) / 10,
-                 in->perf_dec_ms10 / 10, in->perf_dec_ms10 % 10);
+    if (in->perf_fps10 >= 0 && in->perf_rtt_ms10 >= 0)
+        snprintf(o->b_p[2], sizeof(o->b_p[2]), "%d  ·  latência do jogo %d ms", (in->perf_fps10 + 5) / 10,
+                 (in->perf_rtt_ms10 + 5) / 10);
+    else if (in->perf_fps10 >= 0)
+        snprintf(o->b_p[2], sizeof(o->b_p[2]), "%d", (in->perf_fps10 + 5) / 10);
     else snprintf(o->b_p[2], sizeof(o->b_p[2]), "—");
     r->value = o->b_p[2];
     if (in->perf_fps10 >= 0) {

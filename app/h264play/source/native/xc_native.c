@@ -1,4 +1,5 @@
 /* XCloud360 stage 5 — see xc_native.h. Our code (no third-party source). */
+#include "../xc_perf.h"   /* v0.21.43 */
 #include "xc_native.h"
 
 #include <stdarg.h>
@@ -470,6 +471,7 @@ int xn_stat_tail(char *dst, size_t n) {
      * thread on hw3, wait = waiting for hw3), tls_hs = full TLS handshakes
      * on the keep-alive connection while hw1 had it (should stay put). */
     double sess = dt > 0 && c.sess_us >= prev.sess_us ? (double)(c.sess_us - prev.sess_us) / 1000.0 * (2.0 / dt) : 0;
+    xpf_rtt_ms10 = c.s.rtt_samples ? (int)(c.s.rtt_avg_us / 100) : -1;   /* v0.21.43: Desempenho / overlay */
     static const char *own_s[] = {"thr", "net", "wait", "done"};
     int m = snprintf(dst, n,
                      " rtc=%s rtt_ms=%.1f loss_pct=%.2f lost=%u kbps=%.0f nack=%u kfrq=%u pli=%u srtp_err=%u"

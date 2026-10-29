@@ -819,6 +819,11 @@ static void perf_overlay_update(int on) {
 #endif
 }
 
+/* v0.21.44: pacote entrou no decoder -> quadro entregue à GPU (us, soma/contagem
+ * desde o último STAT). Com frame threading inclui os quadros "na fila" das threads. */
+static uint64_t g_pipe_us = 0;
+static unsigned g_pipe_n = 0;
+
 static void wdt_stop(void) {
     g_wdt_stop = 1;
     __asm__ __volatile__("sync" ::: "memory");
@@ -1486,6 +1491,7 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         int got = 0;
         xwd_crumb("decode");
         g_dec_in_ms = xwd_now_ms();   /* v0.21.35: vigiado pelo dec_stall_check */
+        ctx->reordered_opaque = (int64_t)t_a;   /* v0.21.44: atraso dentro do decoder (pipe_ms) */
         int r = avcodec_decode_video2(ctx, frame, &got, &pkt);
         g_dec_in_ms = 0;
         uint64_t t_b = now_us();
@@ -1548,6 +1554,10 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
             xwd_crumb("gpu present");
             gpu_present_frame(frame->data, frame->linesize, gW, gH, tag);
             t_d = now_us();
+            if (frame->reordered_opaque > 0 && (uint64_t)frame->reordered_opaque <= t_d) {   /* v0.21.44 */
+                g_pipe_us += t_d - (uint64_t)frame->reordered_opaque;
+                g_pipe_n++;
+            }
             acc_cvt += (t_d - t_c);
             frames_since_report++;
             goto report;
@@ -1664,6 +1674,15 @@ report:
                     int m = snprintf(stat + n, sizeof(stat) - n,
                         " gpu=1 gwait_ms=%.2f flip_ms=%.1f flips=%u sup=%u gto=%u",
                         gwait_ms, flip_lag_ms, gflips, gsuper, gtimeouts);
+                    if (m > 0) n += m;
+                    if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
+                    m = 0;
+                }
+                if (n > 0 && n < (int)sizeof(stat)) {   /* v0.21.44: sempre (também no lite) */
+                    int m = snprintf(stat + n, sizeof(stat) - n, " pipe_ms=%.1f thr=%d",
+                                     g_pipe_n ? (double)g_pipe_us / 1000.0 / g_pipe_n : -1.0, ctx->thread_count);
+                    g_pipe_us = 0;
+                    g_pipe_n = 0;
                     if (m > 0) n += m;
                     if (n >= (int)sizeof(stat)) n = (int)sizeof(stat) - 1;
                 }
@@ -1844,13 +1863,13 @@ static xcn_notes_t g_notes;
 static int        g_notes_ok = 0;
 /* v0.21.34: novidades desta build, pra quando não há NOTES.TXT nem manifesto da mesma versão */
 #define BUILTIN_NOTES \
-    "Ao sair de um jogo, o app mostra \"Enviando o log da partida\" e manda o registro da partida para a equipe " \
-    "(no jogo nada é enviado). Assim os problemas que você relata chegam com o log.\n" \
-    "Wi-Fi: abrir o Wi-Fi nas Configurações agora liga o adaptador mesmo se o Xbox iniciou com cabo, e tenta de " \
-    "novo depois de uma falha (antes ficava em \"Ligando o Wi-Fi\" para sempre).\n" \
-    "Controle com fio já conectado ao ligar o Xbox: o boot não trava mais e o controle funciona direto.\n" \
-    "Chave beta: use sempre a MESMA chave (Mostrar a chave, no site). Se o app pede a chave toda vez, o pendrive " \
-    "não está gravando: use uma porta USB de trás."
+    "Configurações > Desempenho mostra a latência do jogo (ida e volta do vídeo com o xCloud); com \"Mostrar no jogo\" " \
+    "ela aparece também no canto da tela.\n" \
+    "Chave beta: se a chave digitada estiver errada, ela continua no campo para você corrigir; se ela foi trocada no " \
+    "site, a tela explica como pegar a atual (Mostrar a chave).\n" \
+    "Wi-Fi: quando o Wi-Fi interno não liga, a tela de erro mostra o que está em cada porta USB. Mande uma foto dela no relato.\n" \
+    "Testado em Xbox 360 Slim, placa Corona, RGH, pendrive de 32 GB e Wi-Fi interno. Consoles diferentes podem se " \
+    "comportar diferente: no relato, diga o modelo do console e mande foto da tela."
 
 /* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
@@ -2489,11 +2508,20 @@ static void beta_poll(int *pend_upd) {
             g_bui = BG_KEY;
             snprintf(g_kerr, sizeof(g_kerr), "%s", g_bs.msg);
             break;
-        case XCB_INVALID:
+        case XCB_INVALID: {
+            /* v0.21.43: 401 = a chave não existe no servidor (quase sempre uma
+             * letra errada). Antes apagava tudo; agora fica no campo pra corrigir. */
+            char typed[XKP_LEN + 8];
+            xkp_text(&g_kp, typed);
             g_bui = BG_KEY;
-            snprintf(g_kerr, sizeof(g_kerr), "Chave inválida. Confira e digite de novo.");
-            xkp_clear(&g_kp);
+            if (typed[0])
+                snprintf(g_kerr, sizeof(g_kerr), "Chave não encontrada (%s). Confira letra por letra com a do site "
+                         "(Mostrar a chave) e corrija.", typed);
+            else
+                snprintf(g_kerr, sizeof(g_kerr), "Chave não encontrada. Confira letra por letra com a do site (Mostrar a chave).");
+            xc_log("[beta] chave não encontrada (401): %u letras digitadas", (unsigned)strlen(typed));
             break;
+        }
         case XCB_REVOKED: case XCB_DUPLICATE: case XCB_NOCONN: case XCB_ERROR:
             g_bui = BG_MSG;
             break;
@@ -2633,6 +2661,7 @@ static void cfg_fill_in(int pend_upd) {
     in->perf_dec_ms10 = xpf.dec_ms10;
     in->perf_live = xpf.in_game;
     in->perf_overlay = xpf_overlay;
+    in->perf_rtt_ms10 = xpf_rtt_ms10;
     {
         static char sm[96];
         in->speed_state = xlu_speed_result(&in->speed_mbps10, &in->speed_lat_ms, sm, sizeof(sm));
@@ -3709,9 +3738,9 @@ static int menu_loop(int net_ok, const char *msg) {
             st.detail = det;
             switch (g_bs.phase) {
             case XCB_REVOKED:
-                st.title = "Chave revogada.";
-                st.text = "Esta chave não vale mais (você gerou outra ou ela foi trocada). Pegue a chave atual "
-                          "na sua área em x360.pistatrack.com e digite aqui.";
+                st.title = "Esta chave foi trocada";
+                st.text = "Uma chave mais nova foi gerada no site e esta parou de valer. Abra x360.pistatrack.com, "
+                          "clique em Mostrar a chave e digite a que aparece lá (não gere outra: cada nova desativa a anterior).";
                 st.hint = g_bchange ? "A:Digitar outra chave|B:Voltar" : "A:Digitar outra chave";
                 break;
             case XCB_DUPLICATE:
@@ -3775,7 +3804,7 @@ static int menu_loop(int net_ok, const char *msg) {
             break;
         case SCR_NETWAIT: {
             /* v0.21.5: telas do boot de rede (xw_boot.h) */
-            static char ttl[96], txt[220], det[96];
+            static char ttl[96], txt[420], det[96];   /* v0.21.44: txt cabe o motivo do Wi-Fi com as portas */
             unsigned secs = g_ws.stage_ms / 1000;
             if (g_bootnet == XWB_NOINTERNET) {
                 if (now < g_cable_retry_until) {
@@ -3788,7 +3817,7 @@ static int menu_loop(int net_ok, const char *msg) {
                     st.kind = XUI_ST_ERROR;
                     st.title = "Sem internet: conecte o cabo de rede";
                     if (g_ws.dev == XW_DEV_FAILED)
-                        snprintf(txt, sizeof(txt), "O Wi-Fi interno não ligou (%.120s). Conecte o cabo de rede e aperte A.",
+                        snprintf(txt, sizeof(txt), "O Wi-Fi interno não ligou (%.300s). Conecte o cabo de rede e aperte A.",
                                  g_ws.why[0] ? g_ws.why : "sem resposta do adaptador");
                     else
                         snprintf(txt, sizeof(txt), "Este Xbox não tem Wi-Fi interno (só o Xbox 360 S/E tem). Conecte o cabo "

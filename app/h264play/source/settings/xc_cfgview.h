@@ -93,6 +93,7 @@ typedef struct {
     int         perf_cpu_c10, perf_gpu_c10, perf_cpu_pct, perf_gpu_pct, perf_fps10;
     int         perf_audio_ms10, perf_pad_ms100, perf_net_pct, perf_dec_ms10, perf_live, perf_overlay;
     int         speed_state, speed_mbps10, speed_lat_ms;   /* XLU_SPD_* */
+    int         perf_rtt_ms10;   /* latência do jogo (WebRTC), -1 = sem */
     const char *speed_msg;
     /* aviso curto (ex. "Chave trocada") */
     const char *notice;

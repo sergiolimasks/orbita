@@ -11,6 +11,7 @@
 
 xpf_t xpf = { -1, -1, -1, -1, -1, 0, 0, 0, 0, 0 };
 int   xpf_overlay = 0;
+volatile int xpf_rtt_ms10 = -1;
 
 void xpf_temps_poll(uint64_t now_us) {
     static uint64_t last = 0;
@@ -54,5 +55,7 @@ void xpf_overlay_text(char *o, size_t n) {
     if (xpf.fps10 >= 0) snprintf(fps, sizeof(fps), "%d", (xpf.fps10 + 5) / 10); else snprintf(fps, sizeof(fps), "--");
     if (xpf.cpu_pct >= 0) snprintf(cp, sizeof(cp), "%d%%", xpf.cpu_pct); else snprintf(cp, sizeof(cp), "--");
     if (xpf.gpu_pct >= 0) snprintf(gp, sizeof(gp), "%d%%", xpf.gpu_pct); else snprintf(gp, sizeof(gp), "--");
-    snprintf(o, n, "FPS %s\nCPU %s  %s\nGPU %s  %s", fps, cp, ct, gp, gt);
+    char rt[16];
+    if (xpf_rtt_ms10 >= 0) snprintf(rt, sizeof(rt), "  %dms", (xpf_rtt_ms10 + 5) / 10); else rt[0] = 0;
+    snprintf(o, n, "FPS %s%s\nCPU %s  %s\nGPU %s  %s", fps, rt, cp, ct, gp, gt);
 }

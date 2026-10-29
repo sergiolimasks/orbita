@@ -10,6 +10,7 @@
  * a pilha CFE do libxenon (assíncrona, a mesma dos controles) o enxerga sem
  * driver. Só a thread de rede (hw 1), dentro do mesmo passo do usb_do_poll.
  */
+#include <stdio.h>   /* v0.21.44: snprintf */
 #include <stddef.h>
 #include <stdint.h>
 #include <xetypes.h>
@@ -104,6 +105,10 @@ void xw_ehci_ports_text(char *o, size_t n) {
         for (int p = 0; p < np && k + 6 < n; p++) {
             u32 reg = (u32)h->regs + (u32)offsetof(struct ehci_regs, port_status) + 4u * (u32)p;
             k += (size_t)snprintf(o + k, n - k, " %x", (unsigned)(read32(reg) & 0xffff));
+            struct ehci_device *d = &h->devices[p];   /* v0.21.44: quem é (VID:PID do tinyehci) */
+            if (d->id && k + 14 < n)
+                k += (size_t)snprintf(o + k, n - k, "=%04x:%04x", (unsigned)bswap_16(d->desc.idVendor),
+                                      (unsigned)bswap_16(d->desc.idProduct));
         }
     }
 }

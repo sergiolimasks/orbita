@@ -28,6 +28,7 @@ typedef struct {
 
 extern xpf_t xpf;
 extern int   xpf_overlay;       /* 1 = números no canto do jogo (XC360/PERF.TXT) */
+extern volatile int xpf_rtt_ms10;   /* ida e volta do vídeo com o xCloud (WebRTC), x10; -1 = sem */
 
 /* main: lê o SMC se passou 1 s (now_us). */
 void xpf_temps_poll(uint64_t now_us);
