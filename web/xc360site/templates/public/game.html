@@ -1,34 +1,53 @@
 {% extends "base.html" %}
 {% block title %}{{ g_.name }} — {{ _('gm.title') }} — {{ brand.name }}{% endblock %}
+{% macro dur(sec) -%}
+{%- if sec is none %}—{% elif sec >= 3600 %}{{ (sec / 3600)|round(1) }} h{% elif sec >= 120 %}{{ (sec / 60)|round(0)|int }} min{% else %}{{ sec }} s{% endif -%}
+{%- endmacro %}
 {% block main %}
 <section class="wrap pg-head">
   <a class="eyebrow" href="{{ url_for('public.games') }}">{{ icon('gamepad', 14) }}{{ _('gm.title') }}</a>
   <h1>{{ g_.name }}</h1>
-  <p class="lead"><span class="fpill gs-{{ g_.status }}">{{ _('gm.s_' ~ g_.status) }}</span> {{ _('gm.d_' ~ g_.status) }}</p>
+  <p class="lead"><span class="fpill gs-{{ g_.status }}">{{ _('gm.s_' ~ g_.status) }}</span></p>
+  {% if det.why %}
+  <div class="card gd-why">
+    <b>{{ _('gd.why_title') }}</b>
+    <ul>{% for k, p in det.why %}<li>{{ _('gd.why_' ~ k, **p) }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
 </section>
 
 <section class="wrap" aria-labelledby="gd-sum">
   <h2 id="gd-sum">{{ _('gd.summary') }}</h2>
   <div class="st-counts gm-sum">
-    <div class="st-count"><small>{{ _('gd.ran') }}</small><b>{{ g_.ran }}</b></div>
-    <div class="st-count"><small>{{ _('gd.short') }}</small><b>{{ g_.short }}</b>{% if g_.attempts %}<small>{{ _('gd.of_attempts', p=g_.short_pct, n=g_.attempts) }}</small>{% endif %}</div>
-    <div class="st-count"><small>{{ _('gd.dur') }}</small><b>{% if g_.dur_med %}{{ (g_.dur_med / 60)|round(0)|int if g_.dur_med >= 120 else g_.dur_med }}{% else %}—{% endif %}</b>{% if g_.dur_med %}<small>{{ _('gd.min') if g_.dur_med >= 120 else _('gd.sec') }}</small>{% endif %}</div>
-    <div class="st-count"><small>{{ _('gm.fps') }}</small><b>{{ g_.fps_med if g_.fps_med is not none else '—' }}</b>{% if g_.target == 30 %}<small>{{ _('gm.fps30') }}</small>{% endif %}</div>
+    <div class="st-count"><small>{{ _('gd.ran') }}</small><b>{{ g_.ran }}</b><small>{{ _('gd.ran_h') }}</small></div>
+    <div class="st-count"><small>{{ _('gd.short') }}</small><b>{{ g_.short }}</b><small>{{ _('gd.of_attempts', p=g_.short_pct, n=g_.attempts) }}</small></div>
+    <div class="st-count"><small>{{ _('gd.dur') }}</small><b>{{ dur(g_.dur_med) }}</b><small>{{ _('gd.dur_h') }}</small></div>
+    <div class="st-count"><small>{{ _('gm.fps') }}</small><b>{{ g_.fps_med if g_.fps_med is not none else '—' }}</b>
+      {% set pc = g_.pct_ok if g_.target == 30 else g_.pct55 %}<small>{% if pc is not none %}{{ _('gd.fps_h', p=pc, f=(28 if g_.target == 30 else 55)) }}{% endif %}</small></div>
   </div>
-
-  <ul class="gd-plain">
-    {% if g_.ran == 0 %}<li>{{ _('gd.p_never') }}</li>
-    {% elif g_.short_pct >= 60 %}<li>{{ _('gd.p_mostly_short', p=g_.short_pct) }}</li>
-    {% elif g_.short_pct >= 30 %}<li>{{ _('gd.p_some_short', p=g_.short_pct) }}</li>
-    {% else %}<li>{{ _('gd.p_runs', n=g_.ran) }}</li>{% endif %}
-    {% set pc = g_.pct_ok if g_.target == 30 else g_.pct55 %}
-    {% if pc is not none %}<li>{{ _('gd.p_fps', p=pc, f=(28 if g_.target == 30 else 55)) }}</li>{% endif %}
-    {% if g_.drops %}<li>{{ _('gd.p_drops', n=g_.drops) }}</li>{% endif %}
-    {% if g_.errors or g_.hangs %}<li>{{ _('gd.p_errors', n=g_.errors + g_.hangs) }}</li>{% endif %}
-    {% if g_.closed %}<li>{{ _('gd.p_closed', n=g_.closed) }}</li>{% endif %}
-    {% if g_.few %}<li class="muted">{{ _('gm.few') }}</li>{% endif %}
-  </ul>
+  <p class="muted small">{{ _('gd.total_time', t=dur(g_.samples * 2)) }}{% if g_.last_version %} · {{ _('gd.last_played', v=g_.last_version) }}{% endif %}</p>
 </section>
+
+{% if det.endings %}
+<section class="wrap" aria-labelledby="gd-end">
+  <h2 id="gd-end">{{ _('gd.endings') }}</h2>
+  <div class="gd-bars">
+    {% for e in det.endings %}
+    <div class="gd-bar-row"><span><b>{{ _('end.' ~ e.key) }}</b><br><small class="muted">{{ _('end.d_' ~ e.key) }}</small></span>
+      <svg class="gm-bar" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bg" width="100" height="6" rx="3"/><rect class="fill {{ 'hi' if e.key in ('ok', 'user', 'free_time', 'idle', 'other_device') else ('mid' if e.key in ('drop', 'short') else 'lo') }}" width="{{ e.pct }}" height="6" rx="3"/></svg>
+      <span class="num small">{{ e.n }} ({{ e.pct }}%)</span></div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if det.errors %}
+<section class="wrap" aria-labelledby="gd-err">
+  <h2 id="gd-err">{{ _('gd.errors') }}</h2>
+  <p class="muted small">{{ _('gd.errors_h') }}</p>
+  <ul class="gd-errs">{% for e in det.errors %}<li><code>{{ e.text }}</code> <span class="muted small">× {{ e.n }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
 
 <section class="wrap" aria-labelledby="gd-dur">
   <h2 id="gd-dur">{{ _('gd.durations') }}</h2>
@@ -44,13 +63,39 @@
 {% if det.versions %}
 <section class="wrap" aria-labelledby="gd-ver">
   <h2 id="gd-ver">{{ _('gd.versions') }}</h2>
-  <div class="gm-table" role="table">
-    <div class="gm-row gm-th" role="row"><span role="columnheader">{{ _('gm.last_version') }}</span>
-      <span role="columnheader" class="r">{{ _('gd.ran') }}</span><span role="columnheader" class="r">{{ _('gd.short') }}</span></div>
+  <div class="gm-table gd-vt" role="table">
+    <div class="gm-row gm-th" role="row"><span role="columnheader">{{ _('gd.version') }}</span>
+      <span role="columnheader" class="r">{{ _('gd.ran') }}</span><span role="columnheader" class="r">{{ _('gd.short_s') }}</span>
+      <span role="columnheader" class="r">{{ _('gm.fps') }}</span><span role="columnheader" class="r">{{ _('gd.at55') }}</span>
+      <span role="columnheader" class="r">{{ _('gd.v_drops') }}</span><span role="columnheader" class="r">{{ _('gd.v_errors') }}</span>
+      <span role="columnheader" class="r">{{ _('gd.v_cloud') }}</span></div>
     {% for v in det.versions %}
     <div class="gm-row" role="row"><span role="cell" class="mono-s">{{ v.version }}</span>
       <span role="cell" class="r num" data-label="{{ _('gd.ran') }}">{{ v.ran }}</span>
-      <span role="cell" class="r num" data-label="{{ _('gd.short') }}">{{ v.attempts - v.ran }}</span></div>
+      <span role="cell" class="r num" data-label="{{ _('gd.short_s') }}">{{ v.short }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gm.fps') }}">{{ v.fps_med if v.fps_med is not none else '—' }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.at55') }}">{{ (v.pct55 ~ '%') if v.pct55 is not none else '—' }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.v_drops') }}">{{ v.drops }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.v_errors') }}">{{ v.errors }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.v_cloud') }}">{{ v.cloud }}</span></div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if det.recent %}
+<section class="wrap" aria-labelledby="gd-rec">
+  <h2 id="gd-rec">{{ _('gd.recent') }}</h2>
+  <div class="gm-table gd-rt" role="table">
+    <div class="gm-row gm-th" role="row"><span role="columnheader">{{ _('gd.when') }}</span>
+      <span role="columnheader">{{ _('gd.version') }}</span><span role="columnheader" class="r">{{ _('gd.length') }}</span>
+      <span role="columnheader" class="r">{{ _('gm.fps') }}</span><span role="columnheader">{{ _('gd.ended') }}</span></div>
+    {% for s in det.recent %}
+    <div class="gm-row" role="row"><span role="cell" class="small">{{ s.when|date }}</span>
+      <span role="cell" class="mono-s" data-label="{{ _('gd.version') }}">{{ s.version }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gd.length') }}">{{ dur(s.seconds) }}</span>
+      <span role="cell" class="r num" data-label="{{ _('gm.fps') }}">{{ s.fps if s.fps is not none else '—' }}</span>
+      <span role="cell" data-label="{{ _('gd.ended') }}">{{ _('end.' ~ s.ending) }}</span></div>
     {% endfor %}
   </div>
 </section>
@@ -58,6 +103,6 @@
 
 <section class="wrap">
   <p class="muted small">{{ _('gd.reports', n=nrep) }} <a href="{{ url_for('public.bugs') }}">{{ _('gm.bugs') }}</a></p>
-  <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gd.how') }}</p></details>
+  <details class="gm-how"><summary>{{ icon('info', 14) }}{{ _('gm.how') }}</summary><p>{{ _('gd.how') }}</p><p>{{ _('gd.how2') }}</p></details>
 </section>
 {% endblock %}

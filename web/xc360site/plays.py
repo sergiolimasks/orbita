@@ -13,7 +13,7 @@ banco (kv.play_salt); nada disso sai na página pública, só contagens.
 import hashlib, json, re, secrets, statistics
 from datetime import timedelta
 
-PARSER_V = 4                   # sobe quando o parser muda -> o backfill reprocessa os lotes
+PARSER_V = 6   # 2026-10-29: + err (mensagem do 1º erro)                   # sobe quando o parser muda -> o backfill reprocessa os lotes
 WARMUP_S = 4                   # ignora STAT dos primeiros ~4 s de cada sessão/reconexão
 FPS_OK = 55                    # "% do tempo >= 55 fps"
 
@@ -24,7 +24,7 @@ KV_RE = re.compile(r"\b([a-z_]+)=(-?\d+(?:\.\d+)?)\b")
 RECONN_RE = re.compile(r"\[sess\] STATE RECONNECTING")
 DROP_RE = re.compile(r"\[menu\] v[ií]deo perdido|\[sess\] queda no meio do jogo")
 ERROR_RE = re.compile(r"\[sess\] STATE ERROR\b(.*)")
-NOT_GAME_ERR_RE = re.compile(r"login|OfferingDoesNotContainTitle", re.I)   # sem acesso ao jogo por esse caminho: não é problema do jogo       # "Faca o login no Xbox primeiro": não é problema do jogo
+NOT_GAME_ERR_RE = re.compile(r"login|OfferingDoesNotContainTitle|BlockedByParentalControls|ParentalControl", re.I)   # sem acesso ao jogo por esse caminho: não é problema do jogo       # "Faca o login no Xbox primeiro": não é problema do jogo
 HANG_RE = re.compile(r"\[wdog\] (?:TRAVOU|CRASH)\b|Segmentation fault|\bkernel panic\b")
 TITLE_RE = re.compile(r"^[A-Z0-9_]{2,64}$")
 # v2: motivo de fim que o servidor manda ({"reason":"KickFor..."} no canal de mensagens)
@@ -54,6 +54,7 @@ class _Seg:
         self._last_skipped = None
         self.drops = self.errors = self.hangs = 0
         self.kick = ""
+        self.err = ""                   # 2026-10-29: o 1º erro do jogo (pra página do jogo)
         self._pre = (0, 0)              # quedas/erros antes do motivo do servidor
         self.warm = not continued       # espera a 1ª STAT pra marcar o início
         self.t0 = None
@@ -118,6 +119,7 @@ class _Seg:
         self.settle()
         return {
             "title_id": self.title_id, "game": name, "continued": self.continued, "kick": self.kick[:40],
+            "err": self.err[:80],
             "outcome": self.outcome(), "n_drops": self.drops, "n_errors": self.errors, "n_hangs": self.hangs,
             "samples": len(fps), "ge55": sum(1 for v in fps if v >= FPS_OK),
             "fps_avg": r(statistics.fmean(fps)) if fps else None,
@@ -165,9 +167,15 @@ def parse(lines, doc_game=""):
         if m:
             if not NOT_GAME_ERR_RE.search(m.group(1)):
                 cur.errors += 1
+                if not cur.err:
+                    cur.err = scrub(m.group(1).strip(" :-"), 70)
+            elif not cur.err:   # 2026-10-29: conta bloqueada etc.: guarda o motivo, sem contar erro
+                cur.err = scrub(m.group(1).strip(" :-"), 70)
             continue
         if HANG_RE.search(ln):
             cur.hangs += 1
+            if not cur.err:
+                cur.err = "app travou"   # o texto do vigia tem endereços: só a categoria
     out = []
     # v3: o "game" do lote é o jogo do FIM do lote. Se o lote abriu outro jogo
     # (PLAY), o trecho do começo é de um jogo anterior e não herda esse nome
@@ -196,7 +204,7 @@ def anon(s, value):
     return hashlib.sha256((s + "|" + (value or "")).encode()).hexdigest()[:16] if value else ""
 
 
-COLS = ("title_id", "kick", "game", "continued", "outcome", "n_drops", "n_errors", "n_hangs", "samples", "ge55",
+COLS = ("title_id", "kick", "err", "game", "continued", "outcome", "n_drops", "n_errors", "n_hangs", "samples", "ge55",
         "fps_avg", "fps_min", "fps_med", "hist", "skipped", "kbps_avg", "loss_avg")
 
 
@@ -271,7 +279,7 @@ def badge(g):
         return "bad" if (g["errors"] or g["hangs"] or g["drops"]) else "unstable"
     if (g["target"] == 60 and med < 45) or pct < 40 or bad_rate >= 0.5:
         return "bad"
-    if pct >= 90 and bad_rate <= 0.2 and drop_rate <= 0.25:
+    if pct >= 75 and bad_rate <= 0.2 and drop_rate <= 0.25:   # 2026-10-29: era 90 (59 FPS de mediana é bom)
         return "good"
     return "unstable"
 
@@ -431,21 +439,99 @@ def public_report(r, known_games):
             "updated_at": r["updated_at"]}
 
 
+# como a sessão terminou (do pior pro melhor); KickFor* = o servidor do xCloud disse por que fechou
+ENDINGS = ("hang", "error", "cloud_error", "closed", "account", "drop", "short", "free_time", "idle", "other_device", "user", "ok")
+KICK_END = {"KickForAppError": "cloud_error", "KickForClosedGame": "closed", "KickForOutOfStreamingTime": "free_time",
+            "KickForBeingIdle": "idle", "KickByNewSession": "other_device", "KickForStopCommand": "user"}
+
+
+def _ending(s):
+    rs = s["rows"]
+    if any(r["n_hangs"] for r in rs):
+        return "hang"
+    if any(r["n_errors"] for r in rs):
+        return "error"
+    if any(r.get("err") and NOT_GAME_ERR_RE.search(r["err"]) for r in rs):
+        return "account"
+    kick = next((r.get("kick") for r in rs if r.get("kick")), "")
+    if kick in KICK_END and KICK_END[kick] in ("cloud_error", "closed"):
+        return KICK_END[kick]
+    if any(r["n_drops"] for r in rs):
+        return "drop"
+    if s["short"]:
+        return "short"
+    return KICK_END.get(kick, "ok")
+
+
+def _merge_hist(rs):
+    h = {}
+    for r in rs:
+        try:
+            for b, n in json.loads(r["hist"] or "{}").items():
+                h[int(b)] = h.get(int(b), 0) + int(n)
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return h
+
+
 def game_detail(g):
-    """2026-10-29: números fáceis de ler pra página do jogo (sem testador/console): faixas de duração e versões."""
+    """2026-10-29: tudo da página do jogo, sem testador/console: por que o selo, como as sessões terminaram,
+    os erros (texto curto), faixas de duração, por versão (só as publicadas) e as últimas sessões."""
     full = g.get("_full") or []
-    buckets = [("b10", 0), ("b2m", 0), ("b10m", 0), ("bmore", 0)]
+    pub = [s for s in full if VER_OK.match(_ver(s["app"]) or "") and "-" not in (_ver(s["app"]) or "")]
     cnt = {"b10": 0, "b2m": 0, "b10m": 0, "bmore": 0}
-    vers = {}
+    ends, errs, vers, recent = {}, {}, {}, []
     for s in full:
         sec = s["seconds"]
-        k = "b10" if s["short"] else "b2m" if sec <= 120 else "b10m" if sec <= 600 else "bmore"
-        cnt[k] += 1
+        cnt["b10" if s["short"] else "b2m" if sec <= 120 else "b10m" if sec <= 600 else "bmore"] += 1
+        e = _ending(s)
+        s["ending"] = e
+        ends[e] = ends.get(e, 0) + 1
+        for r in s["rows"]:
+            if r.get("err") and (r["n_errors"] or r["n_hangs"]):
+                errs[r["err"]] = errs.get(r["err"], 0) + 1
+    for s in pub:
         v = _ver(s["app"])
-        if v:
-            d = vers.setdefault(v, {"version": v, "attempts": 0, "ran": 0})
-            d["attempts"] += 1
-            d["ran"] += 0 if s["short"] else 1
+        d = vers.setdefault(v, {"version": v, "attempts": 0, "ran": 0, "short": 0, "drops": 0, "errors": 0,
+                                "cloud": 0, "hist": {}, "samples": 0, "ge55": 0})
+        d["attempts"] += 1
+        d["ran" if not s["short"] else "short"] += 1
+        d["drops"] += 1 if s["ending"] == "drop" else 0
+        d["errors"] += 1 if s["ending"] in ("error", "hang") else 0
+        d["cloud"] += 1 if s["ending"] in ("cloud_error", "closed") else 0
+        for b, n in _merge_hist(s["rows"]).items():
+            d["hist"][b] = d["hist"].get(b, 0) + n
+        d["samples"] += s["samples"]
+        d["ge55"] += sum(r["ge55"] or 0 for r in s["rows"])
+    vlist = []
+    for d in sorted(vers.values(), key=lambda d: _vkey(d["version"]), reverse=True)[:8]:
+        d["fps_med"] = _hist_median(d["hist"])
+        d["pct55"] = round(100.0 * d["ge55"] / d["samples"]) if d["samples"] else None
+        del d["hist"]
+        vlist.append(d)
+    for s in sorted(pub, key=lambda s: (s["rx"] is not None, s["rx"] or 0), reverse=True)[:12]:
+        h = _merge_hist(s["rows"])
+        recent.append({"when": s["rx"] or s["start"]["day"], "version": _ver(s["app"]), "seconds": s["seconds"],
+                       "fps": _hist_median(h), "ending": s["ending"]})
     n = max(1, len(full))
-    return {"buckets": [{"key": k, "n": cnt[k], "pct": round(100.0 * cnt[k] / n)} for k, _ in buckets],
-            "versions": sorted(vers.values(), key=lambda d: _vkey(d["version"]), reverse=True)[:8]}
+    # por que o selo: os fatos que pesaram, com números
+    why = []
+    if g["attempts"] and not g["ran"]:
+        why.append(("never", {}))
+    elif g["short_pct"] >= 30:
+        why.append(("short", {"p": g["short_pct"]}))
+    pc = g["pct_ok"] if g["target"] == 30 else g["pct55"]
+    if pc is not None:
+        why.append(("fps_ok" if pc >= 75 else "fps_low", {"p": pc, "f": 28 if g["target"] == 30 else 55,
+                                                          "m": g["fps_med"]}))
+    if g["drops"]:
+        why.append(("drops", {"n": g["drops"], "s": g["sessions"]}))
+    if g["errors"] or g["hangs"]:
+        why.append(("errors", {"n": g["errors"] + g["hangs"]}))
+    if g["closed"]:
+        why.append(("closed", {"n": g["closed"]}))
+    return {"buckets": [{"key": k, "n": cnt[k], "pct": round(100.0 * cnt[k] / n)} for k in ("b10", "b2m", "b10m", "bmore")],
+            "versions": vlist, "recent": recent,
+            "endings": [{"key": k, "n": ends[k], "pct": round(100.0 * ends[k] / n)} for k in ENDINGS if ends.get(k)],
+            "errors": sorted(({"text": t, "n": c} for t, c in errs.items()), key=lambda x: -x["n"])[:8],
+            "why": why}

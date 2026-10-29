@@ -61,7 +61,7 @@ def release_note(version):
 
 
 # ------------------------------------------------------------------ /jogos: progresso dos testes
-PLAY_COLS = ("r2_key, day, rx, app, tester_h, title_id, game, continued, outcome, n_drops, n_errors, n_hangs, "
+PLAY_COLS = ("r2_key, day, rx, app, tester_h, title_id, game, continued, outcome, n_drops, n_errors, n_hangs, err, "
              "samples, ge55, hist, kick")
 
 
@@ -77,7 +77,13 @@ def game_stats():
 def games():
     gs, summary = game_stats()
     gs = [x for x in gs if not x["hidden"]]
-    return render_template("public/games.html", games=gs, summary=summary, badges=plays.BADGES)
+    # 2026-10-29: contadores por selo no topo, clicáveis (filtram a lista)
+    st = request.args.get("status", "")
+    st = st if st in plays.BADGES else ""
+    counts = {b: sum(1 for x in gs if x["status"] == b) for b in plays.BADGES}
+    shown = [x for x in gs if not st or x["status"] == st]
+    return render_template("public/games.html", games=shown, summary=summary, badges=plays.BADGES,
+                           counts=counts, total=len(gs), st=st)
 
 
 @bp.get("/jogos/<path:key>")
@@ -103,11 +109,15 @@ def bugs():
         issues.append({"status": r["status"], "builds": r["builds"], "versions": r["versions"],
                        "updated_at": r["updated_at"],
                        "title": r["title_" + sfx] or r["title_pt"], "body": r["body_" + sfx] or r["body_pt"]})
-    bc = {"total": len(issues),
-          "open": sum(1 for i in issues if i["status"] in ("investigating", "fixing", "testing")),
-          "fixed": sum(1 for i in issues if i["status"] == "fixed"),
-          "reports": db.row("SELECT count(*) AS n FROM reports WHERE status<>'duplicate'")["n"]}
-    return render_template("public/bugs.html", issues=issues, bc=bc)
+    # 2026-10-29: contadores clicáveis: em aberto (investigando/corrigindo), em teste, corrigidos, fora do app
+    groups = {"open": ("investigating", "fixing"), "testing": ("testing",), "fixed": ("fixed",), "wontfix": ("wontfix",)}
+    st = request.args.get("status", "")
+    st = st if st in groups else ""
+    bc = {k: sum(1 for i in issues if i["status"] in v) for k, v in groups.items()}
+    bc["total"] = len(issues)
+    bc["reports"] = db.row("SELECT count(*) AS n FROM reports WHERE status<>'duplicate'")["n"]
+    shown = [i for i in issues if not st or i["status"] in groups[st]]
+    return render_template("public/bugs.html", issues=shown, bc=bc, st=st)
 
 
 @bp.get("/games")

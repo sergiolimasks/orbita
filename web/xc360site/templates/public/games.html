@@ -13,16 +13,14 @@
 
 <section class="wrap" aria-labelledby="gm-sum">
   <h2 id="gm-sum" class="sr-only">{{ _('gm.title') }}</h2>
-  <div class="st-counts gm-sum">
-    <div class="st-count"><small>{{ _('gm.games') }}</small><b>{{ summary.games }}</b></div>
-    <div class="st-count"><small>{{ _('gm.sessions') }}</small><b>{{ summary.sessions }}</b></div>
-    <div class="st-count"><small>{{ _('gm.testers') }}</small><b>{{ summary.testers }}</b></div>
-    <div class="st-count"><small>{{ _('gm.top_version') }}</small>
-      <b class="mono-b">{{ summary.top_version or '—' }}</b>
-      {% if summary.top_version %}<small>{{ _('gm.top_version_n', n=summary.top_version_n) }}</small>{% endif %}</div>
-  </div>
-  {% if summary.minutes %}<p class="muted small gm-time">{{ icon('clock', 14) }}
-    {{ _('gm.hours', n=(summary.minutes / 60)|round(1)) if summary.minutes >= 120 else _('gm.minutes', n=summary.minutes) }}</p>{% endif %}
+  <nav class="st-counts" aria-label="{{ _('gm.status') }}">
+    <a class="st-count" href="{{ url_for('public.games') }}#gm-list"{% if not st %} aria-current="true"{% endif %}><small>{{ _('st.all') }}</small><b>{{ total }}</b></a>
+    {% for b in badges %}
+    <a class="st-count" href="{{ url_for('public.games', status=b) }}#gm-list"{% if st == b %} aria-current="true"{% endif %}><span class="fpill gs-{{ b }}">{{ _('gm.s_' ~ b) }}</span><b>{{ counts[b] }}</b></a>
+    {% endfor %}
+  </nav>
+  <p class="muted small gm-time">{{ icon('clock', 14) }}
+    {{ _('gm.sum_line', s=summary.sessions, t=summary.testers) }}{% if summary.minutes %} · {{ _('gm.hours', n=(summary.minutes / 60)|round(1)) if summary.minutes >= 120 else _('gm.minutes', n=summary.minutes) }}{% endif %}{% if summary.top_version %} · {{ _('gm.top_version') }}: <span class="mono-s">{{ summary.top_version }}</span>{% endif %}</p>
 </section>
 
 <section class="wrap" aria-labelledby="gm-list">

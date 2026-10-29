@@ -278,3 +278,4 @@ CREATE TABLE IF NOT EXISTS known_issues (
     sort       int NOT NULL DEFAULT 100,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE play_sessions ADD COLUMN IF NOT EXISTS err text NOT NULL DEFAULT '';   -- 2026-10-29: 1º erro do jogo (texto curto, limpo)

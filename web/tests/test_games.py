@@ -75,7 +75,7 @@ def test_badges_and_aggregation():
     rows = [_row(who="a"), _row(who="b", key="k2"), _row(who="a", key="k3", app="v0.21.1"),
             _row(game="Fortnite", tid="", cont=True, key="k4"),                     # continuação: não conta sessão
             _row(game="Slow", tid="SLOW", fps=40, ge=0, key="k5"),
-            _row(game="Meh", tid="MEH", ge=80, key="k6", hist={"58": 80, "50": 20}),
+            _row(game="Meh", tid="MEH", ge=70, key="k6", hist={"58": 70, "50": 30}),
             _row(game="Broke", tid="BROKE", n=0, outcome="error", errors=1, key="k7"),
             _row(game="Login", tid="LOGIN", n=0, outcome="nostream", key="k8"),
             _row(game="Hidden", tid="HID", key="k9", who="z")]
@@ -115,7 +115,28 @@ def test_badges_and_aggregation():
     mixed = [_row(key="m%d" % i, n=2 if i < 2 else 100, ge=2 if i < 2 else 100, who=str(i)) for i in range(5)]
     g = plays.games(mixed)[0][0]
     assert g["short"] == 2 and g["ran"] == 3 and g["status"] == "unstable" and g["short_pct"] == 40
-    assert plays.game_detail(g)["buckets"][0]["n"] == 2
+    det = plays.game_detail(g)
+    assert det["buckets"][0]["n"] == 2
+    assert {e["key"]: e["n"] for e in det["endings"]} == {"short": 2, "ok": 3}
+    assert det["why"][0] == ("short", {"p": 40}) and det["why"][1][0] == "fps_ok"
+    # fins com motivo do xCloud e erro do app com mensagem
+    ends = [_row(key="e1", who="1", rx=t0), _row(key="e2", who="2", rx=t0 + timedelta(minutes=1)),
+            _row(key="e3", who="3", rx=t0 + timedelta(minutes=2), outcome="error", errors=1),
+            _row(key="e4", who="4", rx=t0 + timedelta(minutes=3))]
+    ends[0]["kick"] = "KickForAppError"; ends[1]["kick"] = "KickForStopCommand"; ends[2]["err"] = "Sessao xCloud sumiu"
+    det = plays.game_detail(plays.games(ends)[0][0])
+    got = {e["key"]: e["n"] for e in det["endings"]}
+    assert got == {"cloud_error": 1, "user": 1, "error": 1, "ok": 1}
+    assert det["errors"] == [{"text": "Sessao xCloud sumiu", "n": 1}]
+    assert [v["version"] for v in det["versions"]] == ["0.21.0"] and det["versions"][0]["errors"] == 1
+    assert len(det["recent"]) == 4 and det["recent"][0]["ending"] == "ok"
+    # conta bloqueada (controle dos pais): não é erro do app, vira "account"
+    lines = ["[xn] PLAY FORTNITE (Fortnite): sessao no Xbox", "[sess] STATE ERROR Sessao xCloud falhou BlockedByParentalControls"]
+    seg = plays.parse(lines)[0]
+    assert seg["n_errors"] == 0 and "Parental" in seg["err"]
+    r = _row(key="pc", n=0); r["err"] = seg["err"]
+    det = plays.game_detail(plays.games([r, _row(key="ok1", who="x")])[0][0])
+    assert {e["key"] for e in det["endings"]} == {"account", "ok"} and det["errors"] == []
 
 
 def test_current_version_rules():
@@ -287,3 +308,16 @@ def test_admin_hide_game_and_report(app, client):
     tc = app.test_client()
     login(tc)
     assert tc.get("/admin/games").status_code in (302, 403, 404)
+
+
+def test_filters_games_and_bugs(client):
+    db.run("INSERT INTO known_issues(slug, status, title_pt, body_pt) VALUES "
+           "(\x27a\x27, \x27fixing\x27, \x27A\x27, \x27BUG-ABERTO\x27), (\x27b\x27, \x27fixed\x27, \x27B\x27, \x27BUG-CORRIGIDO\x27), "
+           "(\x27c\x27, \x27wontfix\x27, \x27C\x27, \x27BUG-FORA\x27)")
+    html = client.get("/bugs").get_data(as_text=True)
+    assert html.count("data-bug-row") == 3 and ">Open<" in html
+    html = client.get("/bugs?status=fixed").get_data(as_text=True)
+    assert html.count("data-bug-row") == 1 and "BUG-CORRIGIDO" in html and "BUG-ABERTO" not in html
+    assert client.get("/bugs?status=xx").get_data(as_text=True).count("data-bug-row") == 3   # filtro inválido = todos
+    html = client.get("/jogos?status=bad").get_data(as_text=True)
+    assert html.count("data-game-row") == 0 and "st-count" in html
