@@ -22,6 +22,12 @@ SRC="$SRC $APP/source/settings/xc_cfgnav.c $APP/source/settings/xc_cfgview.c $AP
 rc=0
 gcc $CFLAGS -o "$OUT/xui_test" "$HERE/xui_test.c" $SRC -lm
 "$OUT/xui_test" || rc=1
+# Actual Remote Play screen; PPM keeps the fixture renderer dependency-free.
+gcc $CFLAGS -o "$OUT/remote_mockup" "$HERE/remote_mockup.c" \
+    "$UI/xui_gfx.c" "$UI/xui_text.c" "$UI/xui_home.c" "$UI/xc_i18n.c" -lm
+for scene in list empty busy error scroll home; do
+    "$OUT/remote_mockup" "$HERE/out/remote_$scene.ppm" "$scene" || rc=1
+done
 # mockup: + adaptador do catálogo e o decodificador JPEG dele (xcc_image.c);
 # o resto da API do catálogo é simulado dentro do mockup.c.
 gcc $CFLAGS -DXCLOUD360_LOGIN=1 -o "$OUT/mockup" "$HERE/mockup.c" "$HERE/xui_png.c" $SRC "$UI/xui_cat.c" \

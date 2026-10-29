@@ -193,7 +193,7 @@ typedef struct {
 
 /* Botões do topo à direita (foco ao subir além da 1ª fileira). */
 /* v0.20.1: + Atualizar; v0.20.3: + Configurações (só com settings_avail) */
-enum { XUI_HB_SETTINGS = 0, XUI_HB_UPDATE, XUI_HB_REBOOT, XUI_HB_SHUTDOWN, XUI_HB_COUNT };
+enum { XUI_HB_CLOUD = 0, XUI_HB_REMOTE, XUI_HB_SETTINGS, XUI_HB_UPDATE, XUI_HB_REBOOT, XUI_HB_SHUTDOWN, XUI_HB_COUNT };
 
 typedef struct {
     const xui_row_t *rows;
@@ -226,7 +226,17 @@ typedef struct {
     int              settings_avail;
     /* v0.21.29: conexão ao lado do logo: 0 = sem conexão, 1 = cabo, 2 = Wi-Fi */
     int              net_kind;
+    int              remote_tab;  /* selected tab, independent of keyboard focus */
 } xui_home_data_t;
+
+typedef struct {
+    const char *name, *type, *power;
+} xui_console_t;
+typedef struct {
+    xui_console_t consoles[16];
+    int n, focus, busy;             /* focus=-1: header, otherwise console */
+    const char *err, *notice;
+} xui_remote_t;
 
 /* Telas de estado (mesmo estilo). */
 enum {
@@ -416,6 +426,9 @@ xui_rect_t  xui_home_frame(xui_view_t *v, xui_canvas_t *c, const xui_home_data_t
 /* Telas de estado (mesma lógica de sujeira; os pontinhos animam). */
 xui_rect_t  xui_status_frame(xui_view_t *v, xui_canvas_t *c, const xui_status_t *s,
                              const xui_home_data_t *d, unsigned now_ms, int *animating);
+xui_rect_t xui_remote_frame(xui_view_t *v, xui_canvas_t *c, const xui_remote_t *r,
+                            const xui_home_data_t *d, const xui_confirm_t *cf,
+                            unsigned now_ms, int *animating);
 
 /* v0.20.3: chave beta (teclado) e configurações. Mesma lógica de sujeira
  * das telas de estado: conteúdo mudou = tela inteira; só os pontinhos do

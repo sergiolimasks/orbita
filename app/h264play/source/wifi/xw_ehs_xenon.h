@@ -27,6 +27,8 @@ int  xhs_poll(xhs_rx_fn fn, void *u);
 /* v0.21.7: allow_relink = 0 durante um xc_usb_hold com o pendrive no mesmo EHCI */
 int  xhs_poll2(xhs_rx_fn fn, void *u, int allow_relink);
 int  xhs_shared(void);
+int  xhs_storage_begin(void); /* hw1: quiesce shared DMA before granting disk ownership */
+void xhs_storage_end(void);   /* hw1: restore Wi-Fi after the disk owner releases it */
 void xhs_stats(char *o, size_t n);
 /* v0.21.4: transferências OUT concluídas (ep 1 ou 2) */
 unsigned xhs_tx_done(int ep);

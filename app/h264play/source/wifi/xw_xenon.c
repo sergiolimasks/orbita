@@ -1162,6 +1162,7 @@ static void step_body(int held) {
         if (g_core.dev != XW_DEV_FAILED) glue_fail(now, "o adaptador sumiu do USB");
         goto pub;
     }
+    if (held && g_tr == TR_EHCI && xhs_shared()) goto pub;
     crumb("wifi: pedidos");
     take_requests();
     if (g_tr == TR_EHCI) {

@@ -315,6 +315,13 @@ int xa_streaming_login(const char *offering, const char *gssv_token, xa_endpoint
     cJSON_ArrayForEach(rg, regions) {
         if (jbool(rg, "isDefault")) { base = jstr(rg, "baseUri"); break; }
     }
+    /* Some xHome offerings omit isDefault; keep cloud's existing contract. */
+    if (!base && !strcmp(offering, "xhome")) {
+        cJSON_ArrayForEach(rg, regions) {
+            base = jstr(rg, "baseUri");
+            if (base && base[0]) break;
+        }
+    }
     if (!tok || !base) {
         cJSON_Delete(resp);
         set_err(e, HTTPS_EPROTO, "%s sem gsToken/regiao", step);

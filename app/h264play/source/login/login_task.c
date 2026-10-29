@@ -18,6 +18,7 @@ static xa_title_t   *g_games = NULL;
 static int           g_ngames = 0;
 static volatile int  g_running = 0;
 static volatile int  g_cancel = 0;
+static lt_home_t g_home;
 
 static inline void lwsync(void) { __asm__ __volatile__("lwsync" ::: "memory"); }
 
@@ -137,4 +138,59 @@ int lt_take_games(xa_title_t **games, int *n) {
     g_ngames = 0;
     unlock(&g_lock);
     return *games ? 0 : -1;
+}
+
+static void home_task_main(void) {
+    xs_creds_t creds;
+    xs_console_t consoles[XS_MAX_CONSOLES];
+    xc_err_t e = {0};
+    int n = 0;
+    xs_creds_init(&creds, "xhome");
+    int rc = https_init(&e) == 0 ? xs_creds_load(&creds, &e) : XS_ERR;
+    if (rc == XS_OK) rc = xs_creds_login(&creds, &e);
+    if (rc == XS_OK) rc = xs_home_list(&creds, consoles, XS_MAX_CONSOLES, &n, &e);
+    xs_creds_free(&creds);
+    lock(&g_lock);
+    g_home.busy = 0;
+    g_home.ready = 1;
+    g_home.n = rc == XS_OK ? n : 0;
+    if (rc == XS_OK) {
+        memcpy(g_home.consoles, consoles, sizeof(*consoles) * (size_t)n);
+        g_home.err[0] = 0;
+    } else {
+        snprintf(g_home.err, sizeof(g_home.err), "%s", rc == XS_ELOGIN
+                 ? "Entre na sua conta Microsoft primeiro (Y na aba xCloud)."
+                 : e.msg[0] ? e.msg : "Nao foi possivel buscar seus consoles.");
+    }
+    unlock(&g_lock);
+    lwsync();
+    g_running = 0;
+}
+
+int lt_home_start(void) {
+    if (lt_running()) return -1;
+    lock(&g_lock);
+    memset(&g_home, 0, sizeof(g_home));
+    g_home.busy = 1;
+    unlock(&g_lock);
+    g_cancel = 0;
+    g_running = 1;
+    lwsync();
+    int rc = xenon_run_thread_task(LT_HW_THREAD, g_stack + sizeof(g_stack) - 0x100, (void *)home_task_main);
+    if (rc) {
+        g_running = 0;
+        lock(&g_lock);
+        g_home.busy = 0;
+        g_home.ready = 1;
+        snprintf(g_home.err, sizeof(g_home.err), "Nao foi possivel iniciar a busca (%d).", rc);
+        unlock(&g_lock);
+        return -1;
+    }
+    return 0;
+}
+
+void lt_home_snapshot(lt_home_t *s) {
+    lock(&g_lock);
+    *s = g_home;
+    unlock(&g_lock);
 }

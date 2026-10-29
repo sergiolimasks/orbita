@@ -230,7 +230,8 @@ void mm_rows_fix(menu_model_t *m) {
         if (x->col >= x->n) x->col = x->n - 1;
         if (x->col < 0) x->col = 0;
     }
-    if (m->hcol < (m->settings_on ? MM_HB_SETTINGS : MM_HB_UPDATE)) m->hcol = m->settings_on ? MM_HB_SETTINGS : MM_HB_UPDATE;
+    if (m->hcol < 0) m->hcol = 0;
+    if (!m->settings_on && m->hcol == MM_HB_SETTINGS) m->hcol = MM_HB_UPDATE;
     if (m->hcol >= MM_HB_COUNT) m->hcol = MM_HB_COUNT - 1;
     if (m->row >= 0 && m->row < m->nrows) m->cursor = m->rows[m->row].idx[m->rows[m->row].col];
     m->changes++;
@@ -254,6 +255,7 @@ void mm_nav(menu_model_t *m, int dx, int dy) {
     if (m->row == MM_ROW_HEADER) {
         if (dy > 0 && m->nrows > 0) { m->row = 0; mm_rows_fix(m); return; }
         m->hcol += dx;
+        if (!m->settings_on && m->hcol == MM_HB_SETTINGS) m->hcol += dx < 0 ? -1 : 1;
         mm_rows_fix(m);
         return;
     }
@@ -285,6 +287,8 @@ int mm_press_a(menu_model_t *m) {
         return act;
     }
     if (m->row == MM_ROW_HEADER) {
+        if (m->hcol == MM_HB_CLOUD) return MM_A_CLOUD;
+        if (m->hcol == MM_HB_REMOTE) return MM_A_REMOTE;
         if (m->hcol == MM_HB_UPDATE) return MM_A_UPDATE;   /* v0.20.1: tela própria */
         if (m->hcol == MM_HB_SETTINGS) return m->settings_on ? MM_A_SETTINGS : MM_A_NONE;   /* v0.20.3 */
         m->confirm = m->hcol == MM_HB_REBOOT ? MM_PWR_REBOOT : MM_PWR_SHUTDOWN;

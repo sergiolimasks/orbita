@@ -25,6 +25,7 @@ static int g_fail = 0, g_checks = 0;
 #define CHECK(c, ...) do { g_checks++; if (!(c)) { g_fail++; printf("  FALHOU %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 #define REGION "brs.core.gssv-play-prod.xboxlive.com"
+#define HOME_REGION "brs.core.gssv-play-prodxhome.xboxlive.com"
 #define TITLE  "FORZAHORIZON5"
 #define NAME   "Forza Horizon 5"
 #define SESS_FMT "v5/sessions/cloud/1A2B3C4D-5E6F-4A7B-8C9D-00000000000%d"
@@ -45,6 +46,7 @@ static int g_fail = 0, g_checks = 0;
 
 /* ------------------------------------------------------- servidor falso */
 typedef struct {
+    int home;
     const char *states[2][24];   /* por sessão criada (0 = 1ª, 1 = 2ª+); o último repete */
     int   nstates[2];
     int   active_kind;           /* 0 = 404, 1 = OLD do mesmo título, 2 = OLD de outro título */
@@ -187,6 +189,11 @@ static int handler(void *ctx, const mock_req_t *q, int *status, char **body) {
                     "{\"name\":\"BrazilSouth\",\"baseUri\":\"https://" REGION "\",\"isDefault\":true}]},"
                     "\"market\":\"BR\",\"gsToken\":\"GS-%d\",\"tokenType\":\"bearer\",\"durationInSeconds\":14400}",
                     s->gs_issued);
+        if (s->home) {
+            free(*body);
+            *body = fmt("{\"gsToken\":\"GS-%d\",\"offeringSettings\":{\"regions\":["
+                        "{\"baseUri\":\"https://" HOME_REGION "\"}]}}", s->gs_issued);
+        }
         return 0;
     }
     if (!strcmp(q->host, "login.live.com") && !strcmp(q->path, "/oauth20_token.srf")) {
@@ -199,7 +206,7 @@ static int handler(void *ctx, const mock_req_t *q, int *status, char **body) {
         *body = sdup("{\"token_type\":\"bearer\",\"expires_in\":86400,\"access_token\":\"PASSPORT-FAKE\"}");
         return 0;
     }
-    if (strcmp(q->host, REGION) != 0) return 0;
+    if (strcmp(q->host, s->home ? HOME_REGION : REGION) != 0) return 0;
 
     if (!bearer_ok(s, q)) { *status = 401; *body = sdup(""); return 0; }
 
@@ -211,10 +218,17 @@ static int handler(void *ctx, const mock_req_t *q, int *status, char **body) {
                     "\"titleId\":\"%s\",\"state\":\"Provisioned\"}]", s->active_kind == 1 ? TITLE : "HALO5");
         return 0;
     }
-    if (!strcmp(q->path, "/v5/sessions/cloud/play") && !strcmp(q->method, "POST")) {
+    if (s->home && !strcmp(q->path, "/v6/servers/home?mr=50")) {
+        *status = 200;
+        *body = sdup("{\"results\":[{\"serverId\":\"F400TEST001\",\"deviceName\":\"Sala\","
+                     "\"consoleType\":\"XboxSeriesX\",\"powerState\":\"ConnectedStandby\"}]}");
+        return 0;
+    }
+    if (!strcmp(q->path, s->home ? "/v5/sessions/home/play" : "/v5/sessions/cloud/play") && !strcmp(q->method, "POST")) {
         s->n_play++;
         int i = s->nsess++;
-        snprintf(s->paths[i], sizeof(s->paths[i]), "/" SESS_FMT, i + 1);
+        if (s->home) snprintf(s->paths[i], sizeof(s->paths[i]), "/v5/sessions/home/test-%d", i + 1);
+        else snprintf(s->paths[i], sizeof(s->paths[i]), "/" SESS_FMT, i + 1);
         *status = 200;
         *body = fmt("{\"sessionPath\":\"%s\",\"sessionId\":\"%s\",\"state\":\"Provisioning\"}", s->paths[i] + 1,
                     strrchr(s->paths[i], '/') + 1);
@@ -415,10 +429,24 @@ static void dump_lines(void) {
 
 /* ================================================================ testes */
 
+/* Upstream 0.21.38 uses Brasilia's offset and a configurable play locale.
+ * Keep comparing all other fields with the independent green-nx fixture. */
+static int play_matches_golden(const char *body, const char *locale) {
+    cJSON *j = cJSON_Parse(GOLDEN_PLAY);
+    cJSON *settings = cJSON_GetObjectItemCaseSensitive(j, "settings");
+    cJSON_SetNumberValue(cJSON_GetObjectItemCaseSensitive(settings, "timezoneOffsetMinutes"), 180);
+    cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(settings, "locale"), locale);
+    char *expected = cJSON_PrintUnformatted(j);
+    int equal = body && expected && !strcmp(body, expected);
+    free(expected);
+    cJSON_Delete(j);
+    return equal;
+}
+
 static void test_pure(void) {
     printf("[puro] builders/parsers\n");
     char *b = xs_build_play_body(TITLE, "en-US");
-    CHECK(!strcmp(b, GOLDEN_PLAY), "play body != green-nx:\n%s", b);
+    CHECK(play_matches_golden(b, "en-US"), "play body != green-nx with upstream timezone:\n%s", b);
     free(b);
     b = xs_build_connect_body("PASSPORT-FAKE");
     CHECK(!strcmp(b, GOLDEN_CONNECT), "connect body");
@@ -509,7 +537,7 @@ static void test_happy(void) {
     }
     CHECK(s.nremotes == 3 && t20 && t21 && v4, "remotos=%d", s.nremotes);
     const mock_req_t *q = find_req("POST", "/v5/sessions/cloud/play", 0);
-    CHECK(q && q->body && !strcmp(q->body, GOLDEN_PLAY), "play body");
+    CHECK(q && play_matches_golden(q->body, "pt-BR"), "play body with upstream locale/timezone");
     CHECK(q && strstr(q->headers, "X-Gssv-Client: XboxComBrowser\r\n") && strstr(q->headers, GOLDEN_DEVICE_INFO "\r\n") &&
           strstr(q->headers, "Authorization: Bearer GS-1\r\n"), "headers do play");
     q = find_req("POST", "/sdp", 0);
@@ -567,8 +595,8 @@ static void test_queue(void) {
     xsm_init(&m, &cfg, NULL);
     xsm_phase_t p = run(&m, &s, 120000);
     CHECK(p == XSM_P_DONE, "fase final %s", xsm_phase_name(p));
-    CHECK(has_line("STATE\tQUEUE\tNa fila: ~10 min"), "fila com ETA do /v1/waittime");
-    CHECK(has_line("STATE\tQUEUE\tNa fila: posicao 3, <1 min"), "fila com posicao do /state");
+    CHECK(has_line("STATE\tQUEUE\tNa fila do xCloud há 0 s · estimativa ~10 min. Aguarde, o jogo abre sozinho."), "fila com ETA do /v1/waittime");
+    CHECK(has_line("STATE\tQUEUE\tNa fila do xCloud há 4 s · posição 3 · estimativa ~10 min. Aguarde, o jogo abre sozinho."), "fila com posicao do /state");
     CHECK(s.n_wait == 1, "waittime 1x em 4s (a cada 30s): %d", s.n_wait);
     const mock_req_t *q = find_req("GET", "/v1/waittime/", 0);
     CHECK(q && !strcmp(q->path, "/v1/waittime/" TITLE), "path do waittime");
@@ -928,10 +956,71 @@ static void test_net_live(void) {
     xsm_free(&m);
 }
 
+static void test_home(void) {
+    printf("[remote play] consoles, xhome auth, SDP/ICE, keepalive, reauth and DELETE\n");
+    xs_console_t consoles[XS_MAX_CONSOLES];
+    CHECK(xs_parse_consoles("{\"results\":[]}", consoles, 16) == 0, "empty console list");
+    CHECK(xs_parse_consoles("{}", consoles, 16) == -1, "missing results is an error");
+    CHECK(xs_parse_consoles("bad json", consoles, 16) == -1, "invalid JSON");
+    const char *list = "{\"results\":[null,{},"
+        "{\"serverId\":\"../bad\"},{\"serverId\":\"F1\",\"deviceName\":\"Sala\"},"
+        "{\"serverId\":\"F1\"},{\"serverId\":\"F2\"}]}";
+    CHECK(xs_parse_consoles(list, consoles, 16) == 2, "skip malformed/duplicate console IDs");
+    CHECK(!strcmp(consoles[0].name, "Sala") && !strcmp(consoles[1].name, "Meu Xbox"), "console name fallback");
+    CHECK(xs_parse_consoles(list, consoles, 1) == 1, "console count capped");
+    char *b = xs_build_home_body("F400TEST001", "pt-BR");
+    cJSON *j = cJSON_Parse(b);
+    CHECK(j && !strcmp(cJSON_GetObjectItem(j, "serverId")->valuestring, "F400TEST001"), "home play sends console ID");
+    CHECK(j && !strcmp(cJSON_GetObjectItem(j, "titleId")->valuestring, ""), "home play has no cloud title");
+    cJSON_Delete(j); free(b);
+
+    srv_t s; xsm_t m; xsm_cfg_t cfg;
+    setup(&s, &m, &cfg); s.home = 1;
+    xs_creds_t c;
+    xs_creds_init(&c, "xhome");
+    xc_err_t e = {0};
+    CHECK(xs_creds_load(&c, &e) == XS_OK && xs_creds_login(&c, &e) == XS_OK, "xhome credentials");
+    int n = -1;
+    CHECK(xs_home_list(&c, consoles, 16, &n, &e) == XS_OK && n == 1, "discover console over HTTPS");
+    CHECK(!strcmp(consoles[0].id, "F400TEST001") && !strcmp(c.host, HOME_REGION), "xhome region without isDefault");
+    xs_session_t session; xs_init(&session, &c);
+    CHECK(xs_home_start(&session, "../invalid", &e) == XS_ERR && s.n_play == 0, "unsafe ID never sent");
+    xs_creds_free(&c);
+
+    setup(&s, &m, &cfg); s.home = 1;
+    cfg.home = 1; cfg.waittime = 0;
+    snprintf(cfg.title_id, sizeof(cfg.title_id), "F400TEST001");
+    s.states[0][0] = ST_PROV; s.states[0][1] = ST_READY; s.states[0][2] = ST_DONE;
+    s.nstates[0] = 3;
+    s.revoke_at_state = 1;
+    xsm_init(&m, &cfg, NULL);
+    CHECK(run(&m, &s, 120000) == XSM_P_DONE, "remote play completes lifecycle");
+    CHECK(s.n_play == 1 && s.n_sdp == 1 && s.n_ice > 0 && s.n_ka > 0 && s.n_delete == 1, "home streaming and teardown");
+    CHECK(s.n_login == 2 && s.n_connect == 0 && s.n_passport == 0 && s.n_active == 0, "home reauth; no cloud transfer or stale-session cleanup");
+    CHECK(s.answers_ok == 1 && s.nremotes > 0, "home SDP and ICE reach existing RTC transport");
+    for (int i = 0; i < g_nreq; i++) {
+        CHECK(!strstr(g_reqs[i].path, "/sessions/cloud/"), "no cloud session requests");
+        if (!strcmp(g_reqs[i].path, "/v2/login/user"))
+            CHECK(!strcmp(g_reqs[i].host, "xhome.gssv-play-prod.xboxlive.com") &&
+                  strstr(g_reqs[i].body, "\"offeringId\":\"xhome\""), "home reauth preserves offering");
+    }
+    no_secrets_in_logs();
+    xsm_free(&m);
+
+    setup(&s, &m, &cfg); s.home = 1; cfg.home = 1; cfg.waittime = 0; cfg.max_attempts = 1;
+    s.states[0][0] = "{\"state\":\"Failed\",\"errorDetails\":{\"code\":\"ConsoleNotReachable\"}}";
+    s.nstates[0] = 1;
+    xsm_init(&m, &cfg, NULL);
+    CHECK(run(&m, &s, 120000) == XSM_P_ERROR && strstr(m.last_err, "ConsoleNotReachable"), "offline console surfaces error");
+    CHECK(s.n_delete == 1 && s.n_passport == 0, "failed home session cleaned up");
+    xsm_free(&m);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     g_verbose = getenv("XS_VERBOSE") != NULL;
     test_pure();
+    test_home();
     test_happy();
     test_queue();
     test_failed();

@@ -35,7 +35,7 @@ const xui_confirm_t *xui_mm_confirm(xui_mm_t *a, const menu_model_t *m) {
     if (!m->confirm) return 0;
     int reboot = m->confirm == MM_PWR_REBOOT;
     a->confirm.title = reboot ? "Reiniciar o Xbox?" : "Desligar o Xbox?";
-    a->confirm.text = "Se houver uma sessão na nuvem aberta, ela é encerrada antes "
+    a->confirm.text = "Se houver uma sessão de streaming aberta, ela é encerrada antes "
                       "(até 3 s).";
     a->confirm.yes = reboot ? "Reiniciar" : "Desligar";
     a->confirm.no = "Cancelar";

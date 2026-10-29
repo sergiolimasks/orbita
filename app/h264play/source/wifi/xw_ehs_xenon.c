@@ -125,6 +125,7 @@ static void trace(hpipe_t *p, char op, int slot) {
 }
 
 static int     g_ok = 0;
+static int     g_storage = 0;
 static struct ehci_hcd *g_h;
 static int     g_bus, g_port, g_addr;
 static hpipe_t g_ctl, g_cin, g_cout, g_din, g_dout, g_d3;
@@ -552,6 +553,38 @@ int xhs_shared(void) {
     return 0;
 }
 
+int xhs_storage_begin(void) {
+    if (g_storage) return -1; /* ownership is not reentrant */
+    if (!g_ok || !xhs_shared()) return 0;
+    uintptr_t cmdreg = REG(g_h->regs, offsetof(struct ehci_regs, command));
+    uintptr_t stsreg = REG(g_h->regs, offsetof(struct ehci_regs, status));
+    uint32_t cmd = read32(cmdreg);
+    write32(cmdreg, cmd & ~0x20u); /* stop async schedule, not the controller */
+    uint64_t start = mftb();
+    while (read32(stsreg) & 0x8000u) {
+        if (tb_diff_msec(mftb(), start) >= 20) {
+            write32(cmdreg, cmd);
+            return -1; /* never grant storage access if DMA did not stop */
+        }
+        udelay(10);
+    }
+    /* No QH is in flight now. Storage gets the head without Wi-Fi's IOC
+     * completions being mistaken for completion of its synchronous URB. */
+    g_h->async->hw_next = LE(DMA(g_h->async) | 2u);
+    memdcbst((void *)&g_h->async->hw_next, 4);
+    sync_();
+    write32(stsreg, 3u); /* W1C: USBINT and USBERRINT */
+    g_storage = 1;
+    write32(cmdreg, cmd);
+    return 0;
+}
+
+void xhs_storage_end(void) {
+    if (!g_storage) return;
+    g_storage = 0;
+    relink(); /* all disk transfers have completed before the owner releases */
+}
+
 /* v0.21.11: o console mostrou o EP2 IN com o HC parado no qTD livre e os
  * outros 7 concluídos COM dados, enquanto o software tinha prod == cons (o
  * anel "vazio"): o colhedor parava (state[cons] livre) e o RX morria sem o
@@ -764,7 +797,7 @@ unsigned xhs_poll_budget_hits(void) { return g_poll_budget_hits; }
 
 static int xhs_poll2_body(xhs_rx_fn fn, void *u, int allow_relink);
 int xhs_poll2(xhs_rx_fn fn, void *u, int allow_relink) {
-    if (!g_ok) return 0;
+    if (!g_ok || g_storage) return 0;
     uintptr_t fr = (uintptr_t)__builtin_frame_address(0);   /* a pilha de verdade (o ASan move as locais) */
     int me = pg_pir();
     pg_check_canaries();
@@ -1004,6 +1037,7 @@ unsigned xhs_port_hs_blocked(void) { return g_pw_hs_blocked; }
 unsigned xhs_port_changes(void) { return g_pw_changes; }
 
 int xhs_port_watch(void) {
+    if (g_storage) return 0;
     uint64_t tb = mftb();
     if (g_pw_last_tb && tb - g_pw_last_tb < 10ULL * (PPC_TIMEBASE_FREQ / 1000ULL)) return 0;   /* a cada 10 ms */
     g_pw_last_tb = tb;
@@ -1037,6 +1071,12 @@ int xhs_port_watch(void) {
             uint64_t ms = (uint64_t)tb_diff_msec(tb, w->t);
             switch (w->st) {
             case 0:
+                /* An enumerated disk is already in use by tinyehci/FatFs.
+                 * Do not reset its port when Wi-Fi starts watching hotplug. */
+                if ((v & PS_PE) && h->devices[p].id) {
+                    w->st = 3;
+                    break;
+                }
                 if (v & PS_CSC) ps_wr(h, p, (v & ~PS_RWC) | PS_CSC);   /* limpa a mudança (RWC) */
                 if ((v & PS_CCS) && !(v & PS_PO)) {
                     if ((v & PS_LS) == 0x0400u) {   /* K: baixa velocidade -> companheiro direto */

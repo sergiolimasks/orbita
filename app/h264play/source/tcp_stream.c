@@ -169,6 +169,7 @@ static int net_init_fast(void) {
     printf("%s\n", cl);
     np_log_line(cl);
     if (netif.ip_addr.addr) return NETWORK_INIT_SUCCESS;
+    np_log_line("[net] cabo sem DHCP: usando IP de reserva 192.168.1.99, gateway 192.168.1.1 (nao obtidos do roteador; Wi-Fi usa DHCP proprio)");
     IP4_ADDR(&ip, 192, 168, 1, 99);
     IP4_ADDR(&gw, 192, 168, 1, 1);
     IP4_ADDR(&mask, 255, 255, 255, 0);

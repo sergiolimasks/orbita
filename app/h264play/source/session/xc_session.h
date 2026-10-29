@@ -55,6 +55,14 @@ const char *xs_play_locale(void);
 #define XS_CAND_LEN     256
 #define XS_MAX_CANDS    24
 #define XS_MAX_ACTIVE   8
+#define XS_MAX_CONSOLES 16
+
+typedef struct {
+    char id[48];
+    char name[64];
+    char type[32];
+    char power[32];
+} xs_console_t;
 
 /* ------------------------------------------------------------ credenciais */
 typedef struct {
@@ -121,6 +129,11 @@ typedef struct {
 void xs_init(xs_session_t *s, xs_creds_t *c);
 /* POST /v5/sessions/cloud/play. */
 int  xs_start(xs_session_t *s, const char *title_id, xc_err_t *e);
+/* xHome uses its own offering/token and the same SDP/ICE/media pipeline. */
+int  xs_home_start(xs_session_t *s, const char *server_id, xc_err_t *e);
+int  xs_home_list(xs_creds_t *c, xs_console_t *out, int max, int *n, xc_err_t *e);
+int  xs_parse_consoles(const char *json, xs_console_t *out, int max);
+char *xs_build_home_body(const char *server_id, const char *locale);
 /* Retoma uma sessão existente (path de xs_active_list). */
 void xs_attach(xs_session_t *s, const char *path, const char *title_id);
 /* GET <path>/state. XS_ENOTFOUND se 404. */

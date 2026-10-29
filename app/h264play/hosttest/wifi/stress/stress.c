@@ -122,6 +122,16 @@ static void dev_rx_push(const uint8_t *eth, int n, int snap) {
 struct ehci_hcd ehci_hcds[2];
 static struct ehci_caps g_caps[2];
 static struct ehci_regs g_regs[2];
+static volatile int g_schedule_stuck;
+void write32(uintptr_t a, uint32_t v) {
+    for (int b = 0; b < 2; b++) {
+        if (a == (uintptr_t)&g_regs[b].status) {
+            __atomic_fetch_and(&g_regs[b].status, ~v, __ATOMIC_SEQ_CST); /* W1C */
+            return;
+        }
+    }
+    *(volatile uint32_t *)a = v;
+}
 static const uint8_t k_cfg[60] = {
     9, 2, 60, 0, 1, 1, 0, 0x80, 50,
     9, 4, 0, 0, 6, 0xff, 0xff, 0xff, 0,
@@ -237,6 +247,11 @@ static void hc_qh(volatile uint32_t *qh) {
 }
 
 static void hc_pass(void) {
+    if (!(g_regs[1].command & 0x20)) {
+        if (!g_schedule_stuck) __atomic_fetch_and(&g_regs[1].status, ~0x8000u, __ATOMIC_SEQ_CST);
+        return;
+    }
+    __atomic_fetch_or(&g_regs[1].status, 0x8000u, __ATOMIC_SEQ_CST);
     struct ehci_qh *a = ehci_hcds[1].async;
     uint32_t link = a->hw_next;
     for (int guard = 0; guard < 16; guard++) {
@@ -767,6 +782,31 @@ int main(int argc, char **argv) {
     xhs_eps_t eps;
     CHECK(xhs_open(&eps) == 0, "xhs_open: %s", xhs_why());
     CHECK(eps.din == 0x82 && eps.dout == 0x02 && eps.d3in == 0x83, "endpoints");
+    ehci_hcds[1].devices[4].id = 5;
+    g_regs[1].port_status[4] = 0x1005;
+    xhs_port_watch();
+    CHECK(g_regs[1].port_status[4] == 0x1005 && ehci_hcds[1].devices[4].id == 5,
+          "pendrive enumerado nao sofre reset ao iniciar o monitor Wi-Fi");
+    for (int i = 0; i < 32; i++) {
+        __atomic_fetch_or(&g_regs[1].status, 1u, __ATOMIC_SEQ_CST); /* stale completion */
+        CHECK(xhs_storage_begin() == 0, "disk ownership waits for DMA stop");
+        uint32_t head = ehci_hcds[1].async->hw_next;
+        CHECK((head & ~31u) == xhs_host_dma(ehci_hcds[1].async), "disk head excludes Wi-Fi QHs");
+        CHECK(!(g_regs[1].status & 3u), "Wi-Fi completion cleared before disk starts");
+        CHECK(xhs_storage_begin() != 0, "nested ownership refused");
+        CHECK(xhs_poll2(NULL, NULL, 1) == 0 && ehci_hcds[1].async->hw_next == head,
+              "poll cannot reclaim disk controller during hold");
+        CHECK(xhs_port_watch() == 0, "hotplug does not touch disk controller during hold");
+        xhs_storage_end();
+        CHECK(ehci_hcds[1].async->hw_next != head, "Wi-Fi resumes after disk completes");
+    }
+    g_schedule_stuck = 1;
+    __atomic_fetch_or(&g_regs[1].status, 0x8000u, __ATOMIC_SEQ_CST);
+    uint32_t storage_head_before = ehci_hcds[1].async->hw_next;
+    CHECK(xhs_storage_begin() != 0, "stuck DMA refuses disk ownership after bounded wait");
+    CHECK(ehci_hcds[1].async->hw_next == storage_head_before && (g_regs[1].command & 0x20),
+          "timeout preserves Wi-Fi ring and restores schedule");
+    g_schedule_stuck = 0;
     xw_init(&g_core, &OPS);
     g_core.dev = XW_DEV_READY;
     g_core.link = XW_LINK_UP;

@@ -859,6 +859,8 @@ static int net_hook(void) {
 #endif
     if (g_usb_hold_req) {
         if (!g_usb_hold_ack) {
+            if (xhs_storage_begin() != 0) return worked;
+            __asm__ __volatile__("sync" ::: "memory");
             g_usb_hold_ack = 1;
             __asm__ __volatile__("sync" ::: "memory");
         }
@@ -884,7 +886,12 @@ static int net_hook(void) {
         if (g_pad_neutral_req) { g_pad_neutral_req = 0; xn_pad_neutral(); }
         return worked;
     }
-    if (g_usb_hold_ack) { g_usb_hold_ack = 0; __asm__ __volatile__("sync" ::: "memory"); }
+    if (g_usb_hold_ack) {
+        xhs_storage_end();
+        __asm__ __volatile__("sync" ::: "memory");
+        g_usb_hold_ack = 0;
+        __asm__ __volatile__("sync" ::: "memory");
+    }
     if (g_input_on_net) {
         static uint64_t last_us = 0;
         uint64_t t = now_us();
@@ -1115,8 +1122,12 @@ static int native_poll_state(void) {
 /* ---- v0.19.3: jogo aberto no menu (game_session.h) ---- */
 static mm_game_t g_next_play;   /* A num jogo: entra quando a hw 3 / a sessão anterior liberar */
 static int       g_next_on = 0;
+static int       g_next_home = 0;
+static int       g_remote_open = 0, g_remote_pending = 0, g_remote_focus = -1;
+static lt_home_t  g_home;
+static xui_remote_t g_remote_ui;
 /* v0.20.4: quem além da sessão pode estar na hw 3 (ver xc_native.c). */
-int xc_hw3_other_owner(void) { return xcc_bg_running() || xcu_running() || xcb_running(); }
+int xc_hw3_other_owner(void) { return lt_login_running() || xcc_bg_running() || xcu_running() || xcb_running(); }
 
 static int native_paused(void) { return g_native_ok && xn_session(NULL, 0, NULL, 0) == XN_SESS_PAUSED; }
 
@@ -1789,8 +1800,7 @@ report:
 enum { SCR_LIST = 0, SCR_LOGIN, SCR_WAIT, SCR_NONET, SCR_LOADING, SCR_FAIL, SCR_UPDATE,
        SCR_BCHECK, SCR_BKEY, SCR_BMSG,               /* v0.20.3: chave beta */
        SCR_WIFI, SCR_WKEY, SCR_NETWAIT,               /* v0.21.0: Wi-Fi */
-       SCR_CFG,                                       /* v0.21.33: Configurações (o SCR_BSET saiu) */
-       SCR_LOGSEND };                                 /* v0.21.43: enviando o log da partida */
+       SCR_CFG, SCR_REMOTE, SCR_LOGSEND };
 
 /* v0.20.0: estado do XUI (MENU-UI.md). */
 static xui_view_t     *g_xv;
@@ -2364,6 +2374,9 @@ static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
     xui_rect_t r;
     if (screen == SCR_LIST) {
         r = xui_home_frame(g_xv, cv, &g_xd, xui_mm_confirm(&g_xmm, &g_mm), ms, &anim);
+    } else if (screen == SCR_REMOTE) {
+        r = xui_remote_frame(g_xv, cv, &g_remote_ui, &g_xd,
+                             xui_mm_confirm(&g_xmm, &g_mm), ms, &anim);
     } else if (screen == SCR_BKEY) {
         r = xui_key_frame(g_xv, cv, &g_kd, &g_xd, ms, &anim);   /* v0.20.3 */
     } else if (screen == SCR_CFG) {
@@ -2388,7 +2401,7 @@ static int menu_present(int screen, const xui_status_t *st, unsigned ms) {
 static char g_pw_l1[80], g_pw_l2[160];
 
 static int pw_session_busy(void) {
-    return (g_native_ok && xn_busy()) || xcc_bg_running() || xcu_running() || xcb_running();
+    return (g_native_ok && xn_busy()) || lt_running() || xcc_bg_running() || xcu_running() || xcb_running();
 }
 
 static int pw_session_open(void *u) { (void)u; return pw_session_busy(); }
@@ -2400,6 +2413,8 @@ static void pw_session_stop(void *u) {
         xn_stop();
     }
     g_native_game = 0;
+    g_remote_pending = 0;
+    if (lt_login_running()) lt_cancel();
     if (xcc_bg_running()) xcc_bg_stop();
     if (xcu_running()) xcu_cancel();   /* v0.20.1 (a troca de arquivos não cancela: espera o timeout) */
 }
@@ -3129,7 +3144,7 @@ static int menu_loop(int net_ok, const char *msg) {
             }
         }
         /* worker do catálogo (+ upload do log) só com a hw 3 livre */
-        if (!waiting && !g_next_on && !pend_relogin && !pend_test && !pend_upd && !xcu_running() && !lt_running() &&
+        if ((g_logsend || (!g_remote_open && !g_remote_pending)) && !waiting && !g_next_on && !pend_relogin && !pend_test && !pend_upd && !xcu_running() && !lt_running() &&
             (!g_native_ok || xn_can_play() || (g_logsend && !xn_session_thread_busy())) &&   /* v0.21.43: log da partida com a sessão aberta */
             !xcc_bg_running() && now - last_bg_try >= 1000000 &&
             !xcb_running() && !g_beta_pend && !g_beta_boot && beta_ok() && !g_boot_upd && !g_login_deferred &&
@@ -3138,6 +3153,22 @@ static int menu_loop(int net_ok, const char *msg) {
             xcc_logs_only = g_logsend && g_native_ok && !xn_can_play();   /* v0.21.43 */
             if (net_ok && g_input_on_net) xcc_bg_start();
         }
+
+        /* Discovery is serialized with login, updates, covers and sessions on
+         * hw3. A paused game can be resumed from the cached console list. */
+        lt_home_snapshot(&g_home);
+        if (g_remote_pending && !g_logsend && !waiting && !g_next_on && !pend_upd && !pend_relogin && !pend_test &&
+            !xcu_running() && !xcb_running() && !g_beta_pend && !g_login_deferred && !g_boot_upd &&
+            !lt_login_running() && beta_ok() && net_ok && !g_netwait && g_input_on_net &&
+            (!g_native_ok || xn_can_play())) {
+            if (xcc_bg_running()) xcc_bg_stop();
+            else if (!lt_running()) {
+                lt_home_start();
+                g_remote_pending = 0;
+                lt_home_snapshot(&g_home);
+            }
+        }
+        if (g_remote_focus >= g_home.n) g_remote_focus = g_home.n ? g_home.n - 1 : -1;
 
         int bscr = net_ok ? beta_screen() : -1;
         int screen = !net_ok ? SCR_NONET
@@ -3151,6 +3182,7 @@ static int menu_loop(int net_ok, const char *msg) {
                    : (!waiting && g_xbox_login) ? SCR_LOGIN
                    : waiting ? SCR_WAIT
                    : g_upd_screen ? SCR_UPDATE
+                   : g_remote_open ? SCR_REMOTE
                    : (g_cat_src == 0 && g_mm.ngames == 0) ? SCR_LOADING
                    : (g_cat_src < 0 && g_mm.ngames == 0) ? SCR_FAIL
                    : SCR_LIST;
@@ -3168,7 +3200,7 @@ static int menu_loop(int net_ok, const char *msg) {
         if (PRESSED(guide) && !waiting && screen != SCR_CFG) {
             int used = 0;
             if (!g_cfg.open && !g_mm.confirm &&
-                (screen == SCR_LIST || screen == SCR_LOADING || screen == SCR_FAIL || screen == SCR_LOGIN)) {
+                (screen == SCR_LIST || screen == SCR_REMOTE || screen == SCR_LOADING || screen == SCR_FAIL || screen == SCR_LOGIN)) {
                 cfg_open();
                 used = 1;
             } else if (g_cfg.open && (screen == SCR_WIFI || screen == SCR_WKEY) && !g_wforced) {
@@ -3191,11 +3223,11 @@ static int menu_loop(int net_ok, const char *msg) {
         }
         /* v0.19.3/v0.20.0: A num jogo -> entra assim que a hw 3 (worker) e a
          * sessão anterior liberarem. O mesmo jogo aberto = volta na hora. */
-        if (g_next_on && !waiting && screen == SCR_LIST && !xcc_bg_running() && !lt_running()) {
+        if (g_next_on && !waiting && (screen == SCR_LIST || screen == SCR_REMOTE) && !xcc_bg_running() && !lt_running()) {
             const mm_game_t *g = &g_next_play;
             char sid[48];
             int ss = xn_session(sid, sizeof(sid), NULL, 0);
-            if (ss == XN_SESS_PAUSED && !strcmp(sid, g->id)) {
+            if (ss == XN_SESS_PAUSED && xn_session_is_home() == g_next_home && !strcmp(sid, g->id)) {
                 g_next_on = 0;
                 if (xn_resume(g->id) == XN_OK) {
                     stream_discard();
@@ -3224,7 +3256,7 @@ static int menu_loop(int net_ok, const char *msg) {
 #endif
                 g_xn_seen = 0;
                 stream_discard();
-                int r = xn_play(g->id, g->name, f2p);
+                int r = g_next_home ? xn_play_home(g->id, g->name) : xn_play(g->id, g->name, f2p);
                 g_t_video_first = 0;
                 if (r == XN_OK) {
                     g_native_game = 1;
@@ -3232,7 +3264,7 @@ static int menu_loop(int net_ok, const char *msg) {
                     snprintf(play_id, sizeof(play_id), "%s", g->id);
                     xlu_set_game(g->name);
                     printf("[menu] PLAY %s no Xbox\n", g->id);
-                    xcc_mru_touch(g->id);
+                    if (!g_next_home) xcc_mru_touch(g->id);
                     waiting = 1;
                     notice[0] = '\0';
                     g_mm.state = MM_ST_NONE;
@@ -3253,19 +3285,62 @@ static int menu_loop(int net_ok, const char *msg) {
             return MENU_GO_TEST;
         }
 
-        if (screen == SCR_LIST) {
+        if (screen == SCR_LIST || screen == SCR_REMOTE) {
             int dx = 0, dy = 0;
             if (key_repeat(b.up, now, &rep_up))    dy = -1;
             if (key_repeat(b.down, now, &rep_dn))  dy = +1;
             if (key_repeat(b.left, now, &rep_lf))  dx = -1;
             if (key_repeat(b.right, now, &rep_rt)) dx = +1;
-            if (dx || dy) mm_nav(&g_mm, dx, dy);
-            if (PRESSED(lb)) mm_nav_page(&g_mm, -1, 6);
-            if (PRESSED(rb)) mm_nav_page(&g_mm, +1, 6);
+            if (screen == SCR_REMOTE && !g_mm.confirm) {
+                if (g_remote_focus < 0) {
+                    if (dx) mm_nav(&g_mm, dx, 0);
+                    if (dy > 0 && g_home.n) g_remote_focus = 0;
+                } else if (dy) {
+                    g_remote_focus += dy;
+                    if (g_remote_focus >= g_home.n) g_remote_focus = g_home.n - 1;
+                }
+                g_mm.row = MM_ROW_HEADER;
+            } else if (dx || dy) mm_nav(&g_mm, dx, dy);
+            if (screen == SCR_LIST && PRESSED(lb)) mm_nav_page(&g_mm, -1, 6);
+            if (screen == SCR_LIST && PRESSED(rb)) mm_nav_page(&g_mm, +1, 6);
             if (PRESSED(a)) {
-                int act = mm_press_a(&g_mm);
+                int act = screen == SCR_REMOTE && g_remote_focus >= 0 && !g_mm.confirm ? MM_A_NONE : mm_press_a(&g_mm);
+                if (screen == SCR_REMOTE && g_remote_focus >= 0 && !g_mm.confirm && act == MM_A_NONE) {
+                    if (g_home.busy || g_remote_pending || lt_login_running() || xcu_running() || pend_upd) {
+                        snprintf(notice, sizeof(notice), "Aguarde a busca e o login terminarem.");
+                    } else if (!g_native_ok || !g_home.ready || g_remote_focus >= g_home.n) {
+                        snprintf(notice, sizeof(notice), "Y: buscar consoles da sua conta.");
+                    } else {
+                        const xs_console_t *con = &g_home.consoles[g_remote_focus];
+                        snprintf(g_next_play.id, sizeof(g_next_play.id), "%s", con->id);
+                        snprintf(g_next_play.name, sizeof(g_next_play.name), "%s", con->name);
+                        g_next_home = 1;
+                        g_next_on = 1;
+                        if (xcc_bg_running()) xcc_bg_stop();
+                        char sid[48];
+                        int ss = xn_session(sid, sizeof(sid), NULL, 0);
+                        if (ss == XN_SESS_PAUSED && (!xn_session_is_home() || strcmp(sid, con->id))) xn_stop();
+                        snprintf(notice, sizeof(notice), "Conectando a %.64s… (B: cancelar)", con->name);
+                    }
+                }
                 const mm_game_t *g = mm_focus_game(&g_mm);
-                if (act == MM_A_REBOOT || act == MM_A_SHUTDOWN) {
+                if (act == MM_A_REMOTE) {
+                    g_remote_open = 1;
+                    g_remote_focus = -1;
+                    g_mm.row = MM_ROW_HEADER;
+                    g_mm.hcol = MM_HB_REMOTE;
+                    g_next_on = 0;
+                    if (!g_home.ready && !g_home.busy) g_remote_pending = 1;
+                    notice[0] = 0;
+                    if (g_native_ok && xn_busy() && !g_home.ready)
+                        snprintf(notice, sizeof(notice), "X: encerre a sessão aberta para buscar seus consoles.");
+                } else if (act == MM_A_CLOUD) {
+                    g_remote_open = 0;
+                    g_remote_pending = 0;
+                    g_next_on = 0;
+                    g_mm.row = g_mm.nrows ? 0 : MM_ROW_HEADER;
+                    notice[0] = 0;
+                } else if (act == MM_A_REBOOT || act == MM_A_SHUTDOWN) {
                     power_action(act == MM_A_REBOOT ? MM_PWR_REBOOT : MM_PWR_SHUTDOWN);
                 } else if (act == MM_A_SETTINGS) {
                     cfg_open();   /* v0.21.33 (v0.20.3: tela única) */
@@ -3296,9 +3371,10 @@ static int menu_loop(int net_ok, const char *msg) {
                         char sid[48];
                         int ss = xn_session(sid, sizeof(sid), NULL, 0);
                         g_next_play = *g;
+                        g_next_home = 0;
                         g_next_on = 1;
                         if (xcc_bg_running()) xcc_bg_stop();   /* regra da hw 3 */
-                        if (ss == XN_SESS_PAUSED && strcmp(sid, g->id)) {
+                        if (ss == XN_SESS_PAUSED && (xn_session_is_home() || strcmp(sid, g->id))) {
                             printf("[menu] %s aberto: DELETE antes de abrir %s\n", sid, g->id);
                             xn_stop();
                             snprintf(notice, sizeof(notice), "Encerrando a sessão anterior para abrir %.60s… (B: cancelar)",
@@ -3309,9 +3385,36 @@ static int menu_loop(int net_ok, const char *msg) {
                     }
                 }
             }
-            if (PRESSED(b) && !mm_press_b(&g_mm) && g_next_on) {
+            if (PRESSED(b)) {
+                if (screen == SCR_REMOTE && !g_mm.confirm) {
+                    if (g_next_on) {
+                        g_next_on = 0;
+                        snprintf(notice, sizeof(notice), "Cancelado");
+                    } else {
+                        g_remote_open = 0;
+                        g_remote_pending = 0;
+                        g_mm.hcol = MM_HB_CLOUD;
+                        g_mm.row = g_mm.nrows ? 0 : MM_ROW_HEADER;
+                        notice[0] = 0;
+                    }
+                } else if (!mm_press_b(&g_mm) && g_next_on) {
+                    g_next_on = 0;
+                    snprintf(notice, sizeof(notice), "Cancelado");
+                }
+            }
+            if (screen == SCR_REMOTE && !g_mm.confirm && PRESSED(y)) {
+                if (g_native_ok && xn_busy()) {
+                    snprintf(notice, sizeof(notice), "X: encerre a sessão aberta antes de buscar consoles.");
+                } else if (!g_home.busy) {
+                    g_remote_pending = 1;
+                    g_remote_focus = -1;
+                    notice[0] = 0;
+                }
+            }
+            if (screen == SCR_REMOTE && !g_mm.confirm && PRESSED(x)) {
                 g_next_on = 0;
-                snprintf(notice, sizeof(notice), "Cancelado");
+                if (g_native_ok) xn_stop();
+                snprintf(notice, sizeof(notice), "Encerrando a sessão de streaming…");
             }
         } else if (screen != SCR_BKEY && screen != SCR_CFG && screen != SCR_WIFI && screen != SCR_WKEY) {
             rep_up = rep_dn = rep_lf = rep_rt = 0;
@@ -3501,7 +3604,7 @@ static int menu_loop(int net_ok, const char *msg) {
             }
         }
         if (!waiting && PRESSED(x) && screen != SCR_LOGIN && screen != SCR_LOADING && !beta_screen_p(screen) &&
-            !wifi_screen_p(screen) && screen != SCR_CFG &&
+            !wifi_screen_p(screen) && screen != SCR_CFG && screen != SCR_REMOTE &&
             !(screen == SCR_UPDATE && g_us.mandatory)) {
             if (lt_login_running()) {
                 snprintf(notice, sizeof(notice), "Aguarde: o Xbox ainda está carregando o catálogo");
@@ -3585,7 +3688,19 @@ static int menu_loop(int net_ok, const char *msg) {
             g_xd.update_label = NULL;
         }
         const mm_game_t *fg = mm_focus_game(&g_mm);
-        g_xd.hint = (sid && fg && !strcmp(fg->id, sid)) ? "A:Voltar ao jogo|Y:Atualizar" : "A:Jogar|Y:Atualizar";
+        g_xd.hint = (sid && fg && !strcmp(fg->id, sid)) ? "A:Voltar|Y:Atualizar" : "A:Jogar|Y:Atualizar";
+        g_xd.remote_tab = g_remote_open;
+        memset(&g_remote_ui, 0, sizeof(g_remote_ui));
+        g_remote_ui.n = g_home.n;
+        g_remote_ui.focus = g_remote_focus;
+        g_remote_ui.busy = g_home.busy || g_remote_pending;
+        g_remote_ui.err = g_home.err;
+        g_remote_ui.notice = notice;
+        for (int i = 0; i < g_home.n; i++) {
+            g_remote_ui.consoles[i].name = g_home.consoles[i].name;
+            g_remote_ui.consoles[i].type = g_home.consoles[i].type;
+            g_remote_ui.consoles[i].power = g_home.consoles[i].power;
+        }
         if (notice[0]) g_xd.notice = notice;
         else if (sid && fg && strcmp(fg->id, sid)) g_xd.notice = "Ao abrir outro jogo, a sessão atual é encerrada.";
         else if (g_cat_src == 1 && g_xbox_err[0]) g_xd.notice = g_xbox_err;
@@ -3616,6 +3731,7 @@ static int menu_loop(int net_ok, const char *msg) {
             st.title = "Carregando o catálogo";
             st.text = "Entrando na conta e buscando os jogos disponíveis na nuvem.";
             st.detail = g_lts.status[0] ? g_lts.status : NULL;
+            st.hint = NULL;
             break;
         case SCR_FAIL:
             st.kind = XUI_ST_ERROR;
@@ -3645,7 +3761,8 @@ static int menu_loop(int net_ok, const char *msg) {
                 snprintf(title, sizeof(title), "Iniciando %.80s", play_name[0] ? play_name : "o jogo");
                 st.title = title;
                 st.text = g_mm.state_text[0] ? g_mm.state_text
-                                             : "Preparando o console na nuvem. O vídeo aparece sozinho.";
+                                             : xn_session_is_home() ? "Conectando ao seu Xbox. O vídeo aparece sozinho."
+                                                                    : "Preparando o console na nuvem. O vídeo aparece sozinho.";
                 st.detail = "No jogo: segure Back + Start por 2 s para voltar ao menu.";
                 {   /* v0.21.10: a rede (hw1) parou: diz na tela em vez de parecer travado */
                     static char nd[120];

@@ -26,7 +26,7 @@ void udelay(int us);
 static inline void memdcbf(void *a, int n) { (void)a; (void)n; }
 static inline void memdcbst(void *a, int n) { (void)a; (void)n; }
 static inline uint32_t read32(uintptr_t a) { return *(volatile uint32_t *)a; }
-static inline void write32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
+void write32(uintptr_t a, uint32_t v);
 void xc_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void    *xhs_host_memalign(size_t align, size_t n);
@@ -53,7 +53,7 @@ typedef struct {
     uint8_t  bLength, bDescriptorType;
     uint16_t bcdUSB;
     uint8_t  bDeviceClass, bDeviceSubClass, bDeviceProtocol, bMaxPacketSize0;
-    uint16_t idVendor, idProduct;
+    uint16_t idVendor, idProduct, bcdDevice;
 } usb_devdesc;
 struct ehci_device { usb_devdesc desc; int id, port, fd; uint32_t toggles; int busy; };
 #define EHCI_MAX_ROOT_PORTS 8
