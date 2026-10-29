@@ -1586,7 +1586,7 @@ static void render_wifi(xui_view_t *v, xui_canvas_t *c, const xui_wifi_t *w, con
         draw_dots(c, lx + 8, WP_PY + 50, phase);
     }
     if (w->nnets <= 0) {
-        xui_text_wrap(c, XUI_F_BODY, WR_X, WR_Y0 + 40, WR_W, 0, 4, 0, XUI_C_DIM,
+        xui_text_wrap(c, XUI_F_BODY, WR_X, WR_Y0 + 40, WR_W, 0, 12, 0, XUI_C_DIM,   /* v0.21.45: 12 (motivo do Wi-Fi inteiro) */
                       w->empty ? w->empty : (w->scanning ? L("Procurando redes…") : L("Nenhuma rede encontrada.")));
     } else {
         int first = 0;

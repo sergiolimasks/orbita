@@ -78,6 +78,7 @@
 #include "wifi/xw_wpa.h"
 #include "xc_wdog.h"          /* v0.21.7: vigia de travamento */
 #include "xc_textguard.h"   /* v0.21.37 */
+#include "xc_holewatch.h"   /* v0.21.45 */
 #include "wifi/xw_boot.h"     /* v0.21.5: rede no boot (cabo / Wi-Fi) */
 #include "native/xc_native.h"   /* stage 5: sessão + WebRTC no próprio Xbox */
 #include "webrtc/xc_udp_xenon.h"
@@ -1496,9 +1497,11 @@ static int run_video(int live, int gpu_on, int net_thread_on) {
         g_dec_in_ms = 0;
         uint64_t t_b = now_us();
         xtg_step();   /* v0.21.37: no jogo a guarda roda aqui, no main */
+        xhw_step();   /* v0.21.45 */
         {   /* v0.21.37 */
             char gl[200];
             for (int q = 0; q < 4 && xtg_line(gl, sizeof(gl)); q++) np_log_line(gl);
+            for (int q = 0; q < 4 && xhw_line(gl, sizeof(gl)); q++) np_log_line(gl);
         }
         if (xpt_dec_abort) {
             /* v0.21.35: as esperas foram soltas: o quadro não vale e o decoder
@@ -1863,9 +1866,9 @@ static xcn_notes_t g_notes;
 static int        g_notes_ok = 0;
 /* v0.21.34: novidades desta build, pra quando não há NOTES.TXT nem manifesto da mesma versão */
 #define BUILTIN_NOTES \
-    "Versão de teste do Wi-Fi: alguns Xbox 360 Slim têm um módulo de Wi-Fi interno de outro modelo (045e:02ab ou " \
-    "045e:02b8) que o orbita não reconhecia. Esta versão tenta ligar esses módulos.\n" \
-    "Se o Wi-Fi ligar, conte no relato. Se não ligar, mande uma foto da tela de erro: ela mostra onde parou."
+    "Versão de teste: alguns Xbox 360 Slim têm um módulo de Wi-Fi interno de outro modelo (045e:02ab ou 045e:02b8). " \
+    "Se o Wi-Fi não ligar, a tela mostra o que o módulo tem: mande uma foto dela no relato.\n" \
+    "Também traz uma proteção para o travamento em \"Aguardando vídeo\" (tela vermelha ao abrir um jogo)."
 
 /* gravações pendentes no pendrive (só com a hw 3 livre ou pelo worker, igual
  * o catlist_save_pending / xcv_save_pending: texto malloc trocado atômico) */
@@ -2316,8 +2319,13 @@ static void wifi_fill_status(void) {
     g_wd.scanning = s->scanning;
     if (s->present == XW_PRESENT_NO)
         g_wd.empty = "Wi-Fi não encontrado neste console (só Xbox 360 S/E com Wi-Fi interno).";
-    else if (s->dev == XW_DEV_FAILED)
-        g_wd.empty = "O Wi-Fi não ligou (motivo à esquerda).";
+    else if (s->dev == XW_DEV_FAILED) {
+        /* v0.21.45: o motivo inteiro no painel da direita (à esquerda ele corta): é o que o testador fotografa */
+        static char we[560];
+        snprintf(we, sizeof(we), "O Wi-Fi não ligou. Mande uma foto desta tela no relato. %s",
+                 s->why[0] ? s->why : "o adaptador não respondeu");
+        g_wd.empty = we;
+    }
     else if (s->present == XW_PRESENT_UNKNOWN || s->dev < XW_DEV_READY)
         g_wd.empty = "Esperando o adaptador…";
     if (g_wfocus >= g_wd.nnets) g_wfocus = g_wd.nnets - 1;
@@ -2919,6 +2927,11 @@ static int menu_loop(int net_ok, const char *msg) {
         /* v0.21.7: vigia. A hw 3 só conta com uma tarefa nossa nela. */
         xwd_beat("menu");
         xtg_step();   /* v0.21.37 */
+        xhw_step();   /* v0.21.45 */
+        {
+            char hl[200];
+            for (int q = 0; q < 4 && xhw_line(hl, sizeof(hl)); q++) xc_log("%s", hl);
+        }
         xpf_temps_poll(now);   /* v0.21.43: Configurações > Desempenho */
 #ifdef ORBITA_TEST_THRDIAG
         {   /* teste: estado das hw threads no HANG.TXT a cada 15 s (lido por FTP) */
@@ -3800,7 +3813,7 @@ static int menu_loop(int net_ok, const char *msg) {
             break;
         case SCR_NETWAIT: {
             /* v0.21.5: telas do boot de rede (xw_boot.h) */
-            static char ttl[96], txt[420], det[96];   /* v0.21.44: txt cabe o motivo do Wi-Fi com as portas */
+            static char ttl[96], txt[600], det[96];   /* v0.21.44: txt cabe o motivo do Wi-Fi com as portas; v0.21.45: + endpoints */
             unsigned secs = g_ws.stage_ms / 1000;
             if (g_bootnet == XWB_NOINTERNET) {
                 if (now < g_cable_retry_until) {
@@ -3813,7 +3826,7 @@ static int menu_loop(int net_ok, const char *msg) {
                     st.kind = XUI_ST_ERROR;
                     st.title = "Sem internet: conecte o cabo de rede";
                     if (g_ws.dev == XW_DEV_FAILED)
-                        snprintf(txt, sizeof(txt), "O Wi-Fi interno não ligou (%.300s). Conecte o cabo de rede e aperte A.",
+                        snprintf(txt, sizeof(txt), "O Wi-Fi interno não ligou (%.480s). Conecte o cabo de rede e aperte A.",
                                  g_ws.why[0] ? g_ws.why : "sem resposta do adaptador");
                     else
                         snprintf(txt, sizeof(txt), "Este Xbox não tem Wi-Fi interno (só o Xbox 360 S/E tem). Conecte o cabo "
@@ -4143,6 +4156,16 @@ static void menu_main(int gpu_on) {
 #endif
 #endif
         printf("[guarda] cópia do código: %s\n", tg == 0 ? "ok" : "sem memória (desligada)");
+        const xhw_scan_t *hs = xhw_early_result();   /* v0.21.45 */
+        printf("[buraco] %08x-%08x: ao abrir o app %u palavras gravadas%s", (unsigned)xhw_start(), (unsigned)xhw_end(),
+               (unsigned)hs->words, hs->words ? "" : " (limpo)\n");
+        if (hs->words)
+            printf(" em %08x-%08x (blocos 64K %016llx; ex. %08x %08x %08x %08x)\n", (unsigned)hs->first, (unsigned)hs->last,
+                   (unsigned long long)hs->blocks, (unsigned)hs->sample[0], (unsigned)hs->sample[1],
+                   (unsigned)hs->sample[2], (unsigned)hs->sample[3]);
+        xc_log("[buraco] %08x-%08x: ao abrir o app %u palavras gravadas em %08x-%08x (blocos 64K %016llx; ex. %08x %08x)",
+               (unsigned)xhw_start(), (unsigned)xhw_end(), (unsigned)hs->words, (unsigned)hs->first, (unsigned)hs->last,
+               (unsigned long long)hs->blocks, (unsigned)hs->sample[0], (unsigned)hs->sample[1]);
     }
     avcodec_register_all();
     mm_init(&g_mm);
@@ -4245,6 +4268,7 @@ static int orbita_video_mode(void) {
 }
 
 int main(void) {
+    xhw_early();   /* v0.21.45: antes de qualquer driver: o que já foi gravado no vão de memória */
     xenos_init(orbita_video_mode());
     console_init();
     BOOT_STEP("1 xenos+console ok");

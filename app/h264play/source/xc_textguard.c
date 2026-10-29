@@ -9,7 +9,7 @@
 #define XTG_STEP_MS 40u   /* 1 bloco a cada 40 ms: a volta toda (~57 blocos) em ~2,3 s */
 #define XTG_LINE    128u  /* linha de cache do Xenon */
 
-extern char pagetable_end[], orbita_text_end[];
+extern char orbita_hole_end[], orbita_text_end[];
 /* dados que o libxenon grava dentro do .text (startup_from_xell.S): a tabela
  * "wait" (entrada de cada hw thread, 6 x 8 B) e o __argv do _start. Ficam de fora. */
 extern char xtg_wait_tbl[] __asm__("wait");
@@ -62,9 +62,9 @@ static void sync_icache(uint32_t a, uint32_t n) {
 }
 
 int xtg_init(void) {
-    /* o código do app começa depois do vão de 0x3e000 do orbita.lds (os
+    /* o código do app começa depois do vão do orbita.lds (v0.21.45: até 4 MB; os
      * vetores e a tabela de páginas do libxenon ficam de fora) */
-    uint32_t b = ((uint32_t)pagetable_end + 0x3e000u + XTG_BLK - 1) & ~(XTG_BLK - 1);
+    uint32_t b = ((uint32_t)orbita_hole_end + XTG_BLK - 1) & ~(XTG_BLK - 1);
     uint32_t e = (uint32_t)orbita_text_end & ~3u;
     if (e <= b) return -1;
     g_len = e - b;

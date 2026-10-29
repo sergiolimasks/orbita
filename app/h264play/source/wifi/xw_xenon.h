@@ -47,7 +47,7 @@ typedef struct {
     /* v0.21.1: etapa enquanto liga, motivo da falha (aparecem na tela) */
     char     stage[48];
     unsigned stage_ms;
-    char     why[320];   /* v0.21.43: + portas */
+    char     why[480];   /* v0.21.43: + portas; v0.21.45: + endpoints */
     int      transport;        /* 0 nenhum, 1 OHCI full speed, 2 EHCI high speed */
     unsigned rx_rearms;        /* v0.21.8: recuperações do detector de RX parado */
     unsigned rx_reassoc;       /* v0.21.8: reassociações por RX parado */

@@ -105,8 +105,8 @@ static int          g_hs_tried = 0;
 static int g_enum_tried = 0;   /* v0.21.41: já identificou as portas sem endereço */
 static uint32_t     g_t_act = 0, g_t_rel = 0, g_last_diag = 0;
 static int          g_rel_bus = -1, g_rel_port = -1;
-static char         g_why[320];         /* sob g_lk na leitura (publish) */
-static char         g_hs_why[240];   /* v0.21.43: + portas */
+static char         g_why[480];         /* sob g_lk na leitura (publish) */
+static char         g_hs_why[320];   /* v0.21.43: + portas; v0.21.45: + endpoints */
 static const char  *g_stage = "";
 static int          g_hex_in = 0, g_hex_out = 0;
 static unsigned     g_tx_seen = 0;          /* v0.21.4: conclusões do EP2 OUT já avisadas ao core */
@@ -628,8 +628,9 @@ static void start_core(uint32_t now) {
 
 /* falha visível (a tela mostra o motivo; nunca "Ligando" pra sempre) */
 static void glue_fail(uint32_t now, const char *why) {
-    char w[320];
-    if (g_hs_why[0] && g_tr != TR_EHCI) snprintf(w, sizeof(w), "%s (high speed: %s)", why, g_hs_why);
+    char w[480];
+    /* v0.21.45: o high speed primeiro (é ele que diz o que o adaptador tem; o full speed é só a 2a tentativa) */
+    if (g_hs_why[0] && g_tr != TR_EHCI) snprintf(w, sizeof(w), "high speed: %s | full speed: %s", g_hs_why, why);
     else snprintf(w, sizeof(w), "%s", why);
     xlk_lock(&g_lk, "wifi status " XLK_HERE);
     snprintf(g_why, sizeof(g_why), "%s", w);

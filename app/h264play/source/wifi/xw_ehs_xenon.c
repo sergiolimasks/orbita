@@ -134,7 +134,7 @@ static hpipe_t g_ctl, g_cin, g_cout, g_din, g_dout, g_d3;
 static hpipe_t *g_pipes[6] = { &g_ctl, &g_cin, &g_cout, &g_din, &g_dout, &g_d3 };
 static int     g_np = 5;
 static unsigned g_relinks = 0;
-static char    g_why[120];
+static char    g_why[300];   /* v0.21.45: cabe a lista de endpoints */
 
 /* v0.21.16: a linha de cache do Xenon tem 128 B. Com memalign(64, 64) um qTD
  * dividia a linha com o cabeçalho do malloc / outro bloco do heap: quando a
@@ -437,6 +437,23 @@ int xhs_open(xhs_eps_t *eps) {
     xc_log("[wifi] HS: config %d bytes (pedido %d), valor %d, %d interfaces", r, total, cd[5], cd[4]);
     if (r < 9) { snprintf(g_why, sizeof(g_why), "descritor de configuração (%d)", r); return -1; }
     memset(eps, 0, sizeof(*eps));
+    /* v0.21.45: todos os endpoints de todas as interfaces, curto, pra foto da tela
+     * (outros módulos de Wi-Fi: 045e:02ab/02b8). "if0/0 ff/ff: 81B512" = interface 0
+     * alt 0 classe ff/ff, endpoint 0x81 bulk mps 512 (C controle, S iso, B bulk, I int) */
+    char epd[200];
+    {
+        size_t k = 0;
+        epd[0] = 0;
+        for (int o = 0; o + 2 <= r && cd[o] >= 2 && k + 16 < sizeof(epd); o += cd[o]) {
+            if (cd[o + 1] == 4 && o + 7 <= r)
+                k += (size_t)snprintf(epd + k, sizeof(epd) - k, "%sif%d/%d %02x/%02x:", k ? " " : "", cd[o + 2], cd[o + 3],
+                                      cd[o + 5], cd[o + 6]);
+            else if (cd[o + 1] == 5 && o + 7 <= r)
+                k += (size_t)snprintf(epd + k, sizeof(epd) - k, " %02x%c%d", cd[o + 2], "CSBI"[cd[o + 3] & 3],
+                                      (cd[o + 4] | (cd[o + 5] << 8)) & 0x7ff);
+        }
+        xc_log("[wifi] HS: endpoints %s", epd);
+    }
     int iface = -1, alt = 0;
     for (int o = 0; o + 2 <= r && cd[o] >= 2; o += cd[o]) {
         if (cd[o + 1] == 4 && o + 4 <= r) { iface = cd[o + 2]; alt = cd[o + 3]; }
@@ -452,8 +469,8 @@ int xhs_open(xhs_eps_t *eps) {
         }
     }
     if (!eps->cin || !eps->cout || !eps->din || !eps->dout) {
-        snprintf(g_why, sizeof(g_why), "faltam endpoints em HS (cmd %02x/%02x, dados %02x/%02x)", eps->cin, eps->cout,
-                 eps->din, eps->dout);
+        snprintf(g_why, sizeof(g_why), "faltam endpoints. %04x:%04x config %d: %s", (unsigned)bswap_16(dev->desc.idVendor),
+                 (unsigned)bswap_16(dev->desc.idProduct), cd[5], epd);
         return -1;
     }
     r = ctrl(0x00, 9, cd[5], 0, 0, NULL);
