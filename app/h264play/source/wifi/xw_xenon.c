@@ -37,6 +37,7 @@ typedef unsigned int physaddr_t;   /* nocfe/cfe.h (não incluído: puxa o resto 
 extern usbbus_t *usb_buses[];
 extern int usb_buscnt;
 int xw_ehci_release_wifi(int *bus, int *port, int release);
+int xw_ehci_enum_unknown(void);   /* v0.21.41 */
 uint32_t xw_ehci_port_status(int bus, int port);
 int ohci_debug_hc(usbbus_t *bus, char *out, int cap);   /* libxenon (patch GIP): estado do HC e das portas raiz */
 
@@ -98,6 +99,7 @@ static uint32_t     g_last_arp = 0;
 enum { TR_NONE = 0, TR_OHCI, TR_EHCI };
 static int          g_tr = TR_NONE;
 static int          g_hs_tried = 0;
+static int g_enum_tried = 0;   /* v0.21.41: já identificou as portas sem endereço */
 static uint32_t     g_t_act = 0, g_t_rel = 0, g_last_diag = 0;
 static int          g_rel_bus = -1, g_rel_port = -1;
 static char         g_why[160];         /* sob g_lk na leitura (publish) */
@@ -1063,6 +1065,15 @@ static void step_body(int held) {
                 }
                 snprintf(g_hs_why, sizeof(g_hs_why), "%s", xhs_why());
                 xc_log("[wifi] high speed falhou: %s. Tentando full speed pelo OHCI", g_hs_why);
+            } else if (now - g_t_act > HS_FIND_MS && !g_enum_tried) {
+                /* v0.21.41: antes de desistir, identifica as portas que o tinyehci
+                 * ainda não endereçou (boot sem cabo: o adaptador fica assim) e dá
+                 * mais HS_FIND_MS pra ele aparecer */
+                g_enum_tried = 1;
+                int ne = xw_ehci_enum_unknown();
+                xc_log("[wifi] 045e:0765 ainda não apareceu: identifiquei %d porta(s) USB sem endereço, procurando de novo", ne);
+                g_t_act = now;
+                goto pub;
             } else if (now - g_t_act > HS_FIND_MS) {
                 g_hs_tried = 1;
                 snprintf(g_hs_why, sizeof(g_hs_why), "não está no EHCI");

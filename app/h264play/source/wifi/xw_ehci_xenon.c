@@ -61,3 +61,30 @@ uint32_t xw_ehci_port_status(int bus, int port) {
     if (!h->regs) return 0xffffffffu;
     return read32((u32)h->regs + (u32)offsetof(struct ehci_regs, port_status) + 4u * (u32)(port - 1));
 }
+
+/* v0.21.41: portas EHCI com algo conectado mas sem endereço do tinyehci. No boot
+ * sem cabo o Wi-Fi liga em 200 ms e o 88W8786U ainda está assim (o tinyehci só
+ * identifica no USBStorage_Init, aos poucos): a gente reseta a porta e lê o
+ * descritor (ehci_reset_port do tinyehci). Full/low speed vai pro OHCI sozinho.
+ * Devolve quantas portas ganharam endereço. Só a hw 1 / boot, fora do hold. */
+extern int ehci_reset_port(struct ehci_hcd *ehci, int port);
+int xw_ehci_enum_unknown(void);
+int xw_ehci_enum_unknown(void) {
+    int n = 0;
+    for (int b = 0; b < EHCI_HCD_COUNT; b++) {
+        struct ehci_hcd *h = &ehci_hcds[b];
+        if (!h->regs) continue;
+        int np = h->num_port;
+        if (np > EHCI_MAX_ROOT_PORTS) np = EHCI_MAX_ROOT_PORTS;
+        for (int p = 0; p < np; p++) {
+            struct ehci_device *d = &h->devices[p];
+            if (d->id || d->busy) continue;
+            u32 reg = (u32)h->regs + (u32)offsetof(struct ehci_regs, port_status) + 4u * (u32)p;
+            u32 st = read32(reg);
+            if (!(st & PORT_CONNECT) || (st & PORT_OWNER)) continue;
+            d->port = p;
+            if (ehci_reset_port(h, p) >= 0 && d->id) n++;
+        }
+    }
+    return n;
+}
