@@ -1,5 +1,11 @@
 # orbita
 
+> **Legacy (final).** This repository is the final version of the legacy ELF
+> client (last release: 0.21.44, October 2026). It is no longer being worked on.
+> Development continues on the XEX version, which is not in this repository.
+> The site keeps the last ELF versions available for beta testers:
+> <https://x360.pistatrack.com>
+
 Native Xbox Cloud Gaming (xCloud) client for the **Xbox 360 (RGH/JTAG)**.
 Runs 100% on the console — login, catalog, session, WebRTC, H.264 + Opus
 decode and controller input — with no PC in the middle.
@@ -9,7 +15,7 @@ decode and controller input — with no PC in the middle.
 > Game Pass are trademarks of Microsoft. You need your own account and an
 > active subscription that includes cloud gaming.
 
-**Status:** closed beta (v0.20.x). Public beta starts at 0.22.0.
+**Status:** legacy, final (0.21.44). Development moved to the XEX version.
 Site, downloads and feature status: <https://x360.pistatrack.com>
 
 ## Requirements
