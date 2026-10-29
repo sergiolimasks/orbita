@@ -57,6 +57,30 @@ size_t xcp_client_metadata(xcp_input_ser_t *s, uint8_t max_touchpoints, uint8_t 
     return (size_t)(p - out);
 }
 
+static uint32_t gamepad_physicality(const xcp_gamepad_t *pad) {
+    uint32_t m = 0;
+    if (pad->dpad_up) m |= 1u;
+    if (pad->dpad_down) m |= 2u;
+    if (pad->dpad_left) m |= 4u;
+    if (pad->dpad_right) m |= 8u;
+    if (pad->menu) m |= 16u;
+    if (pad->view) m |= 32u;
+    if (pad->left_thumb) m |= 64u;
+    if (pad->right_thumb) m |= 128u;
+    if (pad->left_shoulder) m |= 256u;
+    if (pad->right_shoulder) m |= 512u;
+    if (pad->nexus) m |= 1024u;
+    if (pad->a) m |= 4096u;
+    if (pad->b) m |= 8192u;
+    if (pad->x) m |= 16384u;
+    if (pad->y) m |= 32768u;
+    if (pad->left_trigger > 0) m |= 65536u;
+    if (pad->right_trigger > 0) m |= 131072u;
+    if (pad->left_x != 0 || pad->left_y != 0) m |= 262144u | 524288u;
+    if (pad->right_x != 0 || pad->right_y != 0) m |= 1048576u | 2097152u;
+    return m;
+}
+
 size_t xcp_gamepad_packet(xcp_input_ser_t *s, const xcp_gamepad_t *pad, double elapsed_ms, uint8_t *out) {
     uint8_t *p = out;
     p = put_u16le(p, REPORT_GAMEPAD);
@@ -89,12 +113,12 @@ size_t xcp_gamepad_packet(xcp_input_ser_t *s, const xcp_gamepad_t *pad, double e
     p = put_u16le(p, (uint16_t)axis(-pad->right_y));
     p = put_u16le(p, trigger(pad->left_trigger));
     p = put_u16le(p, trigger(pad->right_trigger));
-    p = put_u32le(p, 1);   /* physical unit id (LE) */
-    /* one extra constant, big-endian in the reference client */
-    *p++ = 0;
-    *p++ = 0;
-    *p++ = 0;
-    *p++ = 1;
+    /* v0.21.39: PhysicalPhysicality = máscara do que está apertado de verdade
+     * (GamepadInputPhysicality do cliente web: DPadUp=1 ... A=4096 ... eixos);
+     * VirtualPhysicality = 0 (não é toque). Antes ia 1 fixo (só "DPadUp") e o
+     * teclado do sistema do Xbox ignorava o A (os jogos não ligam). */
+    p = put_u32le(p, gamepad_physicality(pad));
+    p = put_u32le(p, 0);
     return (size_t)(p - out);
 }
 
