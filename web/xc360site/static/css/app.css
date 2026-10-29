@@ -742,3 +742,8 @@ details.disclosure p{padding:0 12px 12px;font-size:var(--t-sm);color:var(--c-mut
 /* área: passo a passo pra trocar a chave (pedido 2026-10-27) */
 .key-swap .key-swap-steps{margin:6px 0 4px 18px;padding:0}
 .key-swap .key-swap-steps li{margin:2px 0}
+
+/* 2026-10-29: versões ELF (legado) na área */
+.legacy-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.legacy-list li { gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+.legacy-list li:last-child { border-bottom: 0; }

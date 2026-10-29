@@ -812,3 +812,19 @@ def test_waitlist_ip_limit(app):
     for i in range(waitlist.PER_IP_DAY):
         assert _wl_join(app.test_client(), "ip%d@example.com" % i, "ipuser_%d" % i).status_code == 302
     assert _wl_join(c, "ipx@example.com", "ipuser_x").status_code == 429
+
+
+def test_reports_gate(app, client):
+    """2026-10-29: relatos fechados; só quem está em kv.reports_gate.allow manda UM."""
+    import json as _j
+    uid = make_user(app)["id"]
+    login(client)
+    db.run("INSERT INTO kv(k, v) VALUES (%s, %s)", "reports_gate", _j.dumps({"closed": True, "allow": []}))
+    assert "Reports paused" in client.get("/area/report").get_data(as_text=True)
+    assert report(client, [(_png(), "t.png")]).status_code == 403
+    assert db.row("SELECT count(*) AS n FROM reports")["n"] == 0
+    db.run("UPDATE kv SET v=%s WHERE k=%s", _j.dumps({"closed": True, "allow": [uid]}), "reports_gate")
+    assert "open deadline" in client.get("/area/report").get_data(as_text=True)
+    assert report(client, [(_png(), "t.png")]).status_code == 302
+    assert report(client, [(_png(), "t.png")]).status_code == 403   # só um
+    assert db.row("SELECT count(*) AS n FROM reports")["n"] == 1

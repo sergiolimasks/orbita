@@ -68,7 +68,7 @@ def _area_ctx():
     return dict(key=key, key_blocked=bool(key and key["dup_at"]), beta=releases.manifest("beta"),
                 key_plain=bridgekeys.reveal(u["id"]) if key and not key["dup_at"] else None,
                 reports=reps, counts=counts, test_build=_test_build(g.user["id"]), wl_deadline=wl_deadline,
-                key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY)
+                key_limit=_keys_today(u["id"]) >= KEYS_PER_DAY, legacy=_legacy(), reports_closed=_gate()[0])
 
 
 KEYS_PER_DAY = 2   # v0.21.43: gerar várias era o que mais quebrava a ativação
@@ -113,10 +113,54 @@ def key_regen():
     return render_template("area.html", new_key=k, **_area_ctx())
 
 
+# 2026-10-29: ELF legado pausado (a equipe passou pra versão XEX). Relato novo só pra quem
+# tem prazo aberto (aviso de 48/24 h): kv.reports_gate = {"closed": true, "allow": [ids]};
+# cada um da lista manda UM relato e sai dela.
+GATE_KEY = "reports_gate"
+LEGACY_N = 10   # versões ELF que continuam pra baixar
+
+
+def _gate():
+    r = db.row("SELECT v FROM kv WHERE k=%s", GATE_KEY)
+    try:
+        m = json.loads(r["v"]) if r else {}
+    except ValueError:
+        m = {}
+    return bool(m.get("closed")), {int(x) for x in m.get("allow", []) if str(x).isdigit()}
+
+
+def _may_report(uid):
+    closed, allow = _gate()
+    return not closed or uid in allow
+
+
+def _gate_spend(uid):
+    with db.conn() as c:
+        r = c.execute("SELECT v FROM kv WHERE k=%s FOR UPDATE", (GATE_KEY,)).fetchone()
+        if not r:
+            return
+        try:
+            m = json.loads(r["v"])
+        except ValueError:
+            return
+        m["allow"] = [x for x in m.get("allow", []) if int(x) != uid]
+        c.execute("UPDATE kv SET v=%s WHERE k=%s", (json.dumps(m), GATE_KEY))
+
+
+def _legacy():
+    return releases.versions()[:LEGACY_N]
+
+
+def _closed_page(code=200):
+    return render_template("tester/reports_closed.html", legacy=_legacy()), code
+
+
 @bp.get("/area/report")
 @sec.login_required
 def report_form():
-    return render_template("tester/report_form.html", **_form_ctx())
+    if not _may_report(g.user["id"]):
+        return _closed_page()
+    return render_template("tester/report_form.html", last_chance=_gate()[0], **_form_ctx())
 
 
 @bp.get("/area/reports")
@@ -151,6 +195,8 @@ def report_detail(rid):
 @bp.post("/area/reports")
 @sec.login_required
 def report_new():
+    if not _may_report(g.user["id"]):
+        return _closed_page(403)
     cfg = current_app.config
     f = {k: (request.form.get(k) or "").strip() for k in ("description", "version", "console_id", "game")}
     errs = []
@@ -202,6 +248,8 @@ def report_new():
                     pass
             c.rollback()
             return render_template("tester/report_form.html", **_form_ctx(f, [_("rep.err_store")])), 503
+    if _gate()[0]:
+        _gate_spend(g.user["id"])
     flash(_("rep.ok", n=rep["id"]), "success")
     return redirect(url_for("tester.report_detail", rid=rep["id"]))
 
@@ -231,6 +279,21 @@ def download_test():
         abort(404)
     r = Response(data, mimetype="application/octet-stream")
     r.headers["Content-Disposition"] = "attachment; filename=xenon.elf"
+    return r
+
+
+@bp.get("/area/download/v/<ver>")
+@sec.login_required
+def download_version(ver):
+    """2026-10-29: as últimas LEGACY_N versões ELF (o legado pausado), pra baixar e testar."""
+    m = next((m for m in _legacy() if m["version"] == ver), None)
+    key = releases.elf_key(ver) if m else None
+    data = _storage().get(key) if key else None
+    if data is None:
+        abort(404)
+    r = Response(data, mimetype="application/octet-stream")
+    r.headers["Content-Disposition"] = "attachment; filename=xenon.elf"
+    r.headers["X-Checksum-SHA256"] = m.get("sha256", "")
     return r
 
 

@@ -1,0 +1,16 @@
+{% extends "app/_layout.html" %}{% from "_ui.html" import crumb %}
+{% block title %}{{ _('rc.title') }}{% endblock %}
+{% block content_class %} narrow{% endblock %}
+{% block crumbs %}{{ crumb(_('ui.report_bug')) }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ _('rc.title') }}</h1></div></div>
+<section class="card mt-4" aria-labelledby="rc-xex">
+  <div class="card-body stack-sm">
+    <h2 id="rc-xex">{{ _('rc.xex_title') }}</h2>
+    <p>{{ _('rc.body') }}</p>
+    <p>{{ _('rc.xex') }}</p>
+    <p class="muted">{{ _('rc.legacy_help') }}</p>
+    <div><a class="btn primary" href="{{ url_for('tester.area') }}#legacy-title">{{ icon('download', 16) }}{{ _('rc.to_versions') }}</a></div>
+  </div>
+</section>
+{% endblock %}

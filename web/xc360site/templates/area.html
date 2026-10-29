@@ -44,6 +44,22 @@
       {% endif %}
     </section>
 
+    {% if legacy %}
+    {# ---------------- 2026-10-29: ELF legado pausado: as últimas versões pra baixar #}
+    <section class="card" aria-labelledby="legacy-title">
+      <div class="card-body stack-sm">
+        <h2 id="legacy-title">{{ _('rc.vers_title') }}</h2>
+        <p class="muted">{{ _('rc.vers_help') }}</p>
+        <ul class="legacy-list">
+          {% for m in legacy %}
+          <li class="row-between"><span><code>{{ m.version }}</code>{% if m.public %} <span class="badge">{{ _('rc.stable') }}</span>{% endif %} <span class="muted small">{{ m.size|size }}</span></span>
+            <a class="btn secondary sm" href="{{ url_for('tester.download_version', ver=m.version) }}">{{ icon('download', 14) }}{{ _('rc.dl') }}</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </section>
+    {% endif %}
+
     {% if test_build %}
     {# ---------------- versão de teste só deste testador #}
     <section class="card" aria-labelledby="tb-title">

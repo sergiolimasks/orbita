@@ -5,6 +5,7 @@
 {% block content %}
 <div class="page-head"><div><h1>{{ _('area.report_title') }}</h1><p class="lead">{{ _('area.report_lead') }}</p></div></div>
 {{ errs(errors) }}
+{% if last_chance %}<div class="alert warn mt-4" role="status">{{ _('rc.last_chance') }}</div>{% endif %}
 <form method="post" action="{{ url_for('tester.report_new') }}" enctype="multipart/form-data" class="card mt-4" novalidate>
   {{ csrf() }}
   <div class="card-body steps-form">
