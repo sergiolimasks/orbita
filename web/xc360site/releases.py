@@ -20,20 +20,45 @@ def _storage():
     return current_app.extensions["storage"]
 
 
+_refreshing = set()
+
+
+def _fetch(key, fn, app):
+    try:
+        with app.app_context():
+            val = fn()
+    except Exception as e:  # R2 fora do ar não derruba a página
+        app.logger.warning("releases %s: %s", key, e)
+        with _lock:
+            _refreshing.discard(key)
+            hit = _cache.get(key)
+            if hit:                      # mantém o valor antigo e tenta de novo no próximo TTL
+                _cache[key] = (time.time(), hit[1])
+                return hit[1]
+        val = None
+    with _lock:
+        _cache[key] = (time.time(), val)
+        _refreshing.discard(key)
+    return val
+
+
 def _cached(key, fn):
+    """2026-10-29: vencido = devolve o valor antigo na hora e atualiza em segundo plano (o R2 às vezes leva
+    segundos e toda página mostra a beta atual no topo). Só a 1ª vez espera."""
     now = time.time()
     with _lock:
         hit = _cache.get(key)
         if hit and now - hit[0] < TTL:
             return hit[1]
-    try:
-        val = fn()
-    except Exception as e:  # R2 fora do ar não derruba a página
-        current_app.logger.warning("releases %s: %s", key, e)
-        val = None
-    with _lock:
-        _cache[key] = (now, val)
-    return val
+        if hit and key in _refreshing:
+            return hit[1]
+        if hit:
+            _refreshing.add(key)
+    app = current_app._get_current_object()
+    if hit:
+        threading.Thread(target=_fetch, args=(key, fn, app), daemon=True).start()
+        return hit[1]
+    return _fetch(key, fn, app)
 
 
 def clear_cache():
@@ -55,7 +80,7 @@ def manifest(channel):
     assert channel in ("stable", "beta")
 
     def f():
-        raw = _storage().get("%s/%s.json" % (PREFIX, channel))
+        raw = _storage().get("%s/%s.json" % (PREFIX, channel), timeout=5)
         return _parse(raw) if raw else None
     return _cached("ch:" + channel, f)
 

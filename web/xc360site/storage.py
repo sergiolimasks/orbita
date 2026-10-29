@@ -61,8 +61,8 @@ class R2Storage:
         if st != 200:
             raise IOError("R2 PUT %s: %s" % (st, b[:200]))
 
-    def get(self, key):
-        st, b = self._req("GET", key, timeout=120)
+    def get(self, key, timeout=120):
+        st, b = self._req("GET", key, timeout=timeout)
         if st == 404:
             return None
         if st != 200:
@@ -102,7 +102,7 @@ class MemStorage:
         with self.lock:
             self.objs[key] = bytes(data)
 
-    def get(self, key):
+    def get(self, key, timeout=None):
         return self.objs.get(key)
 
     def delete(self, key):
