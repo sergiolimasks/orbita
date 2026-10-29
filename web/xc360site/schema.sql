@@ -264,3 +264,17 @@ CREATE TABLE IF NOT EXISTS console_info (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_reason text NOT NULL DEFAULT '';   -- beta_prune.REASONS
 CREATE UNIQUE INDEX IF NOT EXISTS users_reddit_key ON users (lower(reddit)) WHERE reddit <> '';
 CREATE INDEX IF NOT EXISTS users_wait ON users (wait) WHERE wait <> '';
+
+-- resumo público dos bugs (2026-10-29): curado pela equipe, sem texto de testador
+CREATE TABLE IF NOT EXISTS known_issues (
+    id         serial PRIMARY KEY,
+    slug       text UNIQUE NOT NULL,
+    status     text NOT NULL DEFAULT 'investigating',   -- investigating | fixing | testing | fixed | wontfix
+    title_pt   text NOT NULL, title_en text NOT NULL DEFAULT '', title_es text NOT NULL DEFAULT '',
+    body_pt    text NOT NULL DEFAULT '', body_en text NOT NULL DEFAULT '', body_es text NOT NULL DEFAULT '',
+    builds     int NOT NULL DEFAULT 0,                    -- versões que já tentaram corrigir
+    versions   text NOT NULL DEFAULT '',                  -- "0.21.39, 0.21.43"
+    public     boolean NOT NULL DEFAULT true,
+    sort       int NOT NULL DEFAULT 100,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);

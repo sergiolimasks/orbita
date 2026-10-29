@@ -78,12 +78,19 @@ def games():
     gs, summary = game_stats()
     gs = [x for x in gs if not x["hidden"]]
     known = {plays.norm_name(x["name"]): x["name"] for x in gs}
-    reps = db.rows("SELECT id, game, version, status, admin_note, created_at, updated_at FROM reports "
-                   "WHERE NOT public_hidden AND status<>'duplicate' ORDER BY updated_at DESC, id DESC LIMIT 60")
-    bugs = [plays.public_report(r, known) for r in reps]
-    bc = db.row("SELECT count(*) FILTER (WHERE status = ANY(%s)) AS open, count(*) FILTER (WHERE status='fixed') AS fixed, "
-                "count(*) AS total FROM reports WHERE NOT public_hidden AND status<>'duplicate'", list(OPEN_STATUSES))
-    return render_template("public/games.html", games=gs, summary=summary, bugs=bugs, bc=bc,
+    # 2026-10-29: "Bugs encontrados" = resumo curado (known_issues), não os relatos um a um
+    idx = LANGS.index(g.lang) if getattr(g, "lang", None) in LANGS else 0
+    sfx = ("pt", "en", "es")[idx]
+    issues = []
+    for r in db.rows("SELECT * FROM known_issues WHERE public ORDER BY (status IN ('fixed','wontfix')), sort, id"):
+        issues.append({"status": r["status"], "builds": r["builds"], "versions": r["versions"],
+                       "updated_at": r["updated_at"],
+                       "title": r["title_" + sfx] or r["title_pt"], "body": r["body_" + sfx] or r["body_pt"]})
+    bc = {"total": len(issues),
+          "open": sum(1 for i in issues if i["status"] in ("investigating", "fixing", "testing")),
+          "fixed": sum(1 for i in issues if i["status"] == "fixed"),
+          "reports": db.row("SELECT count(*) AS n FROM reports WHERE status<>'duplicate'")["n"]}
+    return render_template("public/games.html", games=gs, summary=summary, issues=issues, bc=bc,
                            badges=plays.BADGES)   # versão atual: beta_now() (context processor)
 
 

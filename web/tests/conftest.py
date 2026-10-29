@@ -9,7 +9,7 @@ from flask.testing import FlaskClient
 from xc360site import create_app, db, security
 from xc360site.storage import MemStorage
 
-TABLES = "game_flags, play_sessions, key_events, release_note_items, release_notes, features, report_events, audit, promotion_requests, kv, log_index, report_files, reports, beta_keys, login_attempts, sessions, " \
+TABLES = "known_issues, game_flags, play_sessions, key_events, release_note_items, release_notes, features, report_events, audit, promotion_requests, kv, log_index, report_files, reports, beta_keys, login_attempts, sessions, " \
          "setup_links, invites, users"
 
 

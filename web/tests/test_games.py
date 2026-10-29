@@ -230,7 +230,14 @@ def test_games_page_public_and_private_data_hidden(app, client):
     html = r.get_data(as_text=True)
     assert r.status_code == 200
     assert "Progresso dos testes" in html and "Fortnite" in html and html.count("data-game-row") == 1
-    assert "Bugs encontrados" in html and "Corrigido na 0.21.1" in html and html.count("data-bug-row") == 1
+    assert "Bugs encontrados" in html and html.count("data-bug-row") == 0   # relatos crus não saem mais
+    db.run("INSERT INTO known_issues(slug, status, title_pt, body_pt, builds, versions) VALUES "
+           "('wifi', 'fixing', 'Wi-Fi interno', 'RESUMO-PUBLICO', 2, '0.21.42, 0.21.43'), "
+           "('oculto', 'fixed', 'X', 'NAO-PUBLICAR-ISSUE', 0, '')")
+    db.run("UPDATE known_issues SET public=false WHERE slug='oculto'")
+    html = client.get("/jogos").get_data(as_text=True)
+    assert html.count("data-bug-row") == 1 and "RESUMO-PUBLICO" in html and "Corrigindo" in html
+    assert "NAO-PUBLICAR-ISSUE" not in html and "0.21.42, 0.21.43" in html
     for secret in (CONSOLE, "h-t", "Fulano", "fulano@example.com", "dev@example.com", "91234", "tela preta",
                    "iphash99", "NAO-PUBLICAR", "DUPLICADO-X", "escondido"):
         assert secret not in html, secret
@@ -257,7 +264,7 @@ def test_admin_hide_game_and_report(app, client):
     assert "Fortnite" in html and html.count("data-admin-game") == 1
     post(client, "/admin/games/visibility", {"gkey": "FORTNITE", "hidden": "1", "name": "Fortnite"}, page="/admin/games")
     pub = app.test_client().get("/jogos?lang=en").get_data(as_text=True)
-    assert "data-game-row" not in pub and "RESPOSTA-1" in pub
+    assert "data-game-row" not in pub and "RESPOSTA-1" not in pub   # 2026-10-29: só o resumo (known_issues)
     assert "data-admin-game" in client.get("/admin/games").get_data(as_text=True)     # admin continua vendo
     post(client, "/admin/reports/%d/public" % rid, {"hidden": "1"}, page="/admin/reports/%d" % rid)
     assert db.row("SELECT public_hidden FROM reports WHERE id=%s", rid)["public_hidden"]

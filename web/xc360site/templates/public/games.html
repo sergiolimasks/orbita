@@ -73,22 +73,23 @@
   <h2 id="gm-bugs">{{ _('gm.bugs') }}</h2>
   <p class="muted gm-bugs-lead">{{ _('gm.bugs_lead') }}</p>
   <div class="gm-bc">
-    <span><b>{{ bc.total }}</b> {{ _('gm.bugs_total') }}</span>
+    <span><b>{{ bc.total }}</b> {{ _('gm.issues_total') }}</span>
     <span><b>{{ bc.open }}</b> {{ _('gm.bugs_open') }}</span>
     <span><b>{{ bc.fixed }}</b> {{ _('gm.bugs_fixed') }}</span>
+    <span><b>{{ bc.reports }}</b> {{ _('gm.bugs_total') }}</span>
   </div>
-  {% if bugs %}
+  {% if issues %}
   <div class="rn-list">
-    {% for b in bugs %}
+    {% set pill = {'investigating': 'new', 'fixing': 'in_progress', 'testing': 'confirmed', 'fixed': 'fixed', 'wontfix': 'wontfix'} %}
+    {% for b in issues %}
     <article class="rn-card gm-bug" data-bug-row>
       <header>
-        <span class="fpill rs-{{ b.status }}">{{ _('status.' ~ b.status) }}</span>
-        <h3>{{ b.game or _('gm.general') }}</h3>
-        {% if b.version %}<span class="mono-s muted">v{{ b.version }}</span>{% endif %}
-        <span class="date">#{{ b.id }} · {{ _('gm.reported', d=b.created_at|date) }}</span>
+        <span class="fpill rs-{{ pill.get(b.status, 'new') }}">{{ _('issue.' ~ b.status) }}</span>
+        <h3>{{ b.title }}</h3>
+        <span class="date">{{ _('gm.issue_updated', d=b.updated_at|date) }}</span>
       </header>
-      {% if b.note %}<div class="gm-reply"><small>{{ _('gm.reply') }}</small><p>{{ b.note }}</p></div>
-      {% else %}<p class="muted small">{{ _('gm.no_reply') }}</p>{% endif %}
+      <p>{{ b.body }}</p>
+      {% if b.builds %}<p class="muted small">{{ _('gm.issue_builds', n=b.builds, v=b.versions) }}</p>{% endif %}
     </article>
     {% endfor %}
   </div>
